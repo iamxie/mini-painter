@@ -5,6 +5,7 @@
 # 用法：scripts/publish.sh "<commit 訊息>" [--push]
 #   公開 repo 的位置預設是本資料夾旁邊的 mini-painter-pub，可用環境變數 PUBLIC_REPO 覆蓋。
 #   第一次：先 git init -b main 那個資料夾並加好 origin，再跑這支。
+#   發新版：改版本號 → commit → 這支 --push → 到公開 repo 打 vX.Y.Z 標籤推上去，CI 自動開 Release（步驟見 project_info.md「發新版」）。
 # 做法：清掉公開 repo 裡除了 .git 以外的所有檔案，把開發 repo 追蹤中、且不在排除清單的檔案照路徑複製過去，
 #   git add -A 後 commit。刪檔、改名都會正確反映。
 set -euo pipefail

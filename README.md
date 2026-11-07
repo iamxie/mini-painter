@@ -47,7 +47,7 @@ build\mp_tests.exe
 - Everything is statically linked (`/MT`); the only DLL is the optional `7z.dll`, loaded at run time.
 - `scripts/` holds the maintainers' helpers: `vm-sync.sh` / `vm-build.cmd` build on a Windows VM over SSH, `package.sh` assembles the release folder, `make_rar_fixtures.cmd` regenerates the rar test files, `lang_check.py` checks that every UI string has a translation entry.
 
-CI (`.github/workflows/build.yml`) does the same on `windows-latest` for every push and pull request. Pushing a tag `vX.Y.Z` that matches `project(VERSION …)` in `CMakeLists.txt` builds, tests and publishes a GitHub Release with the zip and the matching 7-Zip source archive.
+CI (`.github/workflows/build.yml`) does the same on `windows-latest` for every push and pull request. Pushing a tag `vX.Y.Z` that matches `project(VERSION …)` in `CMakeLists.txt` (and `version-string` in `vcpkg.json`; CI checks both) builds, tests and publishes a GitHub Release with the zip and the matching 7-Zip source archive.
 
 ## License / 授權
 

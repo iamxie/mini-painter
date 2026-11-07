@@ -96,6 +96,8 @@ jobs:
         run: |
           $m = Select-String -Path CMakeLists.txt -Pattern 'project\(mpainter VERSION ([0-9.]+)'
           $ver = $m.Matches[0].Groups[1].Value
+          $vv = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'version-string'
+          if ($vv -ne $ver) { throw "vcpkg.json version-string $vv does not match project(VERSION $ver) in CMakeLists.txt" }
           if ("${{ github.ref_type }}" -eq "tag") {
             $tag = "${{ github.ref_name }}"
             if ($tag -ne "v$ver") { throw "tag $tag does not match project(VERSION $ver) in CMakeLists.txt" }

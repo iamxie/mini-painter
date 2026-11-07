@@ -1,6 +1,6 @@
 # mini-painter (mpainter)
 
-![build](https://github.com/OWNER/mini-painter/actions/workflows/build.yml/badge.svg)
+![build](https://github.com/iamxie/mini-painter/actions/workflows/build.yml/badge.svg)
 
 A small, fast image viewer and annotator for Windows, in the spirit of macOS Preview.
 Single portable `mpainter.exe`, no runtime to install.

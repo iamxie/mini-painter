@@ -1,0 +1,134 @@
+# 建置、跑測試、打包；推 v* 標籤時自動開 GitHub Release 並掛上發佈包與 7-Zip 原始碼包。
+# 和 scripts/vm-build.cmd 做的事相同：MSVC + Ninja + vcpkg manifest（x64-windows-static，/MT），
+# 7z.dll 照 scripts/7zip.lock 下載官方安裝檔抽出並核對 hash。
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write   # 開 release 要寫權限；其他事件用不到
+
+env:
+  VCPKG_COMMIT: a4f7741c53c97354fc43222fea17955c657dd549   # 與 vcpkg.json 的 builtin-baseline 相同
+  VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout vcpkg (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: microsoft/vcpkg
+          ref: ${{ env.VCPKG_COMMIT }}
+          path: vcpkg
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('vcpkg.json') }}
+          restore-keys: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          .\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Fetch 7z.dll (per scripts/7zip.lock)
+        shell: pwsh
+        run: |
+          $lock = @{}
+          Get-Content scripts/7zip.lock | ForEach-Object {
+            if ($_ -match '^\s*([A-Za-z_]+)=(.*)$') { $lock[$Matches[1]] = $Matches[2].Trim() }
+          }
+          New-Item -ItemType Directory -Force 7zip-dl, 7zip | Out-Null
+          $inst = "7zip-dl\" + (Split-Path -Leaf $lock.installer_url)
+          Invoke-WebRequest -Uri $lock.installer_url -OutFile $inst
+          $h = (Get-FileHash $inst -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $lock.installer_sha256) { throw "installer hash mismatch: $h" }
+          # 安裝檔是 7z 自解壓檔，runner 內建的 7-Zip 可以直接抽出 7z.dll
+          & "C:\Program Files\7-Zip\7z.exe" x $inst -o7zip 7z.dll -y | Out-Null
+          $h = (Get-FileHash 7zip\7z.dll -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $lock.dll_sha256) { throw "7z.dll hash mismatch: $h" }
+          $src = "7zip-dl\" + (Split-Path -Leaf $lock.src_url)
+          Invoke-WebRequest -Uri $lock.src_url -OutFile $src
+          $h = (Get-FileHash $src -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne $lock.src_sha256) { throw "source archive hash mismatch: $h" }
+          "SEVENZIP_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure
+        shell: pwsh
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+          -DVCPKG_TARGET_TRIPLET=x64-windows-static
+          -DMP_7Z_DLL=${{ github.workspace }}/7zip/7z.dll
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        shell: pwsh
+        run: build\mp_tests.exe
+
+      - name: Language tables cover every string
+        shell: pwsh
+        run: python scripts/lang_check.py
+
+      - name: Version
+        id: ver
+        shell: pwsh
+        run: |
+          $m = Select-String -Path CMakeLists.txt -Pattern 'project\(mpainter VERSION ([0-9.]+)'
+          $ver = $m.Matches[0].Groups[1].Value
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+            if ($tag -ne "v$ver") { throw "tag $tag does not match project(VERSION $ver) in CMakeLists.txt" }
+          }
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          $dir = "dist\mini-painter-$ver-win64"
+          New-Item -ItemType Directory -Force "$dir\lang" | Out-Null
+          Copy-Item build\mpainter.exe, 7zip\7z.dll, readme.txt, readme_en.txt, LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt $dir
+          Copy-Item src\lang\zh-TW.txt, src\lang\ja-JP.txt "$dir\lang"
+          Compress-Archive -Path "$dir\*" -DestinationPath "dist\mini-painter-$ver-win64.zip"
+          Copy-Item $env:SEVENZIP_SRC dist\
+          Get-ChildItem dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mini-painter-${{ steps.ver.outputs.version }}-win64
+          path: |
+            dist/*.zip
+            dist/*.7z
+
+      # 推 v0.6.0 這類標籤時：開 release，掛發佈包 zip 與 7-Zip 原始碼包（LGPL §4：原始碼與二進位同一處）。
+      - name: Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = "${{ steps.ver.outputs.version }}"
+          gh release create "${{ github.ref_name }}" "dist\mini-painter-$ver-win64.zip" "$env:SEVENZIP_SRC" `
+            --title "mini-painter $ver" --generate-notes

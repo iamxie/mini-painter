@@ -1,0 +1,6 @@
+{
+  "name": "mini-painter",
+  "version-string": "0.6.0",
+  "dependencies": ["libwebp", "catch2", "bit7z"],
+  "builtin-baseline": "a4f7741c53c97354fc43222fea17955c657dd549"
+}

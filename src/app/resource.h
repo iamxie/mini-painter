@@ -1,0 +1,136 @@
+#pragma once
+
+// 選單
+#define IDM_OPEN 101
+#define IDM_SAVE 102
+#define IDM_SAVEAS 103
+#define IDM_EXIT 104
+#define IDM_UNDO 111
+#define IDM_REDO 112
+#define IDM_DELETE 113
+#define IDM_ROTATE 114
+#define IDM_SETTINGS 115
+#define IDM_ZOOMIN 121
+#define IDM_ZOOMOUT 122
+#define IDM_ZOOM100 123
+#define IDM_ZOOMFIT 124
+#define IDM_MARKUP 135
+#define IDM_INFO 136
+#define IDM_FITWIDTH 127
+#define IDM_FITHEIGHT 128
+#define IDM_TWOPAGE 129
+#define IDM_UPSCALE 133
+#define IDM_RTL 137
+#define IDM_FIRSTALONE 138
+#define IDM_SHIFTONE 139
+#define IDM_PREV 131
+#define IDM_NEXT 132
+#define IDM_AUTONEXT 140
+// 語言選單：IDM_LANG_SYSTEM 是「跟隨系統」，之後每個語系一個 id
+#define IDM_LANG_SYSTEM 141
+#define IDM_LANG_FIRST 150
+#define IDM_LANG_LAST 199
+#define IDM_ABOUT 161
+// 模式（設定集）：顯示 › 模式 子選單
+#define IDM_PROFILE_SAVE 211
+#define IDM_PROFILE_MANAGE 212
+#define IDM_PROFILE_FIRST 220
+#define IDM_PROFILE_LAST 249
+
+// 調整尺寸對話框
+#define IDD_RESIZE 201
+#define IDC_FIT 1001
+#define IDC_W 1002
+#define IDC_H 1003
+#define IDC_UNIT 1004
+#define IDC_LOCK 1005
+#define IDC_DPI 1006
+#define IDC_DPIUNIT 1007
+#define IDC_RESAMPLE 1008
+#define IDC_RESULT 1009
+
+// 調整顏色面板
+#define IDD_COLOR 202
+#define IDC_HIST 1101
+#define IDC_T_BLACK 1102
+#define IDC_T_MID 1103
+#define IDC_T_WHITE 1104
+#define IDC_AUTO 1105
+#define IDC_T_EXPO 1106
+#define IDC_T_CONTRAST 1107
+#define IDC_T_HIGH 1108
+#define IDC_T_SHADOW 1109
+#define IDC_T_SAT 1110
+#define IDC_T_TEMP 1111
+#define IDC_T_TINT 1112
+#define IDC_T_SEPIA 1113
+#define IDC_T_CLARITY 1114
+#define IDC_DROPPER 1115
+#define IDC_RESET 1116
+
+// 設定（PropertySheet 四頁）與模式名字對話框
+#define IDD_SET_GENERAL 207
+#define IDD_SET_MODES 208
+#define IDD_SET_ARCHIVE 209
+#define IDD_SET_WINDOWS 210
+#define IDD_NAME 211
+#define IDC_CTXMENU 1201
+#define IDC_CTXNOTE 1202
+#define IDC_SETDEFAULT 1203
+#define IDC_DEFNOTE 1204
+#define IDC_ASKDEFAULT 1205
+#define IDC_RESETTIP 1206
+#define IDC_TIPSTATE 1207
+#define IDC_INIPATH 1208
+#define IDC_INIWARN 1209
+#define IDC_UNZIPDIR 1216
+#define IDC_UNZIPBROWSE 1217
+#define IDC_UNZIPNOTE 1218
+#define IDC_PINNED 1219
+#define IDC_PASSWORDS 1220
+#define IDC_PWNOTE 1221
+#define IDC_LANGUAGE 1230
+#define IDC_LANGNOTE 1231
+#define IDC_PROFILES 1232
+#define IDC_PROF_ADD 1233
+#define IDC_PROF_DUP 1234
+#define IDC_PROF_RENAME 1235
+#define IDC_PROF_DELETE 1236
+#define IDC_PROF_USE 1237
+#define IDC_PROF_INUSE 1238
+#define IDC_PROF_GRP 1239
+#define IDC_PROF_VIEWMODE 1240
+#define IDC_PROF_UPSCALE 1241
+#define IDC_PROF_HQ 1242
+#define IDC_PROF_SCROLLFLIP 1243
+#define IDC_PROF_AUTONEXT 1244
+#define IDC_PROF_RTL 1245
+#define IDC_PROF_FIRSTALONE 1246
+#define IDC_PROF_WARNMETA 1247
+#define IDC_UNZIPSTATE 1248
+#define IDC_NAME_EDIT 1249
+
+// 關於對話框
+#define IDD_ABOUT 204
+#define IDC_ABOUT_ICON 1301
+#define IDC_ABOUT_NAME 1302
+#define IDC_ABOUT_VERSION 1303
+#define IDC_ABOUT_TAGLINE 1304
+#define IDC_ABOUT_COPYRIGHT 1305
+#define IDC_ABOUT_LICENSE 1306
+#define IDC_ABOUT_THIRDPARTY 1307
+
+// 壓縮檔：密碼與解壓進度
+#define IDD_PASSWORD 205
+#define IDC_PW_PROMPT 1401
+#define IDC_PW_EDIT 1402
+#define IDC_PW_NOTE 1403
+#define IDD_PROGRESS 206
+#define IDC_PRG_TEXT 1501
+#define IDC_PRG_BAR 1502
+
+// 圖示
+#define IDI_APP 301
+
+// 內建語系檔（RCDATA，內容就是 src/lang/ 底下的文字檔）
+#define IDR_LANG_ZHTW 401

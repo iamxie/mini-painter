@@ -1,0 +1,221 @@
+#pragma code_page(65001)
+#include <windows.h>
+#include "resource.h"
+#include "app/version.h"
+
+1 RT_MANIFEST "app.manifest"
+
+// 程式圖示：exe、標題列、工作列、右鍵選單（登錄檔的 "exe",0 指的就是第一個圖示資源）
+IDI_APP ICON "app.ico"
+
+// 內建語系。英文是程式裡的 key 本身，不需要檔案。
+IDR_LANG_ZHTW RCDATA "../lang/zh-TW.txt"
+
+// 對話框文字一律英文，顯示前由 translateDialog 逐個控制項查表翻譯。
+IDD_RESIZE DIALOGEX 0, 0, 300, 190
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Adjust Size"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    RTEXT           "Fit into:", -1, 8, 12, 56, 10
+    COMBOBOX        IDC_FIT, 70, 10, 120, 100, CBS_DROPDOWNLIST | WS_TABSTOP
+    RTEXT           "Width:", -1, 8, 34, 56, 10
+    EDITTEXT        IDC_W, 70, 32, 60, 13, ES_AUTOHSCROLL
+    RTEXT           "Height:", -1, 8, 52, 56, 10
+    EDITTEXT        IDC_H, 70, 50, 60, 13, ES_AUTOHSCROLL
+    COMBOBOX        IDC_UNIT, 136, 32, 60, 100, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Scale proportionally", IDC_LOCK, 200, 42, 96, 10
+    RTEXT           "Resolution:", -1, 8, 76, 56, 10
+    EDITTEXT        IDC_DPI, 70, 74, 60, 13, ES_AUTOHSCROLL
+    COMBOBOX        IDC_DPIUNIT, 136, 74, 70, 100, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Resample image", IDC_RESAMPLE, 70, 96, 100, 10
+    RTEXT           "Resulting size:", -1, 8, 118, 56, 10
+    LTEXT           "", IDC_RESULT, 70, 118, 180, 10
+    PUSHBUTTON      "Cancel", IDCANCEL, 180, 160, 50, 16
+    DEFPUSHBUTTON   "OK", IDOK, 240, 160, 50, 16
+END
+
+IDD_COLOR DIALOGEX 0, 0, 230, 318
+STYLE DS_SETFONT | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Adjust Color"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    CONTROL         "", IDC_HIST, "STATIC", SS_OWNERDRAW, 8, 8, 214, 52
+    LTEXT           "Black", -1, 8, 68, 42, 10
+    CONTROL         "", IDC_T_BLACK, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 66, 172, 12
+    LTEXT           "Midtone", -1, 8, 82, 42, 10
+    CONTROL         "", IDC_T_MID, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 80, 172, 12
+    LTEXT           "White", -1, 8, 96, 42, 10
+    CONTROL         "", IDC_T_WHITE, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 94, 172, 12
+    LTEXT           "Exposure", -1, 8, 132, 42, 10
+    CONTROL         "", IDC_T_EXPO, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 130, 172, 12
+    LTEXT           "Contrast", -1, 8, 146, 42, 10
+    CONTROL         "", IDC_T_CONTRAST, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 144, 172, 12
+    LTEXT           "Highlights", -1, 8, 160, 42, 10
+    CONTROL         "", IDC_T_HIGH, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 158, 172, 12
+    LTEXT           "Shadows", -1, 8, 174, 42, 10
+    CONTROL         "", IDC_T_SHADOW, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 172, 172, 12
+    LTEXT           "Saturation", -1, 8, 192, 42, 10
+    CONTROL         "", IDC_T_SAT, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 190, 172, 12
+    LTEXT           "Temperature", -1, 8, 206, 42, 10
+    CONTROL         "", IDC_T_TEMP, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 204, 172, 12
+    LTEXT           "Tint", -1, 8, 220, 42, 10
+    CONTROL         "", IDC_T_TINT, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 218, 172, 12
+    LTEXT           "Sepia", -1, 8, 234, 42, 10
+    CONTROL         "", IDC_T_SEPIA, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 232, 172, 12
+    LTEXT           "Clarity", -1, 8, 252, 42, 10
+    CONTROL         "", IDC_T_CLARITY, "msctls_trackbar32", TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 50, 250, 172, 12
+    PUSHBUTTON      "Auto Levels", IDC_AUTO, 162, 110, 60, 14
+    PUSHBUTTON      "Dropper (white balance)", IDC_DROPPER, 8, 270, 100, 14
+    PUSHBUTTON      "Reset All", IDC_RESET, 162, 270, 60, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 112, 294, 50, 16
+    DEFPUSHBUTTON   "OK", IDOK, 172, 294, 50, 16
+END
+
+// 設定：PropertySheet 的四頁。CAPTION 是 tab 名稱（程式碼裡再用 tr 翻譯一次）。
+IDD_SET_GENERAL DIALOGEX 0, 0, 300, 150
+STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "General"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    LTEXT           "Language:", -1, 8, 10, 60, 10
+    COMBOBOX        IDC_LANGUAGE, 70, 8, 150, 120, CBS_DROPDOWNLIST | WS_TABSTOP
+    LTEXT           "A language change takes effect after mpainter restarts; it asks when this window closes. Extra languages: the lang folder next to mpainter.exe.", IDC_LANGNOTE, 8, 26, 284, 18
+    PUSHBUTTON      "Show hints again", IDC_RESETTIP, 8, 52, 110, 14
+    LTEXT           "", IDC_TIPSTATE, 126, 50, 166, 28
+    LTEXT           "", IDC_INIPATH, 8, 92, 284, 18
+    LTEXT           "", IDC_INIWARN, 8, 112, 284, 18
+END
+
+IDD_SET_MODES DIALOGEX 0, 0, 300, 196
+STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Modes"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    LTEXT           "A mode is a named set of viewing settings. Pick one under View > Mode.", -1, 8, 6, 284, 10
+    LISTBOX         IDC_PROFILES, 8, 20, 100, 86, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP | WS_BORDER
+    PUSHBUTTON      "New…", IDC_PROF_ADD, 8, 110, 48, 14
+    PUSHBUTTON      "Copy…", IDC_PROF_DUP, 60, 110, 48, 14
+    PUSHBUTTON      "Rename…", IDC_PROF_RENAME, 8, 128, 48, 14
+    PUSHBUTTON      "Delete", IDC_PROF_DELETE, 60, 128, 48, 14
+    PUSHBUTTON      "Use this mode", IDC_PROF_USE, 8, 150, 100, 14
+    LTEXT           "", IDC_PROF_INUSE, 8, 170, 104, 20
+    GROUPBOX        "", IDC_PROF_GRP, 118, 18, 174, 172
+    LTEXT           "Open images at:", -1, 126, 34, 62, 10
+    COMBOBOX        IDC_PROF_VIEWMODE, 190, 32, 96, 100, CBS_DROPDOWNLIST | WS_TABSTOP
+    AUTOCHECKBOX    "Enlarge Small Images to Fit", IDC_PROF_UPSCALE, 126, 52, 160, 10
+    AUTOCHECKBOX    "High quality zoom (Lanczos3)", IDC_PROF_HQ, 126, 66, 160, 10
+    AUTOCHECKBOX    "Up/Down at the end of a page turns the page", IDC_PROF_SCROLLFLIP, 126, 80, 160, 18, BS_TOP | BS_MULTILINE
+    AUTOCHECKBOX    "Continue to the next folder or archive at the end", IDC_PROF_AUTONEXT, 126, 100, 160, 18, BS_TOP | BS_MULTILINE
+    AUTOCHECKBOX    "Two pages: right to left (manga)", IDC_PROF_RTL, 126, 120, 160, 10
+    AUTOCHECKBOX    "Two pages: first page alone", IDC_PROF_FIRSTALONE, 126, 134, 160, 10
+    AUTOCHECKBOX    "Warn before saving to a format that drops metadata (Exif, ICC…)", IDC_PROF_WARNMETA, 126, 148, 160, 18, BS_TOP | BS_MULTILINE
+END
+
+IDD_SET_ARCHIVE DIALOGEX 0, 0, 300, 196
+STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Archives"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    LTEXT           "Unpack to:", -1, 8, 10, 56, 10
+    EDITTEXT        IDC_UNZIPDIR, 66, 8, 172, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Browse…", IDC_UNZIPBROWSE, 242, 8, 50, 14
+    LTEXT           "Leave empty to use the “temp” folder next to mpainter.exe (the system temp folder if that cannot be created). Unpacked files (decrypted) stay there while viewing and are deleted on exit.", IDC_UNZIPNOTE, 8, 26, 284, 26
+    LTEXT           "", IDC_UNZIPSTATE, 8, 54, 284, 18
+    LTEXT           "Show first (one file name per line):", -1, 8, 76, 138, 10
+    EDITTEXT        IDC_PINNED, 8, 88, 138, 68, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+    LTEXT           "Passwords to try (one per line):", -1, 154, 76, 138, 10
+    EDITTEXT        IDC_PASSWORDS, 154, 88, 138, 68, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
+    LTEXT           "Passwords are kept unencrypted in mpainter.ini. A password that opens an archive is added here automatically. Leading and trailing spaces count.", IDC_PWNOTE, 8, 160, 284, 26
+END
+
+IDD_SET_WINDOWS DIALOGEX 0, 0, 300, 110
+STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Windows Integration"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    AUTOCHECKBOX    "Add “Open with mpainter” to the Explorer context menu (images and folders)", IDC_CTXMENU, 8, 10, 284, 18, BS_TOP | BS_MULTILINE
+    LTEXT           "", IDC_CTXNOTE, 20, 30, 272, 18
+    PUSHBUTTON      "Set as default image app…", IDC_SETDEFAULT, 8, 54, 110, 14
+    LTEXT           "", IDC_DEFNOTE, 126, 52, 166, 28
+    AUTOCHECKBOX    "Ask to become the default image app when opening an image", IDC_ASKDEFAULT, 8, 88, 284, 10
+END
+
+// 模式名字（新增 / 複製 / 重新命名）
+IDD_NAME DIALOGEX 0, 0, 220, 60
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION ""
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    LTEXT           "Name:", -1, 8, 12, 40, 10
+    EDITTEXT        IDC_NAME_EDIT, 50, 10, 160, 14, ES_AUTOHSCROLL
+    PUSHBUTTON      "Cancel", IDCANCEL, 100, 36, 50, 16
+    DEFPUSHBUTTON   "OK", IDOK, 160, 36, 50, 16
+END
+
+IDD_PASSWORD DIALOGEX 0, 0, 280, 96
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Password"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    LTEXT           "", IDC_PW_PROMPT, 8, 8, 264, 20
+    EDITTEXT        IDC_PW_EDIT, 8, 32, 264, 14, ES_PASSWORD | ES_AUTOHSCROLL
+    LTEXT           "", IDC_PW_NOTE, 8, 52, 264, 10
+    PUSHBUTTON      "Cancel", IDCANCEL, 162, 72, 50, 16
+    DEFPUSHBUTTON   "OK", IDOK, 222, 72, 50, 16
+END
+
+IDD_PROGRESS DIALOGEX 0, 0, 300, 72
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION
+CAPTION "Unpacking"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    LTEXT           "", IDC_PRG_TEXT, 8, 8, 284, 20
+    CONTROL         "", IDC_PRG_BAR, "msctls_progress32", WS_BORDER, 8, 30, 284, 12
+    PUSHBUTTON      "Cancel", IDCANCEL, 242, 50, 50, 16
+END
+
+IDD_ABOUT DIALOGEX 0, 0, 300, 150
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About mpainter"
+FONT 9, "Microsoft JhengHei UI"
+BEGIN
+    CONTROL         "", IDC_ABOUT_ICON, "STATIC", SS_ICON | SS_REALSIZEIMAGE, 14, 14, 48, 48
+    LTEXT           "", IDC_ABOUT_NAME, 70, 12, 220, 16
+    LTEXT           "", IDC_ABOUT_VERSION, 70, 30, 220, 10
+    LTEXT           "An image viewer as nimble as a rabbit.", IDC_ABOUT_TAGLINE, 70, 44, 220, 10
+    LTEXT           "", IDC_ABOUT_COPYRIGHT, 70, 64, 220, 10
+    LTEXT           "Licensed under the Apache License 2.0. See LICENSE next to the program.", IDC_ABOUT_LICENSE, 70, 78, 220, 18
+    LTEXT           "Uses libwebp (BSD-3-Clause), 7-Zip's 7z.dll (LGPL 2.1) and bit7z (MPL 2.0). See THIRD-PARTY-NOTICES.txt.", IDC_ABOUT_THIRDPARTY, 70, 98, 220, 26
+    DEFPUSHBUTTON   "OK", IDOK, 240, 126, 50, 16
+END
+
+// 檔案總管「內容 > 詳細資料」看到的版本資訊。版本號來自 CMake 產生的 version.h。
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    MP_VERSION_MAJOR, MP_VERSION_MINOR, MP_VERSION_PATCH, 0
+ PRODUCTVERSION MP_VERSION_MAJOR, MP_VERSION_MINOR, MP_VERSION_PATCH, 0
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         0x40004L
+ FILETYPE       0x1L
+ FILESUBTYPE    0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "Mini Painter Contributors"
+            VALUE "FileDescription",  "mpainter image viewer"
+            VALUE "FileVersion",      MP_VERSION_STRING
+            VALUE "InternalName",     "mpainter"
+            VALUE "LegalCopyright",   MP_COPYRIGHT
+            VALUE "OriginalFilename", "mpainter.exe"
+            VALUE "ProductName",      "Mini Painter"
+            VALUE "ProductVersion",   MP_VERSION_STRING
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

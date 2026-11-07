@@ -1,0 +1,8 @@
+# 釘住的 7-Zip 版本。發佈包旁的 7z.dll 與 release assets 的原始碼包都要對得上這裡的 hash。
+# 升版時改這裡，重跑 scripts/package.sh 會重新驗證。
+version=26.05
+installer_url=https://github.com/ip7z/7zip/releases/download/26.05/7z2605-x64.exe
+installer_sha256=fd99e86f57d8f429ef5ed045bf98315af962e2309b0f1ba87a147a44c71647d0
+dll_sha256=78bf6b668d75801e3aa180b4ccb16e6d8395fba80dec8a065055bb6f8dfabb82
+src_url=https://github.com/ip7z/7zip/releases/download/26.05/7z2605-src.7z
+src_sha256=fa081a1a33186158d71e9e24f494ed852ef8d0c9d06e21a86fb4713d94b55ae9

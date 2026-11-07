@@ -1,0 +1,9 @@
+#pragma once
+// 由 CMake 從 project(VERSION) 產生，給 app.rc 的 VERSIONINFO 和「關於」對話框共用。
+#define MP_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define MP_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define MP_VERSION_PATCH @PROJECT_VERSION_PATCH@
+#define MP_VERSION_STRING "@PROJECT_VERSION@"
+#define MP_VERSION_WSTRING L"@PROJECT_VERSION@"
+#define MP_COPYRIGHT "Copyright 2026 Mini Painter Contributors"
+#define MP_COPYRIGHT_W L"Copyright 2026 Mini Painter Contributors"

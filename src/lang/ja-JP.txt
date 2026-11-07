@@ -1,0 +1,371 @@
+# mpainter 言語ファイル：日本語
+# このファイルは他の言語を追加するときのテンプレートにもなります。
+# This file also serves as the template for adding another language.
+#
+# 使い方 / How to add a language:
+#   1. このファイルを lang\<言語コード>.txt にコピーする（mpainter.exe と同じ場所の lang フォルダー）。
+#      Copy this file to lang\<code>.txt in a "lang" folder next to mpainter.exe.
+#   2. 下の _code と _name を書き換える。_code は言語コード（ファイル名と同じにするとよい）、
+#      _name は「言語 / Language」メニューに表示される名前。
+#      Change _code (language code, ideally the same as the file name) and _name (shown in the Language menu).
+#   3. 各行の = の右側を翻訳する。訳していない行は英語のまま表示される。
+#      Translate the right-hand side of each line. Untranslated lines fall back to English.
+#   4. UTF-8 で保存する（BOM あり・なしどちらでも可）。
+#      Save as UTF-8 (with or without BOM).
+#
+# 書式 / Format:
+#   一行一項目。「英語原文=翻訳」。# か ; で始まる行はコメント。
+#   One entry per line: English=Translation. Lines starting with # or ; are comments.
+#   エスケープ / Escapes: \n 改行 newline, \t タブ tab, \\ バックスラッシュ backslash, \= 等号 equals sign.
+#   原文に = が含まれる場合は \= と書く。 Write \= for an equals sign inside the English text.
+#   %d %s %u %lu %llu %.0f %08X はプログラムが値を埋める場所。順番どおりに残す。
+#   %d %s %u %lu %llu %.0f %08X are filled in by the program; keep them in the same order.
+#   &File のような & は、その次の文字をメニューのアクセスキーにする。
+#   & in "&File" marks the next letter as the menu access key.
+_code=ja-JP
+_name=日本語
+
+# --- メニュー、ダイアログ、メッセージ / Menus, dialogs, messages ---
+&File=ファイル(&F)
+&Edit=編集(&E)
+&View=表示(&V)
+Open…=開く…
+Save=保存
+Export As…=書き出し…
+Exit=終了
+Undo=元に戻す
+Redo=やり直し
+Delete Selected Object=選択したオブジェクトを削除
+Rotate 90° Counterclockwise=左に 90° 回転
+Settings…=設定…
+Zoom In=拡大
+Zoom Out=縮小
+Actual Size=実際のサイズ
+Fit to Window=ウィンドウに合わせる
+Previous Image=前の画像
+Next Image=次の画像
+Markup Toolbar=マークアップツールバー
+Info Panel=情報パネル
+Follow System=システムに従う
+This folder has no supported images=このフォルダーには対応する画像がありません
+Cannot open: %s=開けません：%s
+“%s” has unsaved changes. Save them?=「%s」には保存されていない変更があります。保存しますか？
+Save failed: %s=保存に失敗しました：%s
+Image files=画像ファイル
+All files=すべてのファイル
+No file open — drop an image here, or use File > Open=ファイルが開かれていません — 画像をここにドロップするか、「ファイル > 開く」を使ってください
+Drag the blue dots to resize, drag the object to move, Delete to remove=青い点をドラッグしてサイズ変更、オブジェクトをドラッグして移動、Delete キーで削除
+The language takes effect the next time mpainter starts.\n\nRestart now?=言語は次に mpainter を起動したときに切り替わります。\n\n今すぐ再起動しますか？
+Make mpainter the default app for opening images?\n\nDouble-clicking an image in Explorer will then open it in mpainter.\nChoose “No” and it will not ask again; you can change this later in Edit > Settings.=mpainter を画像を開く既定のアプリにしますか？\n\nエクスプローラーで画像をダブルクリックすると mpainter で開くようになります。\n「いいえ」を選ぶと今後は確認しません。あとで「編集 > 設定」から変更できます。
+Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n“OK” opens the mpainter page under Settings > Apps > Default apps:\n1. The page lists file types such as .jpg and .png.\n2. Click each file type, pick mpainter from the list and press “Set default”.\n\nIf the page does not open on mpainter, type mpainter in the search box.=Windows ではアプリが自分を既定に設定できないため、システムの設定で選ぶ必要があります。\n\n「OK」を押すと「設定 > アプリ > 既定のアプリ」の mpainter のページが開きます：\n1. ページに .jpg や .png などのファイルの種類が並びます。\n2. それぞれをクリックし、一覧から mpainter を選んで「既定値を設定する」を押します。\n\nmpainter のページが開かない場合は、検索ボックスに mpainter と入力してください。
+Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n“OK” opens Settings > Apps > Default apps:\n1. Scroll to the bottom and click “Set defaults by app”.\n2. Find mpainter in the list and click “Manage”.\n3. Change the app next to each image format to mpainter.=Windows ではアプリが自分を既定に設定できないため、システムの設定で選ぶ必要があります。\n\n「OK」を押すと「設定 > アプリ > 既定のアプリ」が開きます：\n1. 一番下までスクロールして「アプリごとに既定値を設定する」をクリックします。\n2. 一覧から mpainter を見つけて「管理」をクリックします。\n3. 各画像形式の横のアプリを mpainter に変更します。
+Shown %d times; it will not appear again.=%d 回表示したので、今後は表示されません。
+Hint shown when the mouse rests on an annotation. Will be shown %d more times.=注釈の上にマウスを置いたときの操作ヒント。あと %d 回表示されます。
+Windows 11: this item is under “Show more options” in the context menu (or press Shift+F10).=Windows 11：この項目は右クリックメニューの「その他のオプションを確認」の中にあります（または Shift+F10）。
+Windows does not let apps set defaults themselves. Opens the system Settings page; on Windows 11 pick each file type one by one.=Windows ではアプリが自分を既定に設定できません。システムの設定ページを開きます。Windows 11 ではファイルの種類を一つずつ選んでください。
+Windows does not let apps set defaults themselves. Opens the system Settings page; choose mpainter there.=Windows ではアプリが自分を既定に設定できません。システムの設定ページを開くので、そこで mpainter を選んでください。
+Settings file: %s=設定ファイル：%s
+⚠ The settings file cannot be written. Changes here last only for this run; the next start returns to defaults.=⚠ 設定ファイルに書き込めません。ここでの変更はこの起動中だけ有効で、次回起動時には既定値に戻ります。
+Adjust Size=サイズ調整
+Fit into:=収める:
+Width:=幅:
+Height:=高さ:
+Scale proportionally=縦横比を保つ
+Resolution:=解像度:
+Resample image=画像を再サンプリング
+Resulting size:=結果のサイズ:
+Cancel=キャンセル
+OK=OK
+Adjust Color=色調整
+Black=黒点
+Midtone=中間調
+White=白点
+Exposure=露出
+Contrast=コントラスト
+Highlights=ハイライト
+Shadows=シャドウ
+Saturation=彩度
+Temperature=色温度
+Tint=色合い
+Sepia=セピア
+Clarity=明瞭度
+Auto Levels=自動レベル補正
+Dropper (white balance)=スポイト（ホワイトバランス）
+Reset All=すべてリセット
+Settings=設定
+Add “Open with mpainter” to the Explorer context menu (images and folders)=エクスプローラーの右クリックメニューに「mpainter で開く」を追加する（画像とフォルダー）
+Set as default image app…=既定の画像アプリに設定…
+Ask to become the default image app when opening an image=画像を開くときに既定の画像アプリにするか確認する
+Show hints again=ヒントをもう一度表示する
+
+# --- 表示モードとコミック閲覧の設定 / View modes and comic reading ---
+Fit to Width=幅に合わせる
+Fit to Height=高さに合わせる
+Two Pages Side by Side=見開き表示
+Enlarge Small Images to Fit=小さい画像を拡大して合わせる
+Right to Left (Manga)=右から左（マンガ）
+First Page Alone=1 ページ目を単独で表示
+Shift Pairing by One Page=ページの組を 1 ページずらす
+Up/Down at the end of a page turns the page=ページの端で ↑↓ を押すとページをめくる
+Warn before saving to a format that drops metadata (Exif, ICC…)=メタデータ（Exif、ICC…）を保持できない形式で保存する前に警告する
+Saving as %s will drop this metadata:\n%s\n\nThe pixels are kept. Continue?=%s で保存すると次のメタデータが失われます：\n%s\n\n画像のピクセルは保持されます。続けますか？
+Don't ask again=今後は確認しない
+
+# --- バージョン情報 / About ---
+&Help=ヘルプ(&H)
+About mpainter…=mpainter について…
+About mpainter=mpainter について
+Version %s=バージョン %s
+An image viewer as nimble as a rabbit.=ウサギのように身軽な画像ビューアー。
+Licensed under the Apache License 2.0. See LICENSE next to the program.=Apache License 2.0 で提供されています。全文はプログラムと同じ場所の LICENSE を参照してください。
+
+# --- ツールバーのボタン名（ツールチップ）/ Toolbar button names (tooltips) ---
+Sketch=スケッチ
+Shapes=図形
+Line Style=線の種類
+Line Color=線の色
+Fill Color=塗りの色
+Text Format=書式
+
+# --- 情報パネル、形式名、Exif 項目、エラーメッセージ / Info panel, format names, Exif tags, errors ---
+Image width=画像の幅
+Image height=画像の高さ
+Bits per sample=サンプルあたりのビット数
+Compression=圧縮方式
+Photometric interpretation=測光解釈
+Image description=画像の説明
+Make=メーカー
+Model=機種
+Strip offsets=ストリップオフセット
+Orientation=向き
+Samples per pixel=ピクセルあたりのサンプル数
+Rows per strip=ストリップあたりの行数
+Strip byte counts=ストリップのバイト数
+X resolution=X 解像度
+Y resolution=Y 解像度
+Planar configuration=プレーン構成
+Resolution unit=解像度の単位
+Software=ソフトウェア
+Date modified=更新日時
+Artist=作成者
+White point=白色点
+Primary chromaticities=原色の色度
+JPEG thumbnail offset=JPEG サムネイルのオフセット
+JPEG thumbnail length=JPEG サムネイルの長さ
+YCbCr coefficients=YCbCr 係数
+YCbCr subsampling=YCbCr サブサンプリング
+YCbCr positioning=YCbCr 配置
+Reference black/white=参照黒白値
+Copyright=著作権
+Exposure time=露出時間
+F-number=F 値
+Exposure program=露出プログラム
+ISO speed=ISO 感度
+Exif version=Exif バージョン
+Date taken=撮影日時
+Date digitized=デジタル化日時
+Time zone=タイムゾーン
+Time zone (taken)=タイムゾーン（撮影）
+Components configuration=色成分の構成
+Compressed bits per pixel=圧縮ビット数（ピクセルあたり）
+Shutter speed=シャッター速度
+Aperture=絞り
+Brightness=輝度値
+Exposure bias=露出補正
+Max aperture=最大絞り
+Subject distance=被写体距離
+Metering mode=測光モード
+Light source=光源
+Flash=フラッシュ
+Focal length=焦点距離
+Maker note=メーカーノート
+User comment=ユーザーコメント
+Subsecond time=秒未満の時刻
+Subsecond time (taken)=秒未満の時刻（撮影）
+Subsecond time (digitized)=秒未満の時刻（デジタル化）
+FlashPix version=FlashPix バージョン
+Color space=色空間
+Pixel X dimension=ピクセル X 寸法
+Pixel Y dimension=ピクセル Y 寸法
+Interoperability IFD=互換性 IFD
+Focal plane X resolution=焦点面 X 解像度
+Focal plane Y resolution=焦点面 Y 解像度
+Focal plane resolution unit=焦点面解像度の単位
+Sensing method=センサー方式
+File source=ファイルソース
+Scene type=シーンタイプ
+Custom rendered=カスタム画像処理
+Exposure mode=露出モード
+White balance=ホワイトバランス
+Digital zoom ratio=デジタルズーム倍率
+Focal length (35mm)=焦点距離（35mm 換算）
+Scene capture type=撮影シーンタイプ
+Sharpness=シャープネス
+Image unique ID=画像ユニーク ID
+Camera owner=カメラ所有者
+Body serial number=ボディシリアル番号
+Lens specification=レンズ仕様
+Lens make=レンズメーカー
+Lens model=レンズ型式
+Lens serial number=レンズシリアル番号
+%llu bytes=%llu バイト
+%s (HRESULT 0x%08X)=%s（HRESULT 0x%08X）
+Grayscale=グレースケール
+Indexed=インデックスカラー
+JPEG image=JPEG 画像
+PNG image=PNG 画像
+BMP image=BMP 画像
+TIFF image=TIFF 画像
+GIF image=GIF 画像
+WebP image=WebP 画像
+JFIF version=JFIF バージョン
+Density unit=密度の単位
+X density=X 密度
+Y density=Y 密度
+Thumbnail width=サムネイルの幅
+Thumbnail height=サムネイルの高さ
+Thumbnail=サムネイル
+TIFF (sub-IFD)=TIFF（サブ IFD）
+Interoperability=互換性
+Other=その他
+Yes=はい
+No=いいえ
+(type %u)=(型 %u)
+Could not create the WIC factory=WIC ファクトリを作成できません
+Could not decode this file=このファイルをデコードできません
+Could not read the first frame=最初のフレームを読み取れません
+Image size is 0=画像のサイズが 0 です
+Could not convert the pixel format=ピクセル形式を変換できません
+Reading pixels failed=ピクセルの読み取りに失敗しました
+Could not read the file=ファイルを読み取れません
+Not a valid WebP file=有効な WebP ファイルではありません
+libwebp initialization failed=libwebp の初期化に失敗しました
+WebP decoding failed=WebP のデコードに失敗しました
+WebP encoding failed=WebP のエンコードに失敗しました
+Writing the file failed=ファイルの書き込みに失敗しました
+Could not create the file=ファイルを作成できません
+Could not create the encoder=エンコーダーを作成できません
+Could not create the frame=フレームを作成できません
+Frame setup failed=フレームの設定に失敗しました
+Could not create the source bitmap=元ビットマップを作成できません
+Writing the image failed=画像の書き込みに失敗しました
+Saving this format is not supported: %s=この形式での保存には対応していません：%s
+Could not replace the original file=元のファイルを置き換えられません
+Image=画像
+(%lu bytes)=(%lu バイト)
+mpainter image=mpainter 画像
+Lightweight image viewer and annotator=軽量な画像ビューアー＆注釈ツール
+Open with mpainter=mpainter で開く
+Text=テキスト
+File Info=ファイル情報
+Image Info=画像情報
+File name=ファイル名
+Kind=種類
+File size=ファイルサイズ
+Date created=作成日時
+%d × %d pixels=%d × %d ピクセル
+Image size=画像サイズ
+%.0f × %.0f pixels/inch=%.0f × %.0f ピクセル/インチ
+Image DPI=画像 DPI
+Color model=カラーモデル
+Color profile=カラープロファイル
+(not embedded)=（埋め込みなし）
+Depth=深度
+Pixel height=ピクセル高さ
+Pixel width=ピクセル幅
+Color profile name=カラープロファイル名
+General=一般
+bits=ビット
+Show Colors…=色を表示…
+Font=フォント
+Size=サイズ
+Text Color…=文字の色…
+Left=左揃え
+Center=中央揃え
+Right=右揃え
+Justify=両端揃え
+Style=スタイル
+Alignment=配置
+Custom=カスタム
+pixels=ピクセル
+inches=インチ
+cm=cm
+mm=mm
+points=ポイント
+pixels/inch=ピクセル/インチ
+pixels/cm=ピクセル/cm
+Could not create the window.=ウィンドウを作成できませんでした。
+# --- アーカイブ（v0.4）---
+7z.dll was not found next to mpainter.exe, so archives cannot be opened.=mpainter.exe と同じ場所に 7z.dll が見つからないため、アーカイブを開けません。
+Archives (zip, 7z, rar, cbz, cb7, cbr)=アーカイブ（zip、7z、rar、cbz、cb7、cbr）
+Browse…=参照…
+Cancelling…=キャンセル中…
+Cannot create the temp folder for unpacking archives.=展開用の一時フォルダーを作成できません。
+Cannot unpack: %s=展開できません：%s
+Leave empty to use the “temp” folder next to mpainter.exe (the system temp folder if that cannot be created). Unpacked files (decrypted) stay there while viewing and are deleted on exit.=空欄のままなら mpainter.exe と同じ場所の temp フォルダーを使います（作成できない場合はシステムの一時フォルダー）。閲覧中は展開した（復号済みの）ファイルがそこに置かれ、終了時に削除されます。
+Not enough free disk space in the temp folder to unpack this archive.=一時フォルダーのあるディスクの空き容量が足りないため、このアーカイブを展開できません。
+Password=パスワード
+The images in this archive are too large to unpack (limit 8 GB).=このアーカイブ内の画像は展開後のサイズが大きすぎます（上限 8 GB）。
+This archive has no supported images=このアーカイブには対応している画像がありません
+This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it.=この画像はアーカイブ内にあるため読み取り専用です。\n\n編集するには先にアーカイブを展開してください。
+Unpack to:=展開先：
+Unpacking=展開中
+Unpacking “%s”…=「%s」を展開しています…
+Uses libwebp (BSD-3-Clause), 7-Zip's 7z.dll (LGPL 2.1) and bit7z (MPL 2.0). See THIRD-PARTY-NOTICES.txt.=libwebp（BSD-3-Clause）、7-Zip の 7z.dll（LGPL 2.1）、bit7z（MPL 2.0）を使用しています。ライセンスは THIRD-PARTY-NOTICES.txt を参照。
+Wrong password. Try again.=パスワードが違います。もう一度入力してください。
+not a supported archive=対応しているアーカイブ形式ではありません
+“%s” is encrypted. Enter the password:=「%s」は暗号化されています。パスワードを入力してください：
+
+# --- v0.4.1 ---
+Export As=書き出し
+Show first (one file name per line):=先頭に表示するファイル名（1 行に 1 つ）：
+Passwords to try (one per line):=試すパスワード（1 行に 1 つ）：
+Trying saved passwords (%d/%d)…=保存済みパスワードを試しています（%d/%d）…
+
+# --- v0.5.0 ---
+Continue to the next folder or archive at the end=最後まで読んだら次のフォルダーやアーカイブへ進む
+This is the last image=これが最後の画像です
+This is the first image=これが最初の画像です
+This is the last image. There is no next folder or archive here.=これが最後の画像です。この階層に次のフォルダーやアーカイブはありません
+This is the first image. There is no previous folder or archive here.=これが最初の画像です。この階層に前のフォルダーやアーカイブはありません
+%s is finished. Press Next again to start %s=%s を読み終えました。もう一度「次の画像」を押すと %s を開きます
+This is the first page of %s. Press Previous again to go back to the end of %s=%s の最初のページです。もう一度「前の画像」を押すと %s の最後のページに戻ります
+Now in %s=%s に入りました
+Could not open %s: %s=%s を開けません：%s
+Cancelled. Still in %s=キャンセルしました。%s のままです
+Back in %s=%s に戻りました
+Unpacking was incomplete: only %d of %d images were written. The missing ones are skipped.=展開が不完全です。書き出せたのは %d 枚で、本来は %d 枚あります。欠けた分は飛ばします。
+
+# --- v0.6.0：モード（設定セット）と設定タブ ---
+Modes=モード
+Archives=アーカイブ
+Windows Integration=Windows 連携
+Language:=言語：
+A mode is a named set of viewing settings. Pick one under View > Mode.=モードは名前の付いた表示設定のセットです。「表示 > モード」で選びます。
+New…=新規…
+Copy…=複製…
+Rename…=名前の変更…
+Delete=削除
+Use this mode=このモードを使う
+Open images at:=画像を開くとき：
+High quality zoom (Lanczos3)=高品質ズーム（Lanczos3）
+Two pages: right to left (manga)=見開き：右から左（マンガ）
+Two pages: first page alone=見開き：最初のページを単独で表示
+Name:=名前：
+In use: %s=使用中：%s
+In use: %s (%s)=使用中：%s（%s）
+A mode with this name already exists.=同じ名前のモードがすでにあります。
+This mode is in use. Switch to another mode first.=このモードは使用中です。先に別のモードに切り替えてください。
+At least one mode must remain.=モードは少なくとも 1 つ必要です。
+New Mode=新しいモード
+Copy Mode=モードを複製
+Rename Mode=モード名の変更
+Apply=適用
+Mode=モード
+Manage Modes…=モードの管理…
+Save Current Settings to “%s”=現在の設定を「%s」に保存
+(adjusted)=（調整あり）
+General mode=一般モード
+Comic mode=マンガモード
+Passwords are kept unencrypted in mpainter.ini. A password that opens an archive is added here automatically. Leading and trailing spaces count.=パスワードは mpainter.ini に平文で保存されます。アーカイブを開けたパスワードは自動的に追加されます。前後の空白もパスワードの一部です。
+A language change takes effect after mpainter restarts; it asks when this window closes. Extra languages: the lang folder next to mpainter.exe.=言語は mpainter の再起動後に反映されます。このウィンドウを閉じるときに確認します。追加の言語：mpainter.exe と同じ場所の lang フォルダー。

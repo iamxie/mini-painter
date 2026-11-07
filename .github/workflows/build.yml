@@ -48,7 +48,7 @@ jobs:
         run: |
           $lock = @{}
           Get-Content scripts/7zip.lock | ForEach-Object {
-            if ($_ -match '^\s*([A-Za-z_]+)=(.*)$') { $lock[$Matches[1]] = $Matches[2].Trim() }
+            if ($_ -match '^\s*([A-Za-z0-9_]+)=(.*)$') { $lock[$Matches[1]] = $Matches[2].Trim() }
           }
           New-Item -ItemType Directory -Force 7zip-dl, 7zip | Out-Null
           $inst = "7zip-dl\" + (Split-Path -Leaf $lock.installer_url)

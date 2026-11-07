@@ -113,6 +113,9 @@ jobs:
           Copy-Item build\mpainter.exe, 7zip\7z.dll, readme.txt, readme_en.txt, LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt $dir
           Copy-Item src\lang\zh-TW.txt, src\lang\ja-JP.txt "$dir\lang"
           Compress-Archive -Path "$dir\*" -DestinationPath "dist\mini-painter-$ver-win64.zip"
+          # 自動更新下載後核對用（sha256sum 格式，UTF-8 無 BOM）
+          $h = (Get-FileHash "dist\mini-painter-$ver-win64.zip" -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("$PWD\dist\mini-painter-$ver-win64.zip.sha256", "$h  mini-painter-$ver-win64.zip`n")
           Copy-Item $env:SEVENZIP_SRC dist\
           Get-ChildItem dist
 
@@ -122,9 +125,10 @@ jobs:
           name: mini-painter-${{ steps.ver.outputs.version }}-win64
           path: |
             dist/*.zip
+            dist/*.zip.sha256
             dist/*.7z
 
-      # 推 v0.6.0 這類標籤時：開 release，掛發佈包 zip 與 7-Zip 原始碼包（LGPL §4：原始碼與二進位同一處）。
+      # 推 v0.6.0 這類標籤時：開 release，掛發佈包 zip、它的 .sha256（自動更新用）與 7-Zip 原始碼包（LGPL §4：原始碼與二進位同一處）。
       - name: Release
         if: github.ref_type == 'tag'
         shell: pwsh
@@ -132,5 +136,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ver = "${{ steps.ver.outputs.version }}"
-          gh release create "${{ github.ref_name }}" "dist\mini-painter-$ver-win64.zip" "$env:SEVENZIP_SRC" `
+          gh release create "${{ github.ref_name }}" "dist\mini-painter-$ver-win64.zip" "dist\mini-painter-$ver-win64.zip.sha256" "$env:SEVENZIP_SRC" `
             --title "mini-painter $ver" --generate-notes

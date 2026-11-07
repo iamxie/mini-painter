@@ -91,6 +91,24 @@ Archives (zip / 7z / rar)
   cannot be opened; everything else works. You may replace 7z.dll with another build that has
   the same interface, e.g. from a newer 7-Zip.
 
+Updates
+-------
+- Each time it starts, mpainter checks GitHub for a newer version in the background; opening the
+  image is not slowed down. If there is no connection it stays quiet.
+- When a new version exists, a "Software Update" window shows the version and its release notes,
+  with three choices: Skip This Version (automatic checks stop asking about it), Remind Me Later
+  (asks again next start), Install Update.
+- Install Update: if you have unsaved edits it first asks whether to save (Cancel stops the update),
+  then downloads, verifies the file, replaces the program files next to mpainter.exe, and closes
+  and reopens itself on the same image (or archive). mpainter.ini, the temp folder and language
+  files you added yourself are left alone. Files that ship in the package (including 7z.dll,
+  lang\ja-JP.txt and the readmes) are replaced; if you edited one of them, save it under another
+  name first.
+- If mpainter cannot write to its own folder (e.g. it lives in Program Files) or 7z.dll is missing,
+  it cannot update itself; it tells you why and offers to open the download page.
+- To stop the automatic check, untick "Check for updates when mpainter starts" in Edit > Settings >
+  General. You can still check by hand: Help > About mpainter > Check for Updates.
+
 Language
 --------
 The "語言 / Language" menu switches the UI language. Traditional Chinese and English are

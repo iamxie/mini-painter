@@ -15,6 +15,7 @@ Single portable `mpainter.exe`, no runtime to install.
 - View modes for reading: fit to window / width / height, actual size, two pages side by side (right-to-left for manga), continue to the next folder or archive at the end.
 - Modes (named sets of viewing settings) switchable from the View menu; the title bar always shows the current one.
 - UI in English and Traditional Chinese built in; Japanese and other languages via `lang/*.txt`.
+- Checks GitHub for a new version at start (can be turned off) and updates itself in place: download, verify, replace, restart.
 
 - 支援 BMP、TIFF、JPEG、PNG、WebP；方向鍵翻同資料夾；zip / 7z / rar（cbz / cb7 / cbr）壓縮檔直接當資料夾翻，含加密檔。
 - 標註是向量物件，存檔才壓成像素：塗鴉、直線與箭頭、形狀、對話框、放大鏡、馬賽克、文字；多層復原。
@@ -22,6 +23,7 @@ Single portable `mpainter.exe`, no runtime to install.
 - 看漫畫的檢視模式：符合視窗 / 寬度 / 高度、實際大小、兩頁並排（可由右到左）、翻到底接著看下一本。
 - 「模式」= 一組有名字的檢視設定，在「顯示 › 模式」一鍵切換，標題列永遠顯示目前的模式。
 - 介面內建英文與繁體中文，日文與其他語言放 `lang/*.txt`。
+- 啟動時查 GitHub 有沒有新版（可關閉），一鍵更新：下載、核對、換檔、自動重開。
 
 Usage details are in [readme.txt](readme.txt) (中文) and [readme_en.txt](readme_en.txt) (English); both ship next to the exe.
 

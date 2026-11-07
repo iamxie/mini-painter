@@ -143,6 +143,25 @@ std::wstring sniffImageExtension(const std::wstring& path) {
     return L"";
 }
 
+bool extractAll(const std::wstring& archivePath, const std::wstring& destDir, std::wstring& error) {
+    error.clear();
+    bit7z::Bit7zLibrary* lib = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_libMutex);
+        lib = g_lib.get();
+    }
+    if (!lib) { error = L"7z.dll is not loaded"; return false; }
+    if (!createDirectories(destDir)) { error = L"Cannot create folder: " + destDir; return false; }
+    try {
+        bit7z::BitArchiveReader reader(*lib, bit7z::to_tstring(archivePath), bit7z::BitFormat::Auto);
+        reader.extractTo(bit7z::to_tstring(destDir));
+        return true;
+    } catch (const bit7z::BitException& e) {
+        error = utf8ToWide(e.what());
+        return false;
+    }
+}
+
 ArchiveStatus testPassword(const std::wstring& archivePath, const std::wstring& password) {
     bit7z::Bit7zLibrary* lib = nullptr;
     {

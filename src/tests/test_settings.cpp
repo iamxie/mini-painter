@@ -165,6 +165,22 @@ TEST_CASE("Settings：autoNextBook 預設關、能往返") {
     CHECK_FALSE(parseSettings(serializeSettings(s)).autoNextBook);
 }
 
+TEST_CASE("Settings：更新相關 autoCheckUpdate 預設開、skipVersion、updateUrl 空的不寫") {
+    Settings d = parseSettings(L"");
+    CHECK(d.autoCheckUpdate);
+    CHECK(d.skipVersion.empty());
+    CHECK(d.updateUrl.empty());
+    CHECK(serializeSettings(d).find(L"updateUrl=") == std::wstring::npos);
+    Settings s = parseSettings(L"autoCheckUpdate=0\nskipVersion=0.7.0\nupdateUrl=http://127.0.0.1:8000/latest.json\n");
+    CHECK_FALSE(s.autoCheckUpdate);
+    CHECK(s.skipVersion == L"0.7.0");
+    CHECK(s.updateUrl == L"http://127.0.0.1:8000/latest.json");
+    Settings back = parseSettings(serializeSettings(s));
+    CHECK_FALSE(back.autoCheckUpdate);
+    CHECK(back.skipVersion == L"0.7.0");
+    CHECK(back.updateUrl == L"http://127.0.0.1:8000/latest.json");
+}
+
 TEST_CASE("Settings：視窗位置 window=x,y,w,h,max") {
     Settings d = parseSettings(L"");
     CHECK(d.winW == 0);

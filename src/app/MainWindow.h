@@ -3,6 +3,7 @@
 #include <commctrl.h>
 
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,8 @@ struct Button {
 
 class MainWindow : public ColorAdjustHost {
 public:
+    // 剛被自動更新重啟（main 收到 --after-update）：開好視窗後提示「已更新」。create 前呼叫。
+    void setJustUpdated(bool v) { justUpdated_ = v; }
     bool create(HINSTANCE inst, const std::wstring& initialPath, int nCmdShow);
     HWND hwnd() const { return hwnd_; }
     bool preTranslate(MSG& msg);
@@ -105,6 +108,14 @@ private:
     void rebuildProfileMenu();
     void switchProfile(const Profile& p);
     void saveCurrentToProfile();
+
+    // 新版本檢查與自動更新
+    void startAutoUpdateCheck();                   // 啟動時：背景查，有新版就 post WM_MP_UPDATE_FOUND
+    void offerPendingUpdate();                     // 有空檔（沒有對話框、選單、拖曳、文字編輯）才跳新版本對話框，否則稍後再試
+    void checkForUpdatesNow();                     // 「關於」的檢查更新按鈕
+    void offerUpdate(const ReleaseInfo& r);        // 新版本對話框 → 略過 / 稍後 / 安裝
+    void installUpdate(const ReleaseInfo& r);      // 存檔確認 → 下載核對解開 → 換檔 → 關閉並重啟
+    void manualDownloadFallback(const std::wstring& reason, const std::wstring& pageUrl); // 不能自動更新時打開下載頁
 
     // 語言：讀內建與 lang/ 的語系，依設定或系統語系選一個啟用；選單切換後問是否重啟
     void initLanguage();
@@ -288,6 +299,13 @@ private:
     HBRUSH editBrush_ = nullptr;
     std::wstring editOriginal_;
     std::wstring editText_;
+
+    // 自動更新
+    std::unique_ptr<ReleaseInfo> pendingUpdate_; // 背景查到、還沒問使用者的新版
+    bool menuLoop_ = false;     // 選單開著（不在這時跳新版本對話框）
+    bool updating_ = false;     // 換檔完成、正在關閉：WM_CLOSE 不再問存檔（已經問過）
+    bool justUpdated_ = false;
+    std::wstring relaunchArgs_; // 非空：WM_DESTROY 時用這些參數重啟 exe
 
     // 調整顏色
     bool adjusting_ = false;

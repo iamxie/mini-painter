@@ -36,6 +36,9 @@ struct Settings {
     bool rightToLeft = false;   // 兩頁並排：右到左（日漫）
     bool firstPageAlone = true; // 兩頁並排：第一張單獨一屏
     bool warnMetadataLoss = true; // 另存成裝不下 metadata 的格式時先問
+    bool autoCheckUpdate = true;  // 啟動時在背景查 GitHub 有沒有新版
+    std::wstring skipVersion;     // 「略過這個版本」選過的版本號；自動檢查遇到它不問（手動檢查照問）
+    std::wstring updateUrl;       // 檢查網址；空字串 = GitHub。只給測試用，設定面板沒有，空的時候不寫進 ini
     std::wstring unzipDir;        // 壓縮檔解到哪裡；空字串 = exe 旁的 temp（建不了就退回 %TEMP%\mpainter\unzip）
     // 置頂檔名：清單裡的檔名（不分大小寫，只比檔名不比路徑）排在最前面，依清單順序。ini 用 | 隔開（檔名不能含 |）。
     std::vector<std::wstring> pinnedNames = {L"cover.jpg", L"cover.png", L"cover.webp"};

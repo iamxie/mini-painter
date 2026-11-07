@@ -185,6 +185,9 @@ Settings parseSettings(const std::wstring& text) {
         else if (key == L"language") s.language = val;
         else if (key == L"profile") s.profileName = val;
         else if (key == L"unzipDir") s.unzipDir = val;
+        else if (key == L"autoCheckUpdate") s.autoCheckUpdate = parseBool(val, s.autoCheckUpdate);
+        else if (key == L"skipVersion") s.skipVersion = val;
+        else if (key == L"updateUrl") s.updateUrl = val;
         else if (key == L"pinnedNames") {
             s.pinnedNames.clear();
             size_t p = 0;
@@ -231,6 +234,9 @@ std::wstring serializeSettings(const Settings& s) {
     out += L"profile=" + s.profileName + L"\n";
     out += serializePrefs(profileFromCurrent(s));
     out += L"unzipDir=" + s.unzipDir + L"\n";
+    out += L"autoCheckUpdate=" + std::wstring(s.autoCheckUpdate ? L"1" : L"0") + L"\n";
+    out += L"skipVersion=" + s.skipVersion + L"\n";
+    if (!s.updateUrl.empty()) out += L"updateUrl=" + s.updateUrl + L"\n";
     std::wstring pinned;
     for (const auto& n : s.pinnedNames) pinned += (pinned.empty() ? L"" : L"|") + n;
     out += L"pinnedNames=" + pinned + L"\n";

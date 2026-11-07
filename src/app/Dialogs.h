@@ -10,6 +10,7 @@
 #include "core/ColorAdjust.h"
 #include "core/Image.h"
 #include "core/Settings.h"
+#include "core/Update.h"
 
 namespace mp {
 
@@ -46,8 +47,18 @@ HWND colorAdjustPanelHwnd();
 void colorAdjustPanelSetParams(const ColorAdjustParams& p);
 void closeColorAdjustPanel();
 
-// 「關於」對話框（modal）：圖示、版本、授權。
-void showAboutDialog(HWND owner);
+// 「關於」對話框（modal）：圖示、版本、授權、「檢查更新」按鈕。按了檢查更新回 true（對話框已關，呼叫端去查）。
+bool showAboutDialog(HWND owner);
+
+// 新版本對話框（modal）：「新版 X（目前 Y）」、更新說明、三顆按鈕。關閉視窗或 Esc 等於「稍後提醒」。
+enum class UpdateChoice { Skip, Later, Install };
+UpdateChoice showUpdateDialog(HWND owner, const ReleaseInfo& release, const std::wstring& currentVersion);
+// 手動檢查：背景查 url，0.3 秒內查完就不顯示進度。失敗回 false，error 是英文細節；使用者取消時 cancelled 為 true。
+bool checkUpdateWithProgress(HWND owner, const std::wstring& url, ReleaseInfo& out, std::wstring& error, bool& cancelled);
+// 下載發佈包到 workDir、核對 .sha256、解到 workDir\pkg（stagingDir 回傳這個路徑）。有進度、可取消。
+// 失敗回 false，error 是給人看的訊息（已翻譯 + 英文細節）；使用者取消時 cancelled 為 true、error 空。
+bool downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, const std::wstring& workDir, std::wstring& stagingDir,
+                                std::wstring& error, bool& cancelled);
 
 // 「設定」（modal PropertySheet：一般 / 模式 / 壓縮檔 / Windows 整合，取消 / 確定 / 套用）。
 struct SettingsDialogInfo {

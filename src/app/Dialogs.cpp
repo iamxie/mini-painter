@@ -579,9 +579,11 @@ INT_PTR CALLBACK generalPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         SetDlgItemTextW(dlg, IDC_INIPATH, fmt1(L"Settings file: %s", st->info->iniPath).c_str());
         SetDlgItemTextW(dlg, IDC_INIWARN, st->info->iniWritable ? L"" : tr(L"⚠ The settings file cannot be written. Changes here last only for this run; the next start returns to defaults."));
         updateTipState(dlg, *st);
+        CheckDlgButton(dlg, IDC_AUTOUPDATE, st->s.autoCheckUpdate ? BST_CHECKED : BST_UNCHECKED);
         return TRUE;
     }
     case WM_COMMAND:
+        if (LOWORD(wp) == IDC_AUTOUPDATE && HIWORD(wp) == BN_CLICKED) { markChanged(dlg); return TRUE; }
         if (LOWORD(wp) == IDC_RESETTIP) {
             st->s.tipShown = 0;
             updateTipState(dlg, *st);
@@ -594,6 +596,7 @@ INT_PTR CALLBACK generalPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (reinterpret_cast<NMHDR*>(lp)->code == PSN_APPLY) {
             int sel = static_cast<int>(SendDlgItemMessageW(dlg, IDC_LANGUAGE, CB_GETCURSEL, 0, 0));
             st->s.language = sel > 0 && static_cast<size_t>(sel - 1) < st->info->languages.size() ? st->info->languages[static_cast<size_t>(sel - 1)].first : L"";
+            st->s.autoCheckUpdate = IsDlgButtonChecked(dlg, IDC_AUTOUPDATE) == BST_CHECKED;
             pageApplied(*st);
             SetWindowLongPtrW(dlg, DWLP_MSGRESULT, PSNRET_NOERROR);
             return TRUE;
@@ -920,10 +923,13 @@ INT_PTR CALLBACK aboutProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
         swprintf(ver, 64, tr(L"Version %s"), MP_VERSION_WSTRING);
         SetDlgItemTextW(dlg, IDC_ABOUT_VERSION, ver);
         SetDlgItemTextW(dlg, IDC_ABOUT_COPYRIGHT, MP_COPYRIGHT_W);
-        return TRUE;
+        // 焦點放「好」：Enter 是關掉，不是檢查更新（檢查更新是 tab 順序的第一個）。
+        SetFocus(GetDlgItem(dlg, IDOK));
+        return FALSE;
     }
     case WM_COMMAND:
         if (LOWORD(wp) == IDOK || LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDOK); return TRUE; }
+        if (LOWORD(wp) == IDC_ABOUT_CHECKUPDATE) { EndDialog(dlg, IDC_ABOUT_CHECKUPDATE); return TRUE; }
         return FALSE;
     case WM_DESTROY: {
         HICON icon = reinterpret_cast<HICON>(SendDlgItemMessageW(dlg, IDC_ABOUT_ICON, STM_GETICON, 0, 0));
@@ -937,9 +943,9 @@ INT_PTR CALLBACK aboutProc(HWND dlg, UINT msg, WPARAM wp, LPARAM) {
 
 } // namespace
 
-void showAboutDialog(HWND owner) {
+bool showAboutDialog(HWND owner) {
     HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
-    DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_ABOUT), owner, aboutProc, 0);
+    return DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_ABOUT), owner, aboutProc, 0) == IDC_ABOUT_CHECKUPDATE;
 }
 
 void translateDialog(HWND dlg) {
@@ -1243,6 +1249,139 @@ int tryPasswordsWithProgress(HWND owner, const std::wstring& archivePath, const 
     };
     if (!runWithProgress(owner, st)) st.work(st); // 沒對話框就同步試，不能取消
     return hit;
+}
+
+// ---------------------------------------------------------------------------
+// 新版本檢查與更新
+
+namespace {
+
+struct UpdateDlgState {
+    const ReleaseInfo* release = nullptr;
+    std::wstring current;
+    HFONT bold = nullptr;
+    HICON icon = nullptr;
+};
+
+INT_PTR CALLBACK updateProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    auto* st = reinterpret_cast<UpdateDlgState*>(GetWindowLongPtrW(dlg, DWLP_USER));
+    switch (msg) {
+    case WM_INITDIALOG: {
+        st = reinterpret_cast<UpdateDlgState*>(lp);
+        SetWindowLongPtrW(dlg, DWLP_USER, lp);
+        translateDialog(dlg);
+        HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(dlg, GWLP_HINSTANCE));
+        int size = MulDiv(48, static_cast<int>(GetDpiForWindow(dlg)), 96);
+        st->icon = static_cast<HICON>(LoadImageW(inst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON, size, size, LR_DEFAULTCOLOR));
+        if (st->icon) SendDlgItemMessageW(dlg, IDC_UPD_ICON, STM_SETICON, reinterpret_cast<WPARAM>(st->icon), 0);
+        HFONT base = reinterpret_cast<HFONT>(SendMessageW(dlg, WM_GETFONT, 0, 0));
+        LOGFONTW lf{};
+        GetObjectW(base, sizeof(lf), &lf);
+        lf.lfWeight = FW_BOLD;
+        st->bold = CreateFontIndirectW(&lf);
+        SendDlgItemMessageW(dlg, IDC_UPD_TITLE, WM_SETFONT, reinterpret_cast<WPARAM>(st->bold), TRUE);
+        const wchar_t* f = tr(L"mpainter %s is available (you have %s). Would you like to install it now?");
+        std::wstring text(wcslen(f) + st->release->version.size() + st->current.size() + 8, L'\0');
+        int n = swprintf(text.data(), text.size(), f, st->release->version.c_str(), st->current.c_str());
+        text.resize(n > 0 ? static_cast<size_t>(n) : 0);
+        SetDlgItemTextW(dlg, IDC_UPD_TEXT, text.c_str());
+        // EDIT 控制項要 \r\n 才換行；GitHub 的說明可能是 \n 或 \r\n。
+        std::wstring notes;
+        for (wchar_t c : st->release->notes) {
+            if (c == L'\r') continue;
+            if (c == L'\n') notes += L'\r';
+            notes += c;
+        }
+        SetDlgItemTextW(dlg, IDC_UPD_NOTES, notes.empty() ? tr(L"(No release notes.)") : notes.c_str());
+        SetForegroundWindow(dlg);
+        SetFocus(GetDlgItem(dlg, IDC_UPD_INSTALL));
+        return FALSE; // 焦點已自己設
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDC_UPD_SKIP: EndDialog(dlg, static_cast<INT_PTR>(UpdateChoice::Skip)); return TRUE;
+        case IDC_UPD_INSTALL: case IDOK: EndDialog(dlg, static_cast<INT_PTR>(UpdateChoice::Install)); return TRUE;
+        case IDC_UPD_LATER: case IDCANCEL: EndDialog(dlg, static_cast<INT_PTR>(UpdateChoice::Later)); return TRUE;
+        default: break;
+        }
+        break;
+    case WM_DESTROY:
+        if (st && st->bold) DeleteObject(st->bold);
+        if (st && st->icon) DestroyIcon(st->icon);
+        return TRUE;
+    }
+    return FALSE;
+}
+
+} // namespace
+
+UpdateChoice showUpdateDialog(HWND owner, const ReleaseInfo& release, const std::wstring& currentVersion) {
+    UpdateDlgState st;
+    st.release = &release;
+    st.current = currentVersion;
+    HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
+    INT_PTR r = DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_UPDATE), owner, updateProc, reinterpret_cast<LPARAM>(&st));
+    if (r == static_cast<INT_PTR>(UpdateChoice::Skip)) return UpdateChoice::Skip;
+    if (r == static_cast<INT_PTR>(UpdateChoice::Install)) return UpdateChoice::Install;
+    return UpdateChoice::Later;
+}
+
+bool checkUpdateWithProgress(HWND owner, const std::wstring& url, ReleaseInfo& out, std::wstring& error, bool& cancelled) {
+    ProgressState st;
+    st.caption = tr(L"Software Update");
+    st.text = tr(L"Checking for updates…");
+    bool ok = false;
+    std::wstring badResponse = tr(L"Unexpected response from the update server.");
+    st.work = [&](ProgressState&) {
+        std::string body;
+        if (!httpGetText(url, body, error)) return;
+        if (!parseLatestRelease(body, out)) { error = badResponse; return; }
+        ok = true;
+    };
+    if (!runWithProgress(owner, st)) st.work(st);
+    cancelled = st.cancel.load();
+    return ok && !cancelled;
+}
+
+bool downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, const std::wstring& workDir, std::wstring& stagingDir,
+                                std::wstring& error, bool& cancelled) {
+    ProgressState st;
+    st.caption = tr(L"Software Update");
+    st.text = fmt1(L"Downloading mpainter %s…", release.version);
+    // 背景執行緒不碰 tr 的格式化：訊息先在這裡備好。
+    const std::wstring verifying = tr(L"Verifying the download…"), unpacking = tr(L"Unpacking the update…");
+    const std::wstring damaged = tr(L"The downloaded file is damaged (checksum mismatch). Nothing was changed.");
+    const std::wstring noExe = tr(L"The update package does not contain mpainter.exe. Nothing was changed.");
+    std::wstring zip = workDir + L"\\" + packageZipName(release.version);
+    std::wstring pkg = workDir + L"\\pkg";
+    bool ok = false;
+    std::wstring dlFail, unpackFail; // 英文細節，回主執行緒再套翻譯
+    st.work = [&](ProgressState& s) {
+        if (!httpDownload(release.zipUrl, zip, [&s](uint64_t done, uint64_t total) {
+                if (s.cancel.load()) return false;
+                s.setPos(done, total);
+                return true;
+            }, dlFail))
+            return;
+        if (s.cancel.load()) return;
+        s.setText(verifying);
+        std::string shaText;
+        if (!httpGetText(release.shaUrl, shaText, dlFail)) return;
+        std::string want = parseSha256Text(shaText), got = sha256OfFile(zip);
+        if (want.empty() || got != want) { error = damaged; return; }
+        if (s.cancel.load()) return;
+        s.setText(unpacking);
+        if (!extractAll(zip, pkg, unpackFail)) return;
+        if (GetFileAttributesW((pkg + L"\\mpainter.exe").c_str()) == INVALID_FILE_ATTRIBUTES) { error = noExe; return; }
+        ok = true;
+    };
+    if (!runWithProgress(owner, st)) st.work(st);
+    cancelled = !ok && st.cancel.load();
+    if (cancelled) { error.clear(); return false; }
+    if (!dlFail.empty()) error = fmt1(L"The download failed: %s", dlFail);
+    else if (!unpackFail.empty()) error = fmt1(L"Could not unpack the update: %s", unpackFail);
+    if (ok) stagingDir = pkg;
+    return ok;
 }
 
 } // namespace mp

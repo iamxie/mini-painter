@@ -61,6 +61,10 @@ struct ArchiveResult {
 // destDir 不存在會建立。失敗時 destDir 裡可能留下部分檔案，呼叫端自己清。
 ArchiveResult extractImages(const std::wstring& archivePath, const std::wstring& destDir, const ExtractOptions& opt);
 
+// 整個壓縮檔照原本的資料夾結構解到 destDir（不挑項目、不改名）。給自動更新解發佈包用。
+// 失敗回 false，error 是 7-Zip / bit7z 的訊息（英文）。
+bool extractAll(const std::wstring& archivePath, const std::wstring& destDir, std::wstring& error);
+
 // 只驗密碼，不解到磁碟：開檔後把一個加密項目解到記憶體（solid 用第一個，否則用最小的）。
 // 回 Ok（密碼對，或這個檔根本沒加密）、WrongPassword、NeedPassword（沒給密碼但有加密）、NotArchive、NoLibrary、Failed。
 ArchiveStatus testPassword(const std::wstring& archivePath, const std::wstring& password);

@@ -12,6 +12,7 @@
 
 #include "app/Popups.h"
 #include "app/resource.h"
+#include "app/version.h"
 #include "core/ImageIO.h"
 #include "core/ImageOps.h"
 #include "core/Lang.h"
@@ -24,7 +25,10 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"MiniPainterMain";
 constexpr wchar_t kAppName[] = L"mpainter";
-constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer = 4, kToastTimer = 5, kArmTimer = 6;
+constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer = 4, kToastTimer = 5, kArmTimer = 6,
+                   kUpdateTimer = 7;
+constexpr UINT WM_MP_UPDATE_FOUND = WM_APP + 4; // lParam = new 出來的 ReleaseInfo*，收到的人 delete
+constexpr wchar_t kReleasesPage[] = L"https://github.com/iamxie/mini-painter/releases";
 constexpr UINT kToastMs = 2000, kArmMs = 3000;
 constexpr UINT kHqDelayMs = 200;
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
@@ -84,10 +88,13 @@ bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCm
     {
         // 清掉當掉的執行個體留下的壓縮檔暫存（lock 沒人持有的子資料夾）：設定的位置、exe 旁的 temp、退路的 %TEMP%。
         std::wstring root = resolveUnzipRoot(settings_.unzipDir, exeDir()), def = defaultUnzipRoot(exeDir()), fb = fallbackUnzipRoot();
-        std::thread([root, def, fb] {
+        std::wstring app = exeDir();
+        std::thread([root, def, fb, app] {
             sweepStaleTempDirs(root);
             if (_wcsicmp(root.c_str(), def.c_str()) != 0) sweepStaleTempDirs(def);
             sweepStaleTempDirs(fb);
+            // 上次自動更新換下來的 .old：舊程式剛結束時可能還刪不掉，多試幾次。
+            for (int i = 0; i < 10 && removeOldFiles(app) > 0; ++i) Sleep(500);
         }).detach();
     }
 
@@ -125,6 +132,8 @@ bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCm
     if (!initialPath.empty()) openPath(initialPath);
     updateTitle();
     showMainWindow(nCmdShow);
+    if (justUpdated_) showToast(fmt1(L"Updated to mpainter %s.", MP_VERSION_WSTRING), false);
+    if (settings_.autoCheckUpdate) startAutoUpdateCheck();
     return true;
 }
 
@@ -243,6 +252,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kTipHideTimer) { hideTip(); return 0; }
         if (wp == kToastTimer) { hideToast(); return 0; }
         if (wp == kArmTimer) { disarmJump(); return 0; }
+        if (wp == kUpdateTimer) { KillTimer(hwnd_, kUpdateTimer); offerPendingUpdate(); return 0; }
         if (wp == kHqTimer) {
             KillTimer(hwnd_, kHqTimer);
             hqBusy_ = false;
@@ -258,6 +268,15 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MP_POPUP_CLOSED:
         SetFocus(edit_ ? edit_ : hwnd_);
         return 0;
+    case WM_MP_UPDATE_FOUND: {
+        std::unique_ptr<ReleaseInfo> r(reinterpret_cast<ReleaseInfo*>(lp));
+        if (_wcsicmp(r->version.c_str(), settings_.skipVersion.c_str()) == 0) return 0; // 使用者選過略過這一版
+        pendingUpdate_ = std::move(r);
+        offerPendingUpdate();
+        return 0;
+    }
+    case WM_ENTERMENULOOP: menuLoop_ = true; break;
+    case WM_EXITMENULOOP: menuLoop_ = false; break;
     case WM_APP + 2: // 第一次開圖後詢問預設程式
         askPending_ = false;
         if (!settings_.askedDefault) askDefaultProgram(false);
@@ -311,7 +330,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_INITMENUPOPUP: updateMenu(); return 0;
     case WM_CLOSE:
-        if (!confirmDiscard()) return 0;
+        if (!updating_ && !confirmDiscard()) return 0; // 更新前已經問過存檔
         closePopup();
         closeColorAdjustPanel();
         rememberPlacement();
@@ -321,6 +340,19 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DESTROY:
         closeArchive();
         tempDir_.release();
+        if (!relaunchArgs_.empty()) {
+            // 自動更新：檔案已換好，用新的 exe 重開（它會等這個行程結束才開始）。
+            std::wstring cmd = L"\"" + exePath_ + L"\" " + relaunchArgs_;
+            STARTUPINFOW si{sizeof(si)};
+            PROCESS_INFORMATION pi{};
+            if (CreateProcessW(exePath_.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+                AllowSetForegroundWindow(pi.dwProcessId);
+                CloseHandle(pi.hThread);
+                CloseHandle(pi.hProcess);
+            } else {
+                MessageBoxW(nullptr, tr(L"mpainter has been updated. Please start it again."), kAppName, MB_ICONINFORMATION);
+            }
+        }
         if (editFont_) DeleteObject(editFont_);
         if (editBrush_) DeleteObject(editBrush_);
         PostQuitMessage(0);
@@ -651,7 +683,7 @@ void MainWindow::onCommand(int id) {
     case IDM_MARKUP: onButton(BTN_MARKUP); break;
     case IDM_INFO: onButton(BTN_INFO); break;
     case IDM_LANG_SYSTEM: selectLanguage(L""); break;
-    case IDM_ABOUT: endTextEdit(true); showAboutDialog(hwnd_); break;
+    case IDM_ABOUT: endTextEdit(true); if (showAboutDialog(hwnd_)) checkForUpdatesNow(); break;
     default:
         if (id >= IDM_LANG_FIRST && id <= IDM_LANG_LAST && static_cast<size_t>(id - IDM_LANG_FIRST) < langs_.size())
             selectLanguage(langs_[id - IDM_LANG_FIRST].code);
@@ -2235,6 +2267,7 @@ void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendin
     settings_.unzipDir = s.unzipDir;
     settings_.pinnedNames = s.pinnedNames;
     settings_.passwords = s.passwords;
+    settings_.autoCheckUpdate = s.autoCheckUpdate;
     // 模式：換了模式、或正在用的那個內容被改了，就重新套用（目前的值 = 模式本體）
     const Profile* np = findProfile(s, s.profileName);
     const Profile* op = findProfile(settings_, settings_.profileName);
@@ -2628,6 +2661,122 @@ void MainWindow::cancelAdjust() {
 void MainWindow::beginPickWhite() {
     pickingWhite_ = true;
     SetFocus(hwnd_);
+}
+
+// ---------------------------------------------------------------------------
+// 新版本檢查與自動更新
+
+void MainWindow::startAutoUpdateCheck() {
+    // 背景執行緒只拿值，不碰 this：視窗先關了也不會出事（PostMessage 失敗就自己 delete）。
+    std::wstring url = settings_.updateUrl.empty() ? kDefaultUpdateUrl : settings_.updateUrl;
+    HWND hwnd = hwnd_;
+    std::thread([url, hwnd] {
+        std::string body;
+        std::wstring err;
+        ReleaseInfo r;
+        if (!httpGetText(url, body, err) || !parseLatestRelease(body, r)) return; // 自動檢查失敗不吭聲
+        if (!isNewerVersion(r.version, MP_VERSION_WSTRING)) return;
+        auto* p = new ReleaseInfo(std::move(r));
+        if (!PostMessageW(hwnd, WM_MP_UPDATE_FOUND, 0, reinterpret_cast<LPARAM>(p))) delete p;
+    }).detach();
+}
+
+void MainWindow::offerPendingUpdate() {
+    if (!pendingUpdate_) return;
+    // 使用者正在做事（對話框、選單、彈出選單、調色面板、文字編輯、拖曳）就晚點再問。
+    if (!IsWindowEnabled(hwnd_) || menuLoop_ || isPopupOpen() || isColorAdjustPanelOpen() || edit_ ||
+        drag_ != Drag::None || GetCapture()) {
+        SetTimer(hwnd_, kUpdateTimer, 3000, nullptr);
+        return;
+    }
+    ReleaseInfo r = *pendingUpdate_;
+    pendingUpdate_.reset();
+    offerUpdate(r);
+}
+
+void MainWindow::checkForUpdatesNow() {
+    std::wstring url = settings_.updateUrl.empty() ? kDefaultUpdateUrl : settings_.updateUrl;
+    ReleaseInfo r;
+    std::wstring err;
+    bool cancelled = false;
+    if (!checkUpdateWithProgress(hwnd_, url, r, err, cancelled)) {
+        if (!cancelled) MessageBoxW(hwnd_, fmt1(L"Could not check for updates: %s", err).c_str(), kAppName, MB_ICONWARNING);
+        return;
+    }
+    if (!isNewerVersion(r.version, MP_VERSION_WSTRING)) {
+        MessageBoxW(hwnd_, fmt1(L"mpainter %s is the latest version.", MP_VERSION_WSTRING).c_str(), kAppName, MB_ICONINFORMATION);
+        return;
+    }
+    offerUpdate(r);
+}
+
+void MainWindow::offerUpdate(const ReleaseInfo& r) {
+    endTextEdit(true);
+    switch (showUpdateDialog(hwnd_, r, MP_VERSION_WSTRING)) {
+    case UpdateChoice::Skip:
+        settings_.skipVersion = r.version;
+        saveSettingsQuiet();
+        break;
+    case UpdateChoice::Install: installUpdate(r); break;
+    case UpdateChoice::Later: break;
+    }
+}
+
+void MainWindow::manualDownloadFallback(const std::wstring& reason, const std::wstring& pageUrl) {
+    std::wstring msg = reason + L"\n\n" + tr(L"Open the download page to update by hand?");
+    if (MessageBoxW(hwnd_, msg.c_str(), kAppName, MB_YESNO | MB_ICONINFORMATION) == IDYES)
+        ShellExecuteW(hwnd_, L"open", pageUrl.empty() ? kReleasesPage : pageUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void MainWindow::installUpdate(const ReleaseInfo& r) {
+    std::wstring app = exeDir();
+    // 不能自動更新的情況：先講清楚原因，再給下載頁。
+    if (r.zipUrl.empty() || r.shaUrl.empty()) {
+        manualDownloadFallback(tr(L"This release cannot be installed automatically."), r.pageUrl);
+        return;
+    }
+    if (!loadArchiveLibrary(app + L"7z.dll")) {
+        manualDownloadFallback(tr(L"7z.dll is missing next to mpainter.exe, so the update cannot be unpacked."), r.pageUrl);
+        return;
+    }
+    DWORD langAttr = GetFileAttributesW((app + L"lang").c_str());
+    bool langOk = langAttr == INVALID_FILE_ATTRIBUTES || !(langAttr & FILE_ATTRIBUTE_DIRECTORY) || isDirWritable(app + L"lang");
+    if (!isDirWritable(app) || !langOk) {
+        manualDownloadFallback(fmt1(L"mpainter cannot write to its folder:\n%s", app), r.pageUrl);
+        return;
+    }
+    if (!confirmDiscard()) return;
+
+    wchar_t tmp[MAX_PATH];
+    GetTempPathW(MAX_PATH, tmp);
+    std::wstring work = std::wstring(tmp) + L"mpainter\\update-" + std::to_wstring(GetCurrentProcessId());
+    removeDirectoryRecursive(work);
+    std::wstring staging, err;
+    bool cancelled = false;
+    if (!createDirectories(work)) {
+        MessageBoxW(hwnd_, fmt1(L"Update failed: %s", L"cannot create " + work).c_str(), kAppName, MB_ICONWARNING);
+        return;
+    }
+    if (!downloadUpdateWithProgress(hwnd_, r, work, staging, err, cancelled)) {
+        removeDirectoryRecursive(work);
+        if (!cancelled) MessageBoxW(hwnd_, fmt1(L"Update failed: %s", err).c_str(), kAppName, MB_ICONWARNING);
+        return;
+    }
+    std::wstring exeName = exePath_.substr(exePath_.find_last_of(L"\\/") + 1);
+    auto steps = planInstall(staging, app, exeName);
+    bool installed = applyInstall(steps, err);
+    removeDirectoryRecursive(work);
+    if (!installed) {
+        MessageBoxW(hwnd_, fmt1(L"Update failed: %s", err + L"\n\n" + tr(L"Nothing was changed.")).c_str(), kAppName,
+                    MB_ICONWARNING);
+        return;
+    }
+    // 重開時開回目前這本：壓縮檔用壓縮檔路徑（解出來的暫存檔關閉時就刪了）。
+    std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
+    relaunchArgs_ = L"--after-update " + std::to_wstring(GetCurrentProcessId());
+    if (!reopen.empty()) relaunchArgs_ += L" \"" + reopen + L"\"";
+    updating_ = true;
+    PostMessageW(hwnd_, WM_CLOSE, 0, 0);
 }
 
 } // namespace mp

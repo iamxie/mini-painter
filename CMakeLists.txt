@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 0.6.0 LANGUAGES CXX)
+project(mpainter VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -11,6 +11,8 @@ find_package(WebP CONFIG REQUIRED)
 find_package(Catch2 CONFIG REQUIRED)
 # bit7z 只是 7z.dll 的 C++ 包裝（靜態連結，MPL 2.0）；7z.dll 本體（LGPL）執行時從 exe 旁載入，不連進 exe。
 find_package(bit7z CONFIG REQUIRED)
+# 自動更新解析 GitHub API 回應（header-only，MIT）。
+find_package(nlohmann_json CONFIG REQUIRED)
 # 官方 7z.dll 的路徑。設了就在建置後複製到 exe 與測試程式旁；沒設時程式不支援壓縮檔、測試會失敗。
 set(MP_7Z_DLL "" CACHE FILEPATH "官方 7z.dll（7-zip.org）的路徑，建置後複製到輸出目錄")
 function(mp_copy_7z target)
@@ -37,9 +39,10 @@ add_library(mp_core STATIC
     src/core/TempDir.cpp
     src/core/Archive.cpp
     src/core/Shelf.cpp
+    src/core/Update.cpp
 )
 target_include_directories(mp_core PUBLIC src)
-target_link_libraries(mp_core PUBLIC WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z windowscodecs ole32 shlwapi propsys version advapi32)
+target_link_libraries(mp_core PUBLIC WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z nlohmann_json::nlohmann_json windowscodecs ole32 shlwapi propsys version advapi32 winhttp bcrypt)
 
 option(MP_BUILD_APP "建置主程式（關掉時只建 core 和測試）" ON)
 if(MP_BUILD_APP)
@@ -77,8 +80,9 @@ add_executable(mp_tests
     src/tests/test_temp_dir.cpp
     src/tests/test_archive.cpp
     src/tests/test_shelf.cpp
+    src/tests/test_update.cpp
 )
-target_link_libraries(mp_tests PRIVATE mp_core Catch2::Catch2WithMain)
+target_link_libraries(mp_tests PRIVATE mp_core Catch2::Catch2WithMain ws2_32)
 # 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。
 target_compile_definitions(mp_tests PRIVATE "MP_TEST_FIXTURES=L\"${CMAKE_SOURCE_DIR}/src/tests/fixtures\"")
 mp_copy_7z(mp_tests)

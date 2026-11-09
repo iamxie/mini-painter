@@ -27,6 +27,16 @@ Single portable `mpainter.exe`, no runtime to install.
 
 Usage details are in [readme.txt](readme.txt) (中文) and [readme_en.txt](readme_en.txt) (English); both ship next to the exe.
 
+## Videos / 教學影片
+
+Traditional Chinese UI with Chinese and English subtitles. Click a picture to play.
+
+繁中介面，中英雙語字幕。點圖播放。
+
+| Reading comics · 看漫畫 (0:41) | Marking up images · 標註圖片 (0:58) | Modes · 模式 (1:04) |
+|:---:|:---:|:---:|
+| [![Reading comics](media/video-comic.png)](https://livid.com/watch/S_23UjAK9UuU) | [![Marking up images](media/video-markup.png)](https://livid.com/watch/fNybBc7yjcfj) | [![Modes](media/video-modes.png)](https://livid.com/watch/1PbhclUnaPT9) |
+
 ## Download / 下載
 
 Grab the latest `mini-painter-<version>-win64.zip` from the [Releases](../../releases) page. It contains `mpainter.exe`, `7z.dll` (7-Zip's component, only needed for archives), the readmes, licenses and `lang/`.

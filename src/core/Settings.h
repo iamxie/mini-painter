@@ -2,6 +2,8 @@
 #include <string>
 #include <vector>
 
+#include "core/Document.h"
+
 namespace mp {
 
 // 模式（設定集）：一組有名字的檢視設定，「顯示 › 模式」選單一點整組套上。數量不限、至少一個。
@@ -39,6 +41,8 @@ struct Settings {
     bool autoCheckUpdate = true;  // 啟動時在背景查 GitHub 有沒有新版
     std::wstring skipVersion;     // 「略過這個版本」選過的版本號；自動檢查遇到它不問（手動檢查照問）
     std::wstring updateUrl;       // 檢查網址；空字串 = GitHub。只給測試用，設定面板沒有，空的時候不寫進 ini
+    int undoLimit = kUndoLimitDefault; // undo 最多留幾步（1～999，讀進來時夾進範圍）；整圖操作每一步佔一張圖的記憶體
+    int undoMemoryMB = kUndoMemoryDefaultMB; // undo 歷史裡的底圖最多佔多少 MB；超過丟最舊的步驟（最近一步一定留）
     std::wstring unzipDir;        // 壓縮檔解到哪裡；空字串 = exe 旁的 temp（建不了就退回 %TEMP%\mpainter\unzip）
     // 置頂檔名：清單裡的檔名（不分大小寫，只比檔名不比路徑）排在最前面，依清單順序。ini 用 | 隔開（檔名不能含 |）。
     std::vector<std::wstring> pinnedNames = {L"cover.jpg", L"cover.png", L"cover.webp"};

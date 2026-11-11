@@ -181,6 +181,30 @@ TEST_CASE("Settings：更新相關 autoCheckUpdate 預設開、skipVersion、upd
     CHECK(back.updateUrl == L"http://127.0.0.1:8000/latest.json");
 }
 
+TEST_CASE("Settings：undoLimit 預設 99、能往返、超出範圍夾回、壞值維持預設") {
+    CHECK(parseSettings(L"").undoLimit == 99);
+    Settings s = parseSettings(L"undoLimit=20\n");
+    CHECK(s.undoLimit == 20);
+    CHECK(serializeSettings(s).find(L"undoLimit=20\n") != std::wstring::npos);
+    CHECK(parseSettings(serializeSettings(s)).undoLimit == 20);
+    CHECK(parseSettings(L"undoLimit=0\n").undoLimit == 1);
+    CHECK(parseSettings(L"undoLimit=-3\n").undoLimit == 1);
+    CHECK(parseSettings(L"undoLimit=100000\n").undoLimit == 999);
+    CHECK(parseSettings(L"undoLimit=abc\n").undoLimit == 99);
+    CHECK(parseSettings(L"undoLimit=\n").undoLimit == 99);
+}
+
+TEST_CASE("Settings：undoMemoryMB 預設 512、能往返、超出範圍夾回、壞值維持預設") {
+    CHECK(parseSettings(L"").undoMemoryMB == 512);
+    Settings s = parseSettings(L"undoMemoryMB=2048\n");
+    CHECK(s.undoMemoryMB == 2048);
+    CHECK(serializeSettings(s).find(L"undoMemoryMB=2048\n") != std::wstring::npos);
+    CHECK(parseSettings(serializeSettings(s)).undoMemoryMB == 2048);
+    CHECK(parseSettings(L"undoMemoryMB=1\n").undoMemoryMB == 16);
+    CHECK(parseSettings(L"undoMemoryMB=9999999\n").undoMemoryMB == 65536);
+    CHECK(parseSettings(L"undoMemoryMB=abc\n").undoMemoryMB == 512);
+}
+
 TEST_CASE("Settings：視窗位置 window=x,y,w,h,max") {
     Settings d = parseSettings(L"");
     CHECK(d.winW == 0);

@@ -371,6 +371,11 @@ Comic mode=マンガモード
 Passwords are kept unencrypted in mpainter.ini. A password that opens an archive is added here automatically. Leading and trailing spaces count.=パスワードは mpainter.ini に平文で保存されます。アーカイブを開けたパスワードは自動的に追加されます。前後の空白もパスワードの一部です。
 A language change takes effect after mpainter restarts; it asks when this window closes. Extra languages: the lang folder next to mpainter.exe.=言語は mpainter の再起動後に反映されます。このウィンドウを閉じるときに確認します。追加の言語：mpainter.exe と同じ場所の lang フォルダー。
 
+# --- 元に戻せる回数の上限 ---
+Undo steps to keep:=元に戻せる回数：
+Memory limit (MB):=メモリ上限（MB）：
+Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.=回転・トリミング・サイズ調整・色調整は 1 回ごとに画像全体のコピーを保持します。コピーがメモリ上限を超えると古い手順から破棄されます（直前の 1 回は必ず残ります）。
+
 # --- 新しいバージョンの確認と自動アップデート ---
 Check for updates when mpainter starts=起動時にアップデートを確認する
 When this is off, you can still check in Help > About mpainter.=オフにしても「ヘルプ > mpainter について」から確認できます。

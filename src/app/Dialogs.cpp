@@ -539,6 +539,7 @@ struct SheetState {
     int applied = 0;
     int selProfile = -1;              // 模式頁：清單目前選的那個（s.profiles 的索引）
     bool loadingProfile = false;      // 模式頁：正在把模式填進控制項（忽略這期間的變更通知）
+    bool generalReady = false;        // 一般頁：控制項填好了（之前的 EN_CHANGE 不算使用者改的）
 };
 
 void markChanged(HWND page) { PropSheet_Changed(GetParent(page), page); }
@@ -580,10 +581,16 @@ INT_PTR CALLBACK generalPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         SetDlgItemTextW(dlg, IDC_INIWARN, st->info->iniWritable ? L"" : tr(L"⚠ The settings file cannot be written. Changes here last only for this run; the next start returns to defaults."));
         updateTipState(dlg, *st);
         CheckDlgButton(dlg, IDC_AUTOUPDATE, st->s.autoCheckUpdate ? BST_CHECKED : BST_UNCHECKED);
+        SendDlgItemMessageW(dlg, IDC_UNDOLIMIT, EM_SETLIMITTEXT, 3, 0);
+        SetDlgItemInt(dlg, IDC_UNDOLIMIT, static_cast<UINT>(st->s.undoLimit), FALSE); // 會送 EN_CHANGE，此時頁面還沒顯示，不算變更
+        SendDlgItemMessageW(dlg, IDC_UNDOMEM, EM_SETLIMITTEXT, 5, 0);
+        SetDlgItemInt(dlg, IDC_UNDOMEM, static_cast<UINT>(st->s.undoMemoryMB), FALSE);
+        st->generalReady = true;
         return TRUE;
     }
     case WM_COMMAND:
         if (LOWORD(wp) == IDC_AUTOUPDATE && HIWORD(wp) == BN_CLICKED) { markChanged(dlg); return TRUE; }
+        if ((LOWORD(wp) == IDC_UNDOLIMIT || LOWORD(wp) == IDC_UNDOMEM) && HIWORD(wp) == EN_CHANGE && st && st->generalReady) { markChanged(dlg); return TRUE; }
         if (LOWORD(wp) == IDC_RESETTIP) {
             st->s.tipShown = 0;
             updateTipState(dlg, *st);
@@ -597,6 +604,13 @@ INT_PTR CALLBACK generalPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             int sel = static_cast<int>(SendDlgItemMessageW(dlg, IDC_LANGUAGE, CB_GETCURSEL, 0, 0));
             st->s.language = sel > 0 && static_cast<size_t>(sel - 1) < st->info->languages.size() ? st->info->languages[static_cast<size_t>(sel - 1)].first : L"";
             st->s.autoCheckUpdate = IsDlgButtonChecked(dlg, IDC_AUTOUPDATE) == BST_CHECKED;
+            // 空白或超出範圍：夾回允許的範圍，並把夾過的值寫回欄位
+            st->s.undoLimit = undoLimitFromText(dlgText(dlg, IDC_UNDOLIMIT), st->s.undoLimit);
+            st->s.undoMemoryMB = undoMemoryFromText(dlgText(dlg, IDC_UNDOMEM), st->s.undoMemoryMB);
+            st->generalReady = false;
+            SetDlgItemInt(dlg, IDC_UNDOLIMIT, static_cast<UINT>(st->s.undoLimit), FALSE);
+            SetDlgItemInt(dlg, IDC_UNDOMEM, static_cast<UINT>(st->s.undoMemoryMB), FALSE);
+            st->generalReady = true;
             pageApplied(*st);
             SetWindowLongPtrW(dlg, DWLP_MSGRESULT, PSNRET_NOERROR);
             return TRUE;

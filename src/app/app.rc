@@ -73,7 +73,7 @@ BEGIN
 END
 
 // 設定：PropertySheet 的四頁。CAPTION 是 tab 名稱（程式碼裡再用 tr 翻譯一次）。
-IDD_SET_GENERAL DIALOGEX 0, 0, 300, 166
+IDD_SET_GENERAL DIALOGEX 0, 0, 300, 196
 STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "General"
 FONT 9, "Microsoft JhengHei UI"
@@ -85,8 +85,13 @@ BEGIN
     LTEXT           "", IDC_TIPSTATE, 126, 50, 166, 28
     AUTOCHECKBOX    "Check for updates when mpainter starts", IDC_AUTOUPDATE, 8, 84, 284, 10
     LTEXT           "When this is off, you can still check in Help > About mpainter.", IDC_AUTOUPDATENOTE, 20, 96, 272, 10
-    LTEXT           "", IDC_INIPATH, 8, 116, 284, 18
-    LTEXT           "", IDC_INIWARN, 8, 136, 284, 18
+    LTEXT           "Undo steps to keep:", -1, 8, 118, 96, 10
+    EDITTEXT        IDC_UNDOLIMIT, 106, 116, 30, 12, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Memory limit (MB):", -1, 150, 118, 96, 10
+    EDITTEXT        IDC_UNDOMEM, 248, 116, 40, 12, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.", IDC_UNDONOTE, 8, 131, 284, 18
+    LTEXT           "", IDC_INIPATH, 8, 153, 284, 18
+    LTEXT           "", IDC_INIWARN, 8, 173, 284, 18
 END
 
 IDD_SET_MODES DIALOGEX 0, 0, 300, 196

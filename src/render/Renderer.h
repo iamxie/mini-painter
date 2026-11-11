@@ -37,6 +37,7 @@ struct MosaicEntry {
     const Image* source = nullptr;
     ComPtr<ID2D1Bitmap> bitmap;
     int x0 = 0, y0 = 0; // 小圖對應的圖片區域左上角
+    bool used = false;  // 這一幀畫過（Renderer::endFrame 用）
 };
 
 // 畫標註時需要的東西。
@@ -55,9 +56,11 @@ public:
 
     // 視窗用的 render target。
     bool ensureHwndTarget(HWND hwnd);
+    // 改畫在別的 render target 上（例如記憶體裡的）。沒有桌面的 session 建不出視窗 target，測試用這個。
+    void setTarget(ComPtr<ID2D1RenderTarget> rt);
     void resize(UINT w, UINT h);
     void discardTarget();
-    ID2D1HwndRenderTarget* rt() const { return rt_.Get(); }
+    ID2D1RenderTarget* rt() const { return rt_.Get(); }
     // 畫刷綁定 render target，所以依 target 取。brush() 是視窗 target 的捷徑。
     ID2D1SolidColorBrush* brushFor(ID2D1RenderTarget* rt, D2D1_COLOR_F color);
     ID2D1SolidColorBrush* brushFor(ID2D1RenderTarget* rt, Color color) { return brushFor(rt, toD2D(color)); }
@@ -66,12 +69,17 @@ public:
     // 某個 render target 不再使用時呼叫，釋放它的畫刷。
     void forgetTarget(ID2D1RenderTarget* rt);
 
-    // 底圖在視窗 render target 上的點陣圖。小型快取（幾張），兩頁並排時兩頁都在裡面。
+    // 底圖在視窗 render target 上的點陣圖。快取只留上一幀畫過的（見 endFrame），兩頁並排時兩頁都在裡面。
+    // 回傳的指標到下一次 endFrame 前有效。
     const ImageBitmap* imageBitmap(const ImagePtr& img);
     // 高品質縮放：底圖先用 Lanczos3 重取樣到 tw×th 再上傳，同一個快取。
     // 超過 GPU 上限或太大時回傳 nullptr，呼叫端退回 imageBitmap。
     const ImageBitmap* scaledBitmap(const ImagePtr& img, int tw, int th);
     std::map<uint32_t, MosaicEntry>& mosaicCache() { return mosaic_; }
+    // 每畫完一幀呼叫：這一幀沒用到的底圖點陣圖與馬賽克小圖都丟掉，連同它們握著的來源圖。
+    // 翻走的圖、undo 歷史裡的圖、舊的調色預覽、舊倍率的縮圖因此不會留在記憶體。
+    void endFrame();
+    size_t cachedBitmapCount() const { return bitmaps_.size(); }
 
     // 在目前的 transform 下畫底圖與所有標註（圖片座標）。
     void drawImage(DrawCtx& ctx);
@@ -104,19 +112,17 @@ private:
 
     ComPtr<ID2D1Factory> d2d_;
     ComPtr<IDWriteFactory> dw_;
-    ComPtr<ID2D1HwndRenderTarget> rt_;
+    ComPtr<ID2D1RenderTarget> rt_; // 平常是視窗的 ID2D1HwndRenderTarget
     std::map<ID2D1RenderTarget*, ComPtr<ID2D1SolidColorBrush>> brushes_;
     ComPtr<ID2D1StrokeStyle> dash_, round_;
     struct BitmapEntry {
         ImagePtr src; // 釘住來源，指標才不會被重用
         int tw = 0, th = 0; // 0 = 原尺寸
         ImageBitmap bmp;
+        bool used = false; // 這一幀畫過
     };
-    // 最多 kBitmapCache 張，最近用的在最後。用 list：回傳的指標在該項被淘汰前都有效，
-    // 同一幀裡先取第一頁再取第二頁，第一頁的指標不能因為搬動而失效。
+    // 用 list：同一幀裡先取第一頁再取第二頁，第一頁的指標不能因為新增而失效。
     std::list<BitmapEntry> bitmaps_;
-    static constexpr size_t kBitmapCache = 6;
-    const Image* mosaicSource_ = nullptr;
     std::map<uint32_t, MosaicEntry> mosaic_;
     std::map<std::pair<int, bool>, ComPtr<IDWriteTextFormat>> uiFormats_;
 };

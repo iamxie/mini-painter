@@ -283,7 +283,7 @@ private:
     std::wstring secondPath_;
     std::vector<Spread> spreads_;
     std::wstring spreadsKey_;      // spreads_ 對應的資料夾清單（第一個檔 + 數量 + 選項）
-    std::map<std::wstring, bool> wideCache_; // 路徑 -> 寬大於高
+    std::map<std::wstring, bool> wideCache_; // 路徑 -> 寬大於高；只留目前這本的（updateSpreads 重建）
     bool shiftOne_ = false;        // 「錯開一頁」，不存 ini
 
     // 樣式

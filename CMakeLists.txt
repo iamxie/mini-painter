@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 0.8.1 LANGUAGES CXX)
+project(mpainter VERSION 0.8.2 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -22,7 +22,7 @@ function(mp_copy_7z target)
     endif()
 endfunction()
 
-# 純邏輯與影像處理，不碰視窗。測試只連這個。
+# 純邏輯與影像處理，不碰視窗。測試連這個（另外編進 Renderer.cpp 測點陣圖快取）。
 add_library(mp_core STATIC
     src/core/Image.cpp
     src/core/ImageOps.cpp
@@ -83,8 +83,11 @@ add_executable(mp_tests
     src/tests/test_shelf.cpp
     src/tests/test_update.cpp
     src/tests/test_crop.cpp
+    # Renderer 的點陣圖快取（畫在記憶體裡的 render target）。src/app 仍然不測。
+    src/tests/test_renderer.cpp
+    src/render/Renderer.cpp
 )
-target_link_libraries(mp_tests PRIVATE mp_core Catch2::Catch2WithMain ws2_32)
+target_link_libraries(mp_tests PRIVATE mp_core Catch2::Catch2WithMain ws2_32 d2d1 dwrite)
 # 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。
 target_compile_definitions(mp_tests PRIVATE "MP_TEST_FIXTURES=L\"${CMAKE_SOURCE_DIR}/src/tests/fixtures\"")
 mp_copy_7z(mp_tests)

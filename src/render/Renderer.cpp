@@ -38,13 +38,21 @@ bool Renderer::ensureHwndTarget(HWND hwnd) {
     auto props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
         96.0f, 96.0f);
-    HRESULT hr = d2d_->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(hwnd, size), &rt_);
+    ComPtr<ID2D1HwndRenderTarget> target;
+    HRESULT hr = d2d_->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(hwnd, size), &target);
     if (FAILED(hr)) return false;
+    rt_ = target;
     return true;
 }
 
+void Renderer::setTarget(ComPtr<ID2D1RenderTarget> rt) {
+    discardTarget();
+    rt_ = std::move(rt);
+}
+
 void Renderer::resize(UINT w, UINT h) {
-    if (rt_) rt_->Resize(D2D1::SizeU(std::max(1u, w), std::max(1u, h)));
+    ComPtr<ID2D1HwndRenderTarget> target;
+    if (rt_ && SUCCEEDED(rt_.As(&target))) target->Resize(D2D1::SizeU(std::max(1u, w), std::max(1u, h)));
 }
 
 void Renderer::discardTarget() {
@@ -83,30 +91,28 @@ ComPtr<ID2D1Bitmap> Renderer::makeBitmap(ID2D1RenderTarget* rt, const Image& img
 
 const ImageBitmap* Renderer::imageBitmap(const ImagePtr& img) {
     if (!rt_ || !img) return nullptr;
-    // 馬賽克小圖綁主底圖，主底圖換了就清。
-    if (mosaicSource_ != img.get()) { mosaic_.clear(); mosaicSource_ = img.get(); }
-    for (auto it = bitmaps_.begin(); it != bitmaps_.end(); ++it) {
-        if (it->src == img && it->tw == 0) {
-            bitmaps_.splice(bitmaps_.end(), bitmaps_, it); // 搬到最後，指標不變
-            return &bitmaps_.back().bmp;
+    for (auto& e : bitmaps_) {
+        if (e.src == img && e.tw == 0) {
+            e.used = true;
+            return &e.bmp;
         }
     }
     BitmapEntry e;
     e.src = img;
+    e.used = true;
     e.bmp.bitmap = makeBitmap(rt_.Get(), *img, &e.bmp.scale);
     e.bmp.source = img.get();
     if (!e.bmp.bitmap) return nullptr;
-    if (bitmaps_.size() >= kBitmapCache) bitmaps_.pop_front();
     bitmaps_.push_back(std::move(e));
     return &bitmaps_.back().bmp;
 }
 
 const ImageBitmap* Renderer::scaledBitmap(const ImagePtr& img, int tw, int th) {
     if (!rt_ || !img || tw <= 0 || th <= 0) return nullptr;
-    for (auto it = bitmaps_.begin(); it != bitmaps_.end(); ++it) {
-        if (it->src == img && it->tw == tw && it->th == th) {
-            bitmaps_.splice(bitmaps_.end(), bitmaps_, it);
-            return &bitmaps_.back().bmp;
+    for (auto& e : bitmaps_) {
+        if (e.src == img && e.tw == tw && e.th == th) {
+            e.used = true;
+            return &e.bmp;
         }
     }
     UINT maxSize = rt_->GetMaximumBitmapSize();
@@ -122,12 +128,25 @@ const ImageBitmap* Renderer::scaledBitmap(const ImagePtr& img, int tw, int th) {
     e.src = img;
     e.tw = tw;
     e.th = th;
+    e.used = true;
     e.bmp.bitmap = bmp;
     e.bmp.source = img.get();
     e.bmp.scale = static_cast<float>(tw) / img->width;
-    if (bitmaps_.size() >= kBitmapCache) bitmaps_.pop_front();
     bitmaps_.push_back(std::move(e));
     return &bitmaps_.back().bmp;
+}
+
+void Renderer::endFrame() {
+    bitmaps_.remove_if([](BitmapEntry& e) {
+        bool drop = !e.used;
+        e.used = false;
+        return drop;
+    });
+    for (auto it = mosaic_.begin(); it != mosaic_.end();) {
+        if (!it->second.used) { it = mosaic_.erase(it); continue; }
+        it->second.used = false;
+        ++it;
+    }
 }
 
 void Renderer::drawImage(DrawCtx& ctx) {
@@ -352,6 +371,7 @@ void Renderer::drawAnnotation(DrawCtx& ctx, const Annotation& a) {
                                  &entry.bitmap);
             }
         }
+        entry.used = true;
         if (entry.bitmap) {
             D2D1_SIZE_U bs = entry.bitmap->GetPixelSize();
             float bw = static_cast<float>(bs.width * a.blockSize), bh = static_cast<float>(bs.height * a.blockSize);

@@ -352,6 +352,11 @@ Comic mode=漫畫模式
 Passwords are kept unencrypted in mpainter.ini. A password that opens an archive is added here automatically. Leading and trailing spaces count.=密碼以明文存在 mpainter.ini。開啟壓縮檔成功的密碼會自動加進來。前後的空白也算密碼的一部分。
 A language change takes effect after mpainter restarts; it asks when this window closes. Extra languages: the lang folder next to mpainter.exe.=語言在 mpainter 重新啟動後生效，關閉這個視窗時會詢問。額外語系：放在 mpainter.exe 旁的 lang 資料夾。
 
+# --- undo 上限 ---
+Undo steps to keep:=保留的復原步數：
+Memory limit (MB):=記憶體上限（MB）：
+Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.=旋轉、裁切、調整尺寸、調整顏色每一步都會留一份整張圖。這些圖超過記憶體上限時，從最舊的步驟丟起；最近一步一定留著。
+
 # --- 新版本檢查與自動更新 ---
 Check for updates when mpainter starts=啟動時自動檢查更新
 When this is off, you can still check in Help > About mpainter.=關掉後，仍可在「說明 > 關於 mpainter」手動檢查。

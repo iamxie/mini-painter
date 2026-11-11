@@ -187,6 +187,8 @@ Settings parseSettings(const std::wstring& text) {
         else if (key == L"unzipDir") s.unzipDir = val;
         else if (key == L"autoCheckUpdate") s.autoCheckUpdate = parseBool(val, s.autoCheckUpdate);
         else if (key == L"skipVersion") s.skipVersion = val;
+        else if (key == L"undoLimit") s.undoLimit = undoLimitFromText(val, s.undoLimit);
+        else if (key == L"undoMemoryMB") s.undoMemoryMB = undoMemoryFromText(val, s.undoMemoryMB);
         else if (key == L"updateUrl") s.updateUrl = val;
         else if (key == L"pinnedNames") {
             s.pinnedNames.clear();
@@ -236,6 +238,8 @@ std::wstring serializeSettings(const Settings& s) {
     out += L"unzipDir=" + s.unzipDir + L"\n";
     out += L"autoCheckUpdate=" + std::wstring(s.autoCheckUpdate ? L"1" : L"0") + L"\n";
     out += L"skipVersion=" + s.skipVersion + L"\n";
+    out += L"undoLimit=" + std::to_wstring(s.undoLimit) + L"\n";
+    out += L"undoMemoryMB=" + std::to_wstring(s.undoMemoryMB) + L"\n";
     if (!s.updateUrl.empty()) out += L"updateUrl=" + s.updateUrl + L"\n";
     std::wstring pinned;
     for (const auto& n : s.pinnedNames) pinned += (pinned.empty() ? L"" : L"|") + n;

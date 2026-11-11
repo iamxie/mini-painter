@@ -737,6 +737,8 @@ bool MainWindow::openPath(const std::wstring& path) {
         infoData_ = {};
         loadError_ = tr(L"This folder has no supported images");
         doc_.reset(nullptr);
+        second_.reset();
+        secondPath_.clear();
         updateTitle();
         layout();
         repaint();
@@ -757,6 +759,8 @@ bool MainWindow::openPath(const std::wstring& path) {
     if (!r.image) {
         loadError_ = fmt1(L"Cannot open: %s", r.error);
         doc_.reset(nullptr);
+        second_.reset();
+        secondPath_.clear();
         updateTitle();
         layout();
         repaint();
@@ -1205,15 +1209,19 @@ void MainWindow::updateSpreads() {
     if (key == spreadsKey_) return;
     std::vector<bool> wide;
     wide.reserve(files.size());
+    std::map<std::wstring, bool> kept; // 只留目前這本的：換了資料夾或壓縮檔，舊的路徑不會再用到
     for (const auto& f : files) {
         auto it = wideCache_.find(f);
-        if (it == wideCache_.end()) {
+        bool isWide;
+        if (it != wideCache_.end()) isWide = it->second;
+        else {
             int w = 0, h = 0;
-            bool isWide = readImageSize(f, w, h) && w > h;
-            it = wideCache_.emplace(f, isWide).first;
+            isWide = readImageSize(f, w, h) && w > h;
         }
-        wide.push_back(it->second);
+        kept.emplace(f, isWide);
+        wide.push_back(isWide);
     }
+    wideCache_ = std::move(kept);
     spreads_ = buildSpreads(wide, settings_.firstPageAlone, shiftOne_);
     spreadsKey_ = key;
 }
@@ -1466,6 +1474,7 @@ void MainWindow::paint() {
         drawInfoPanel(renderer_, rt, infoRc_, infoData_, infoState_, ui_);
     }
     HRESULT hr = rt->EndDraw();
+    renderer_.endFrame(); // 這一幀沒畫到的點陣圖（翻走的圖、undo 歷史、舊預覽）連同來源圖一起放掉
     if (hr == D2DERR_RECREATE_TARGET) {
         renderer_.discardTarget();
         repaint();
@@ -2212,6 +2221,8 @@ void MainWindow::loadSettingsAndRegister() {
     settingsPath_ = settingsPathForExe(exePath_);
     loadSettings(settingsPath_, settings_);
     nav_.setPinnedNames(settings_.pinnedNames);
+    doc_.setUndoLimit(settings_.undoLimit);
+    doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
     settingsWritable_ = isPathWritable(settingsPath_);
     viewMode_ = viewModeFromString(settings_.viewMode);
     initLanguage(); // 要在登錄之前：右鍵選單的文字跟語系走
@@ -2357,6 +2368,10 @@ void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendin
     settings_.pinnedNames = s.pinnedNames;
     settings_.passwords = s.passwords;
     settings_.autoCheckUpdate = s.autoCheckUpdate;
+    settings_.undoLimit = s.undoLimit;
+    doc_.setUndoLimit(settings_.undoLimit); // 改小時立刻丟掉最舊的步驟
+    settings_.undoMemoryMB = s.undoMemoryMB;
+    doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
     // 模式：換了模式、或正在用的那個內容被改了，就重新套用（目前的值 = 模式本體）
     const Profile* np = findProfile(s, s.profileName);
     const Profile* op = findProfile(settings_, settings_.profileName);

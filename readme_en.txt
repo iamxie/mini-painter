@@ -53,11 +53,17 @@ Modes (settings sets)
 - A mode changes only when you pick one: in View > Mode or in the Modes tab of Settings. It
   never switches by itself because of what you opened. The title bar always ends with the
   current mode.
-- Edit > Settings has four tabs: General (language, hints, settings file), Modes (new / copy /
+- Edit > Settings has four tabs: General (language, hints, undo steps, settings file), Modes (new / copy /
   rename / delete / use this mode, with the mode's contents on the right), Archives (unpack
   folder with its current usage, show-first names, passwords) and Windows Integration
   (context menu, default app). The buttons are Cancel / OK / Apply; Apply takes effect at once
   and keeps the window open.
+- Undo (Ctrl+Z) keeps up to 99 steps; change it to anything from 1 to 999 in Edit > Settings >
+  General. Rotating, cropping, resizing and color adjustment each keep a full copy of the image
+  per step. When those copies add up to more than the memory limit (512 MB by default, on the
+  same page), the oldest steps are dropped; the latest step is always kept. With the defaults a
+  24-megapixel photo keeps about 5 such steps. Steps that only add markup do not count against
+  the limit. The undo history of an image is dropped when you move to another image.
 
 Archives (zip / 7z / rar)
 -------------------------

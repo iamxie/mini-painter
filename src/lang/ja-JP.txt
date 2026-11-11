@@ -126,6 +126,7 @@ Line Style=線の種類
 Line Color=線の色
 Fill Color=塗りの色
 Text Format=書式
+Crop=トリミング
 
 # --- 情報パネル、形式名、Exif 項目、エラーメッセージ / Info panel, format names, Exif tags, errors ---
 Image width=画像の幅

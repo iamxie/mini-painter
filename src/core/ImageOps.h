@@ -6,6 +6,9 @@ namespace mp {
 // 逆時針轉 90 度。
 Image rotateCCW90(const Image& src);
 
+// 裁切：取 [x, y, x + w, y + h) 的像素，範圍先夾到圖內；夾完是空的就回傳空圖。dpi 照抄。
+Image cropImage(const Image& src, int x, int y, int w, int h);
+
 // 依 EXIF orientation（1..8）把像素轉正。1 或不認得的值就原樣複製。
 Image applyExifOrientation(const Image& src, int orientation);
 

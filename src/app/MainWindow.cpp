@@ -34,6 +34,8 @@ constexpr UINT kHqDelayMs = 200;
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
 constexpr float kToolbarH = 44, kMarkupH = 40, kNameH = 26, kInfoW = 320, kBtnW = 36, kBtnH = 30;
 constexpr float kHandleR = 5.0f;
+// 裁切框（DIP）：邊的命中容差、角的命中範圍（沿邊從角算起）、L 形把手的長度
+constexpr float kCropTol = 8.0f, kCropCorner = 30.0f, kCropHandleLen = 26.0f;
 constexpr UINT_PTR kEditSubclass = 1;
 
 const D2D1_COLOR_F kChromeBg = D2D1::ColorF(0.953f, 0.953f, 0.953f);
@@ -413,11 +415,20 @@ void MainWindow::buildButtons() {
         x += px(12);
         x = add(BTN_ADJCOLOR, x, y);
         x = add(BTN_ADJSIZE, x, y);
+        x = add(BTN_CROP, x, y);
         x += px(12);
         x = add(BTN_LINESTYLE, x, y, true);
         x = add(BTN_LINECOLOR, x, y, true);
         x = add(BTN_FILL, x, y, true);
         x = add(BTN_FORMAT, x, y, true);
+        if (cropping_) {
+            Button b;
+            b.id = BTN_CROP_APPLY;
+            float w = renderer_.measureUiText(tr(L"Crop"), px(13)) + px(28);
+            float r = markupRc_.right - px(10);
+            b.rect = D2D1::RectF(r - w, y, r, y + bh);
+            buttons_.push_back(b);
+        }
     }
     for (auto& b : buttons_) {
         switch (b.id) {
@@ -426,6 +437,7 @@ void MainWindow::buildButtons() {
         case BTN_INFO: b.pressed = showInfo_; break;
         case BTN_FREEHAND: b.pressed = freehandMode_; break;
         case BTN_ADJCOLOR: b.pressed = adjusting_; break;
+        case BTN_CROP: b.pressed = cropping_; break;
         default: break;
         }
         if (!doc_.image() && b.id != BTN_INFO && b.id != BTN_MARKUP) b.enabled = false;
@@ -619,6 +631,7 @@ void MainWindow::onCommand(int id) {
     case IDM_EXIT: PostMessageW(hwnd_, WM_CLOSE, 0, 0); break;
     case IDM_UNDO:
     case IDM_REDO: {
+        if (cropping_) { cancelCrop(); break; } // 裁切模式中只取消裁切，不動編輯歷史
         endTextEdit(true);
         if (id == IDM_UNDO ? !doc_.canUndo() : !doc_.canRedo()) break;
         auto before = doc_.image();
@@ -703,6 +716,7 @@ bool MainWindow::openPath(const std::wstring& path) {
     disarmJump();
     hoverItem_ = 0;
     if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
+    cancelCrop();
     selected_ = 0;
     drag_ = Drag::None;
     bool isDir = isDirectoryPath(path);
@@ -933,6 +947,7 @@ bool MainWindow::save() {
     if (!editGuard()) return false;
     endTextEdit(true);
     if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
+    cancelCrop();
     if (!canSaveExtension(extensionOf(path_))) return saveAs();
     if (!writeFlattened(path_)) return false;
     loadedFrom_ = path_;
@@ -1030,6 +1045,7 @@ bool MainWindow::saveAs() {
 bool MainWindow::exportAs() {
     if (!doc_.image()) return false;
     endTextEdit(true);
+    cancelCrop();
     std::wstring newPath;
     if (!pickSavePath(newPath, true)) return false;
     return writeFlattened(newPath); // 目前編輯的還是原檔，dirty 不變
@@ -1303,8 +1319,10 @@ void MainWindow::setViewMode(ViewMode m) {
     viewMode_ = m;
     settings_.viewMode = viewModeToString(m);
     saveSettingsQuiet();
+    cropFit_ = false;
     if (m == ViewMode::TwoPage) {
         // 只看不編：收掉編輯狀態與標示工具列。
+        cancelCrop();
         endTextEdit(true);
         if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
         closePopup();
@@ -1336,15 +1354,17 @@ void MainWindow::fitToView(bool resetOffset) {
     if (!img) return;
     float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
     float vw = viewW(), vh = viewH();
+    // 裁切模式剛進入時整張圖放進畫布（不改檢視模式設定）
+    ViewMode mode = cropping_ && cropFit_ ? ViewMode::FitWindow : viewMode_;
     float z;
-    switch (viewMode_) {
+    switch (mode) {
     case ViewMode::FitWidth: z = cw / vw; break;
     case ViewMode::FitHeight: z = ch / vh; break;
     case ViewMode::TwoPage: z = std::min(cw / vw, ch / vh); break; // 兩頁並排：符合高度，兩頁都放不下時再縮
     case ViewMode::Actual: z = 1.0f; break;
     default: z = std::min(cw / vw, ch / vh); break;
     }
-    if (!settings_.upscaleSmall || viewMode_ == ViewMode::Actual) z = std::min(1.0f, z);
+    if (!settings_.upscaleSmall || mode == ViewMode::Actual) z = std::min(1.0f, z);
     zoom_ = std::max(0.01f, z);
     if (resetOffset) offset_ = {0, 0}; // 從左上開始，放得下的方向由 clampOffset 置中
     clampOffset();
@@ -1394,6 +1414,7 @@ void MainWindow::setZoom(float z, POINT anchor) {
     offset_.x = (anchor.x - canvasRc_.left) - ip.x * zoom_;
     offset_.y = (anchor.y - canvasRc_.top) - ip.y * zoom_;
     fit_ = false;
+    cropFit_ = false;
     clampOffset();
     buildButtons();
     positionEdit();
@@ -1477,6 +1498,14 @@ void MainWindow::drawChrome() {
 void MainWindow::drawButton(const Button& b) {
     auto* rt = renderer_.rt();
     float r = px(5);
+    if (b.id == BTN_CROP_APPLY) {
+        // 文字按鈕：灰底圓角，像 Preview 的「裁切」
+        bool hot = hoverBtn_ == b.id || pressBtn_ == b.id;
+        rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, px(6), px(6)),
+                                 renderer_.brush(hot ? D2D1::ColorF(0.78f, 0.78f, 0.78f) : D2D1::ColorF(0.85f, 0.85f, 0.85f)));
+        renderer_.drawUiText(rt, tr(L"Crop"), b.rect, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+        return;
+    }
     if (b.pressed) rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, r, r), renderer_.brush(kBtnOn));
     else if (b.enabled && (hoverBtn_ == b.id || pressBtn_ == b.id))
         rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, r, r), renderer_.brush(kBtnHover));
@@ -1575,6 +1604,24 @@ void MainWindow::drawIcon(const Button& b) {
             float kx = cx + (i == 0 ? -px(3) : i == 1 ? px(4) : -px(6));
             rt->FillEllipse(D2D1::Ellipse(P(kx, y), px(2.2f), px(2.2f)), br);
         }
+        break;
+    }
+    case BTN_CROP: {
+        // 兩個交錯的 L
+        ComPtr<ID2D1PathGeometry> geo;
+        renderer_.d2d()->CreatePathGeometry(&geo);
+        ComPtr<ID2D1GeometrySink> sink;
+        geo->Open(&sink);
+        sink->BeginFigure(P(cx - px(5), cy - px(9)), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(P(cx - px(5), cy + px(5)));
+        sink->AddLine(P(cx + px(9), cy + px(5)));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->BeginFigure(P(cx - px(9), cy - px(5)), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(P(cx + px(5), cy - px(5)));
+        sink->AddLine(P(cx + px(5), cy + px(9)));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        sink->Close();
+        rt->DrawGeometry(geo.Get(), br, s);
         break;
     }
     case BTN_ADJSIZE:
@@ -1678,6 +1725,7 @@ void MainWindow::drawCanvas() {
     if (drag_ == Drag::Draw && !drawPath_.empty()) renderer_.drawAnnotation(ctx, makeFreehand(drawPath_, stroke_));
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
     drawSelection();
+    drawCrop();
     rt->PopAxisAlignedClip();
 }
 
@@ -1716,6 +1764,10 @@ void MainWindow::onButton(int id) {
     // 彈出選單開著時再點同一顆按鈕：選單已因失去焦點關閉，這一下視為「收起」，不要再開。
     if (id == popupBtn_ && GetTickCount64() - lastPopupCloseTick() < 300) { popupBtn_ = BTN_NONE; return; }
     auto anchor = [&]() { popupBtn_ = id; return buttonScreenRect(id); };
+    // 裁切模式中按了縮放、資訊、裁切以外的按鈕：先取消裁切，再做那顆按鈕的事。
+    if (cropping_ && id != BTN_CROP && id != BTN_CROP_APPLY && id != BTN_ZOOMOUT && id != BTN_ZOOM100 && id != BTN_ZOOMIN &&
+        id != BTN_INFO)
+        cancelCrop();
     switch (id) {
     case BTN_ZOOMOUT: zoomStep(-1); break;
     case BTN_ZOOM100: setViewMode(ViewMode::Actual); break;
@@ -1763,6 +1815,11 @@ void MainWindow::onButton(int id) {
         }
         break;
     case BTN_ADJSIZE: adjustSize(); break;
+    case BTN_CROP:
+        if (cropping_) cancelCrop();
+        else beginCrop();
+        break;
+    case BTN_CROP_APPLY: applyCrop(); break;
     case BTN_LINESTYLE:
         showLineStylePopup(hwnd_, renderer_, anchor(), ui_, currentStroke(), [this](const StrokeStyle& s) { applyStrokeStyle(s); });
         break;
@@ -1829,6 +1886,19 @@ void MainWindow::onLButtonDown(POINT pt) {
     dragStartImg_ = ip;
     dragStartClient_ = pt;
     dragMoved_ = false;
+    if (cropping_) {
+        // 裁切模式：按在框的角、邊、框內就拖框，框外就平移畫面；物件不能點選。
+        cropPart_ = cropPartAt(pt);
+        if (cropPart_ != CropPart::None) {
+            drag_ = Drag::Crop;
+            cropStart_ = cropBox_;
+        } else {
+            drag_ = Drag::Pan;
+            dragOffsetStart_ = offset_;
+        }
+        SetCapture(hwnd_);
+        return;
+    }
     if (freehandMode_) {
         drag_ = Drag::Draw;
         drawPath_ = {ip};
@@ -1866,7 +1936,7 @@ void MainWindow::onLButtonDown(POINT pt) {
 }
 
 void MainWindow::onLButtonDblClk(POINT pt) {
-    if (!inRect(canvasRc_, pt) || !doc_.image() || freehandMode_ || twoPage()) { onLButtonDown(pt); return; }
+    if (!inRect(canvasRc_, pt) || !doc_.image() || freehandMode_ || twoPage() || cropping_) { onLButtonDown(pt); return; }
     Pt ip = toImage(pt);
     const auto& items = doc_.items();
     for (int i = static_cast<int>(items.size()) - 1; i >= 0; --i) {
@@ -1896,7 +1966,7 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
             else KillTimer(hwnd_, kBtnTipTimer);
         }
         // 教學提示：游標在物件方框裡停住半秒才出現，離開就收。
-        uint32_t item = (edit_ || freehandMode_ || pickingWhite_ || twoPage()) ? 0 : hitItemBox(pt);
+        uint32_t item = (edit_ || freehandMode_ || pickingWhite_ || twoPage() || cropping_) ? 0 : hitItemBox(pt);
         if (item != hoverItem_) {
             hoverItem_ = item;
             hideTip();
@@ -1915,6 +1985,10 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
         break;
     case Drag::Draw:
         if (drawPath_.empty() || dist(drawPath_.back(), ip) >= 0.5f / zoom_) drawPath_.push_back(ip);
+        break;
+    case Drag::Crop:
+        if (auto img = doc_.image())
+            cropBox_ = dragCropBox(cropStart_, cropPart_, ip.x - dragStartImg_.x, ip.y - dragStartImg_.y, img->width, img->height);
         break;
     case Drag::Move: {
         int i = doc_.indexOf(selected_);
@@ -2005,6 +2079,19 @@ bool MainWindow::onSetCursor() {
     ScreenToClient(hwnd_, &pt);
     if (!inRect(canvasRc_, pt) || !doc_.image()) return false;
     if (pickingWhite_) { SetCursor(LoadCursorW(nullptr, IDC_CROSS)); return true; }
+    if (cropping_ && drag_ != Drag::Pan) {
+        LPCWSTR c = nullptr;
+        switch (drag_ == Drag::Crop ? cropPart_ : cropPartAt(pt)) {
+        case CropPart::TopLeft: case CropPart::BottomRight: c = IDC_SIZENWSE; break;
+        case CropPart::TopRight: case CropPart::BottomLeft: c = IDC_SIZENESW; break;
+        case CropPart::Left: case CropPart::Right: c = IDC_SIZEWE; break;
+        case CropPart::Top: case CropPart::Bottom: c = IDC_SIZENS; break;
+        case CropPart::Inside: c = IDC_SIZEALL; break;
+        default: return false;
+        }
+        SetCursor(LoadCursorW(nullptr, c));
+        return true;
+    }
     if (freehandMode_ || drag_ == Drag::Draw) { SetCursor(LoadCursorW(nullptr, IDC_CROSS)); return true; }
     if (drag_ == Drag::Pan) { SetCursor(LoadCursorW(nullptr, IDC_SIZEALL)); return true; }
     if (drag_ == Drag::Move || drag_ == Drag::Handle) { SetCursor(LoadCursorW(nullptr, IDC_SIZEALL)); return true; }
@@ -2093,6 +2180,7 @@ const wchar_t* MainWindow::buttonName(int id) {
     case BTN_LINECOLOR: return tr(L"Line Color");
     case BTN_FILL: return tr(L"Fill Color");
     case BTN_FORMAT: return tr(L"Text Format");
+    case BTN_CROP: return tr(L"Crop");
     default: return L"";
     }
 }
@@ -2100,7 +2188,7 @@ const wchar_t* MainWindow::buttonName(int id) {
 void MainWindow::showButtonTip(int id) {
     const Button* b = nullptr;
     for (const auto& x : buttons_) if (x.id == id) b = &x;
-    if (!b) return;
+    if (!b || !*buttonName(id)) return; // 文字按鈕本身就寫了名字，不另外提示
     // 放在按鈕正下方，不跟著游標跑。
     POINT sp{static_cast<LONG>(b->rect.left), static_cast<LONG>(b->rect.bottom + px(4))};
     ClientToScreen(hwnd_, &sp);
@@ -2338,6 +2426,7 @@ bool MainWindow::onKeyDown(WPARAM vk) {
     case VK_NEXT: goNext(); return true;
     case VK_DELETE: case VK_BACK: deleteSelected(); return true;
     case VK_ESCAPE:
+        if (cropping_) { cancelCrop(); return true; }
         if (pickingWhite_) { pickingWhite_ = false; return true; }
         if (selected_) { selected_ = 0; repaint(); return true; }
         if (freehandMode_) { freehandMode_ = false; buildButtons(); repaint(); return true; }
@@ -2467,6 +2556,7 @@ void MainWindow::applyTextStyle(const TextStyle& t) {
 void MainWindow::rotateImage() {
     auto img = doc_.image();
     if (!img) return; // 壓縮檔內也能轉：當成檢視動作，翻頁就重置
+    cancelCrop();
     endTextEdit(true);
     if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
     DocState next;
@@ -2516,6 +2606,115 @@ void MainWindow::adjustSize() {
     fitToView();
     updateTitle();
     repaint();
+}
+
+// ---------------------------------------------------------------------------
+// 裁切
+
+void MainWindow::beginCrop() {
+    auto img = doc_.image();
+    if (!img || twoPage() || !editGuard()) return;
+    endTextEdit(true);
+    if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
+    hideTip();
+    freehandMode_ = false;
+    selected_ = 0;
+    cropping_ = true;
+    cropBox_ = {0, 0, img->width, img->height};
+    cropSavedZoom_ = zoom_;
+    cropSavedOffset_ = offset_;
+    cropSavedFit_ = fit_;
+    cropFit_ = true;
+    fit_ = true;
+    fitToView();
+    repaint();
+}
+
+void MainWindow::cancelCrop() {
+    if (!cropping_) return;
+    if (drag_ == Drag::Crop) { ReleaseCapture(); drag_ = Drag::None; }
+    cropping_ = false;
+    cropFit_ = false;
+    zoom_ = cropSavedZoom_;
+    offset_ = cropSavedOffset_;
+    fit_ = cropSavedFit_;
+    if (fit_) fitToView(false); else clampOffset();
+    buildButtons();
+    repaint();
+}
+
+void MainWindow::applyCrop() {
+    auto img = doc_.image();
+    if (!cropping_ || !img) return;
+    CropBox box = cropBox_;
+    if (box == CropBox{0, 0, img->width, img->height}) { cancelCrop(); return; }
+    cropping_ = false;
+    cropFit_ = false;
+    DocState next;
+    next.image = std::make_shared<Image>(cropImage(*img, box.left, box.top, box.width(), box.height()));
+    next.items = cropAnnotations(doc_.items(), box);
+    doc_.commit(std::move(next));
+    infoData_.width = doc_.image()->width;
+    infoData_.height = doc_.image()->height;
+    fit_ = true;
+    fitToView();
+    updateTitle();
+    repaint();
+}
+
+CropPart MainWindow::cropPartAt(POINT client) const {
+    return cropHitTest(cropBox_, toImage(client), px(kCropTol) / zoom_, px(kCropCorner) / zoom_);
+}
+
+void MainWindow::drawCrop() {
+    auto img = doc_.image();
+    if (!cropping_ || !img) return;
+    auto* rt = renderer_.rt();
+    rt->SetTransform(D2D1::Matrix3x2F::Identity());
+    POINT i0 = toClient({0, 0});
+    POINT i1 = toClient({static_cast<float>(img->width), static_cast<float>(img->height)});
+    POINT b0 = toClient({static_cast<float>(cropBox_.left), static_cast<float>(cropBox_.top)});
+    POINT b1 = toClient({static_cast<float>(cropBox_.right), static_cast<float>(cropBox_.bottom)});
+    float il = static_cast<float>(i0.x), it = static_cast<float>(i0.y), ir = static_cast<float>(i1.x), ib = static_cast<float>(i1.y);
+    float bl = static_cast<float>(b0.x), bt = static_cast<float>(b0.y), br = static_cast<float>(b1.x), bb = static_cast<float>(b1.y);
+    // 會被裁掉的部分蓋半透明深色：上、下兩條整寬，左、右夾在中間
+    auto* dim = renderer_.brush(D2D1::ColorF(0, 0, 0, 0.5f));
+    rt->FillRectangle(D2D1::RectF(il, it, ir, bt), dim);
+    rt->FillRectangle(D2D1::RectF(il, bb, ir, ib), dim);
+    rt->FillRectangle(D2D1::RectF(il, bt, bl, bb), dim);
+    rt->FillRectangle(D2D1::RectF(br, bt, ir, bb), dim);
+    rt->DrawRectangle(D2D1::RectF(bl + 0.5f, bt + 0.5f, br - 0.5f, bb - 0.5f), renderer_.brush(D2D1::ColorF(1, 1, 1, 0.9f)), 1.0f);
+    // 四個角的 L 形把手畫在框內；深色底再疊白色，淺色、深色的圖上都看得到
+    float len = std::min({px(kCropHandleLen), (br - bl) / 2, (bb - bt) / 2});
+    float w = px(4), inset = w / 2;
+    ComPtr<ID2D1PathGeometry> geo;
+    renderer_.d2d()->CreatePathGeometry(&geo);
+    ComPtr<ID2D1GeometrySink> sink;
+    geo->Open(&sink);
+    auto corner = [&](float x, float y, float sx, float sy) { // (sx, sy)：往框內的方向
+        float cx = x + sx * inset, cy = y + sy * inset;
+        sink->BeginFigure(D2D1::Point2F(cx, y + sy * len), D2D1_FIGURE_BEGIN_HOLLOW);
+        sink->AddLine(D2D1::Point2F(cx, cy));
+        sink->AddLine(D2D1::Point2F(x + sx * len, cy));
+        sink->EndFigure(D2D1_FIGURE_END_OPEN);
+    };
+    corner(bl, bt, 1, 1);
+    corner(br, bt, -1, 1);
+    corner(bl, bb, 1, -1);
+    corner(br, bb, -1, -1);
+    sink->Close();
+    rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.55f)), w + px(2));
+    rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(1, 1, 1)), w);
+    // 拖曳中：框中央顯示裁切後的像素尺寸
+    if (drag_ == Drag::Crop) {
+        std::wstring s = std::to_wstring(cropBox_.width()) + L" × " + std::to_wstring(cropBox_.height());
+        float h = 0;
+        float tw = renderer_.measureUiText(s, px(12), true, 1e6f, &h);
+        float cx = (bl + br) / 2, cy = (bt + bb) / 2;
+        D2D1_RECT_F pill = D2D1::RectF(cx - tw / 2 - px(8), cy - h / 2 - px(4), cx + tw / 2 + px(8), cy + h / 2 + px(4));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(pill, px(4), px(4)), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.6f)));
+        renderer_.drawUiText(rt, s, pill, px(12), D2D1::ColorF(D2D1::ColorF::White), DWRITE_TEXT_ALIGNMENT_CENTER, true);
+    }
 }
 
 // ---------------------------------------------------------------------------

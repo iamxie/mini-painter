@@ -22,7 +22,9 @@ Usage
   part of it, and the parent's siblings are never visited. Opening a folder that only holds
   archives or subfolders opens its first one.
 - The markup toolbar (pen button at the right of the toolbar) has sketch, line / arrow,
-  shapes, text, adjust color and adjust size.
+  shapes, text, adjust color, adjust size and crop. To crop, click the crop button, drag the
+  corners, the edges or the inside of the frame, then click Crop at the right end of the
+  markup toolbar; Esc cancels.
 - Ctrl+S flattens the annotations into the image and overwrites the file.
   File > Export As (Ctrl+Shift+S) writes the current view (annotations included) to a new
   file, optionally in another format; the file you are editing stays the original. There
@@ -77,7 +79,8 @@ Archives (zip / 7z / rar)
 - Encrypted archives: the passwords in Edit > Settings > "Passwords to try" are tried one by
   one first (the window shows the attempt); you are asked only if none fits. A password that
   works is added to that list. Note that the list is stored unencrypted in mpainter.ini.
-- Images inside an archive are read-only: no annotation, color or size adjustment, or save.
+- Images inside an archive are read-only: no annotation, color or size adjustment, cropping,
+  or save.
   To edit, extract the archive with your archiver and open the file. Rotation (Ctrl+R) still
   works as a viewing aid and resets when you turn the page. Export As works too: it writes
   this one image (rotation included) next to the archive, metadata copied over.

@@ -11,7 +11,7 @@ Single portable `mpainter.exe`, no runtime to install.
 
 - BMP, TIFF, JPEG, PNG, WebP. Arrow keys page through a folder; zip / 7z / rar (cbz / cb7 / cbr) archives open as if they were folders, encrypted ones included.
 - Annotations as vector objects until you save: sketch, lines and arrows, shapes, speech bubbles, magnifier, mosaic, text. Multi-level undo.
-- Adjust color (levels, exposure, white balance, …) and adjust size (Lanczos3). Saving keeps EXIF / XMP / ICC.
+- Adjust color (levels, exposure, white balance, …), adjust size (Lanczos3) and crop. Saving keeps EXIF / XMP / ICC.
 - View modes for reading: fit to window / width / height, actual size, two pages side by side (right-to-left for manga), continue to the next folder or archive at the end.
 - Modes (named sets of viewing settings) switchable from the View menu; the title bar always shows the current one.
 - UI in English and Traditional Chinese built in; Japanese and other languages via `lang/*.txt`.
@@ -19,7 +19,7 @@ Single portable `mpainter.exe`, no runtime to install.
 
 - 支援 BMP、TIFF、JPEG、PNG、WebP；方向鍵翻同資料夾；zip / 7z / rar（cbz / cb7 / cbr）壓縮檔直接當資料夾翻，含加密檔。
 - 標註是向量物件，存檔才壓成像素：塗鴉、直線與箭頭、形狀、對話框、放大鏡、馬賽克、文字；多層復原。
-- 調整顏色（色階、曝光、白平衡…）與調整尺寸（Lanczos3）；存檔保留 EXIF / XMP / ICC。
+- 調整顏色（色階、曝光、白平衡…）、調整尺寸（Lanczos3）與裁切；存檔保留 EXIF / XMP / ICC。
 - 看漫畫的檢視模式：符合視窗 / 寬度 / 高度、實際大小、兩頁並排（可由右到左）、翻到底接著看下一本。
 - 「模式」= 一組有名字的檢視設定，在「顯示 › 模式」一鍵切換，標題列永遠顯示目前的模式。
 - 介面內建英文與繁體中文，日文與其他語言放 `lang/*.txt`。

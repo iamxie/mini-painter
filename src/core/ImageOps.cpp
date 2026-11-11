@@ -22,6 +22,17 @@ Image rotateCCW90(const Image& src) {
     return out;
 }
 
+Image cropImage(const Image& src, int x, int y, int w, int h) {
+    int x0 = std::max(0, x), y0 = std::max(0, y);
+    int x1 = std::min(src.width, x + w), y1 = std::min(src.height, y + h);
+    if (x1 <= x0 || y1 <= y0) return Image{};
+    Image out(x1 - x0, y1 - y0);
+    out.dpiX = src.dpiX;
+    out.dpiY = src.dpiY;
+    for (int row = 0; row < out.height; ++row) std::memcpy(out.row(row), src.px(x0, y0 + row), out.stride());
+    return out;
+}
+
 static Image rotateCW90(const Image& src) {
     Image out(src.height, src.width);
     out.dpiX = src.dpiY;

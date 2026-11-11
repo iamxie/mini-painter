@@ -107,6 +107,7 @@ Line Style=線型
 Line Color=線條顏色
 Fill Color=填色
 Text Format=格式
+Crop=裁切
 
 # --- 資訊面板、格式名稱、EXIF 欄位、錯誤訊息 ---
 Image width=影像寬度

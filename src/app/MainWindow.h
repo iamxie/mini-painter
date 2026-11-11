@@ -12,6 +12,7 @@
 #include "core/Annotation.h"
 #include "core/Archive.h"
 #include "core/ColorAdjust.h"
+#include "core/Crop.h"
 #include "core/Document.h"
 #include "core/FolderNav.h"
 #include "core/Lang.h"
@@ -27,6 +28,8 @@ enum ButtonId {
     BTN_NONE = 0,
     BTN_ZOOMOUT, BTN_ZOOM100, BTN_ZOOMIN, BTN_ROTATE, BTN_MARKUP, BTN_INFO,
     BTN_FREEHAND, BTN_SHAPES, BTN_TEXT, BTN_ADJCOLOR, BTN_ADJSIZE, BTN_LINESTYLE, BTN_LINECOLOR, BTN_FILL, BTN_FORMAT,
+    BTN_CROP,       // 標示工具列：進入 / 取消裁切模式
+    BTN_CROP_APPLY, // 裁切模式中才有：標示工具列最右邊的「裁切」文字按鈕
 };
 
 struct Button {
@@ -201,6 +204,13 @@ private:
     void adjustSize();
     void finishDrag();
 
+    // 裁切模式：框預設整張圖，拖四角、四邊或框內調整，按「裁切」文字按鈕才真的裁。
+    void beginCrop();
+    void cancelCrop();  // 離開裁切模式、檢視回到進入前；不在裁切模式時什麼都不做
+    void applyCrop();   // 框是整張圖時等於 cancelCrop
+    CropPart cropPartAt(POINT client) const;
+    void drawCrop();
+
     // 文字編輯
     void beginTextEdit(uint32_t id, bool selectAll);
     void endTextEdit(bool commit);
@@ -282,7 +292,7 @@ private:
 
     // 選取與拖曳
     uint32_t selected_ = 0;
-    enum class Drag { None, Pan, Move, Handle, Draw };
+    enum class Drag { None, Pan, Move, Handle, Draw, Crop };
     Drag drag_ = Drag::None;
     Pt dragStartImg_;
     POINT dragStartClient_{};
@@ -306,6 +316,16 @@ private:
     bool updating_ = false;     // 換檔完成、正在關閉：WM_CLOSE 不再問存檔（已經問過）
     bool justUpdated_ = false;
     std::wstring relaunchArgs_; // 非空：WM_DESTROY 時用這些參數重啟 exe
+
+    // 裁切
+    bool cropping_ = false;
+    bool cropFit_ = false;     // 裁切模式的「整張圖放進畫布」還有效；手動縮放或改檢視模式後 false
+    CropBox cropBox_;          // 圖片座標
+    CropBox cropStart_;        // 拖曳開始時的框
+    CropPart cropPart_ = CropPart::None; // 正在拖的部位
+    float cropSavedZoom_ = 1.0f; // 進入裁切模式前的檢視，取消時還原
+    Pt cropSavedOffset_;
+    bool cropSavedFit_ = true;
 
     // 調整顏色
     bool adjusting_ = false;

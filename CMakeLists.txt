@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 0.7.0 LANGUAGES CXX)
+project(mpainter VERSION 0.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -40,6 +40,7 @@ add_library(mp_core STATIC
     src/core/Archive.cpp
     src/core/Shelf.cpp
     src/core/Update.cpp
+    src/core/Crop.cpp
 )
 target_include_directories(mp_core PUBLIC src)
 target_link_libraries(mp_core PUBLIC WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z nlohmann_json::nlohmann_json windowscodecs ole32 shlwapi propsys version advapi32 winhttp bcrypt)
@@ -81,6 +82,7 @@ add_executable(mp_tests
     src/tests/test_archive.cpp
     src/tests/test_shelf.cpp
     src/tests/test_update.cpp
+    src/tests/test_crop.cpp
 )
 target_link_libraries(mp_tests PRIVATE mp_core Catch2::Catch2WithMain ws2_32)
 # 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。

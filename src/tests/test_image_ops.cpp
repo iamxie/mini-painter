@@ -33,6 +33,41 @@ TEST_CASE("rotateCCW90 四次回到原圖") {
     CHECK(r.pixels == img.pixels);
 }
 
+TEST_CASE("cropImage：取出指定範圍，dpi 照抄") {
+    Image img(5, 4);
+    img.dpiX = 72; img.dpiY = 144;
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 5; ++x) set(img, x, y, static_cast<uint8_t>(x), static_cast<uint8_t>(y), 7);
+    Image out = cropImage(img, 1, 2, 3, 2);
+    REQUIRE(out.width == 3);
+    REQUIRE(out.height == 2);
+    CHECK(out.dpiX == 72);
+    CHECK(out.dpiY == 144);
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 3; ++x) {
+            CHECK(out.px(x, y)[0] == x + 1);
+            CHECK(out.px(x, y)[1] == y + 2);
+        }
+}
+
+TEST_CASE("cropImage：範圍夾到圖內，夾完是空的回空圖") {
+    Image img(4, 4);
+    set(img, 3, 3, 9, 9, 9);
+    Image out = cropImage(img, 2, 2, 10, 10);
+    CHECK(out.width == 2);
+    CHECK(out.height == 2);
+    CHECK(out.px(1, 1)[0] == 9);
+    CHECK(cropImage(img, -3, -3, 4, 4).width == 1);
+    CHECK(cropImage(img, 5, 0, 2, 2).empty());
+    CHECK(cropImage(img, 0, 0, 0, 3).empty());
+}
+
+TEST_CASE("cropImage：整張圖原樣") {
+    Image img(3, 2);
+    set(img, 2, 1, 4, 5, 6);
+    CHECK(cropImage(img, 0, 0, 3, 2).pixels == img.pixels);
+}
+
 TEST_CASE("applyExifOrientation") {
     Image img(2, 1);
     set(img, 0, 0, 1, 1, 1);

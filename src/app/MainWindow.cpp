@@ -2279,8 +2279,9 @@ void MainWindow::selectLanguage(const std::wstring& code) {
                         MB_YESNO | MB_ICONQUESTION);
     if (r != IDYES) return;
     if (!confirmDiscard()) return;
-    // 重開自己並開回目前的檔案。
-    std::wstring args = path_.empty() ? L"" : L"\"" + path_ + L"\"";
+    // 重開自己並開回目前的檔案。壓縮檔用壓縮檔路徑：解出來的暫存檔在這個程式關閉時就刪了。
+    std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
+    std::wstring args = reopen.empty() ? L"" : L"\"" + reopen + L"\"";
     ShellExecuteW(nullptr, L"open", exePath_.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
     closePopup();
     closeColorAdjustPanel();

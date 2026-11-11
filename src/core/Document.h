@@ -27,6 +27,9 @@ constexpr int kUndoMemoryDefaultMB = 512, kUndoMemoryMinMB = 16, kUndoMemoryMaxM
 int clampUndoMemoryMB(int n);
 int undoMemoryFromText(const std::wstring& text, int fallback);
 
+// 文字 → [lo, hi] 的整數（設定面板的數字欄位與 ini 共用）。不是數字回 fallback；位數多到 int 裝不下時，正的當成 hi、負的當成 lo。
+int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi);
+
 // 文件 = 目前狀態 + undo / redo 堆疊。每個完成的編輯動作呼叫 commit 一次。
 class Document {
 public:

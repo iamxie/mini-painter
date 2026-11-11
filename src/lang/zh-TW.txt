@@ -357,6 +357,10 @@ Undo steps to keep:=保留的復原步數：
 Memory limit (MB):=記憶體上限（MB）：
 Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.=旋轉、裁切、調整尺寸、調整顏色每一步都會留一份整張圖。這些圖超過記憶體上限時，從最舊的步驟丟起；最近一步一定留著。
 
+# --- 預先解碼 ---
+Prefetch memory limit (MB):=預先載入的記憶體上限（MB）：
+Decodes the next page in the background and keeps the previous one, so turning pages does not wait. At the end of a folder or archive, the next one is prepared too. 0 turns this off.=在背景先解好下一頁、留著上一頁，翻頁不用等；看到資料夾或壓縮檔的最後，也會先準備下一本。填 0 關閉。
+
 # --- 新版本檢查與自動更新 ---
 Check for updates when mpainter starts=啟動時自動檢查更新
 When this is off, you can still check in Help > About mpainter.=關掉後，仍可在「說明 > 關於 mpainter」手動檢查。

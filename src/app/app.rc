@@ -73,7 +73,7 @@ BEGIN
 END
 
 // 設定：PropertySheet 的四頁。CAPTION 是 tab 名稱（程式碼裡再用 tr 翻譯一次）。
-IDD_SET_GENERAL DIALOGEX 0, 0, 300, 196
+IDD_SET_GENERAL DIALOGEX 0, 0, 300, 242
 STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "General"
 FONT 9, "Microsoft JhengHei UI"
@@ -90,8 +90,11 @@ BEGIN
     LTEXT           "Memory limit (MB):", -1, 150, 118, 96, 10
     EDITTEXT        IDC_UNDOMEM, 248, 116, 40, 12, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
     LTEXT           "Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.", IDC_UNDONOTE, 8, 131, 284, 18
-    LTEXT           "", IDC_INIPATH, 8, 153, 284, 18
-    LTEXT           "", IDC_INIWARN, 8, 173, 284, 18
+    LTEXT           "Prefetch memory limit (MB):", -1, 8, 156, 140, 10
+    EDITTEXT        IDC_PREFETCHMEM, 150, 154, 40, 12, ES_NUMBER | ES_AUTOHSCROLL | WS_TABSTOP
+    LTEXT           "Decodes the next page in the background and keeps the previous one, so turning pages does not wait. At the end of a folder or archive, the next one is prepared too. 0 turns this off.", IDC_PREFETCHNOTE, 8, 169, 284, 26
+    LTEXT           "", IDC_INIPATH, 8, 199, 284, 18
+    LTEXT           "", IDC_INIWARN, 8, 219, 284, 18
 END
 
 IDD_SET_MODES DIALOGEX 0, 0, 300, 196

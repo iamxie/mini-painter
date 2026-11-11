@@ -194,6 +194,21 @@ TEST_CASE("Settings：undoLimit 預設 99、能往返、超出範圍夾回、壞
     CHECK(parseSettings(L"undoLimit=\n").undoLimit == 99);
 }
 
+TEST_CASE("Settings：prefetchMB 預設 512、0 是關閉、能往返、超出範圍夾回、壞值維持預設") {
+    CHECK(parseSettings(L"").prefetchMB == 512);
+    Settings s = parseSettings(L"prefetchMB=0\n");
+    CHECK(s.prefetchMB == 0);
+    CHECK(serializeSettings(s).find(L"prefetchMB=0\n") != std::wstring::npos);
+    s.prefetchMB = 2048;
+    CHECK(parseSettings(serializeSettings(s)).prefetchMB == 2048);
+    CHECK(parseSettings(L"prefetchMB=-5\n").prefetchMB == 0);
+    CHECK(parseSettings(L"prefetchMB=9999999\n").prefetchMB == 65536);
+    CHECK(parseSettings(L"prefetchMB=abc\n").prefetchMB == 512);
+    CHECK(prefetchMBFromText(L"1024", 512) == 1024);
+    CHECK(prefetchMBFromText(L"99999999999999999999", 512) == 65536);
+    CHECK(prefetchMBFromText(L"", 300) == 300);
+}
+
 TEST_CASE("Settings：undoMemoryMB 預設 512、能往返、超出範圍夾回、壞值維持預設") {
     CHECK(parseSettings(L"").undoMemoryMB == 512);
     Settings s = parseSettings(L"undoMemoryMB=2048\n");

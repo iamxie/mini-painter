@@ -585,12 +585,15 @@ INT_PTR CALLBACK generalPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         SetDlgItemInt(dlg, IDC_UNDOLIMIT, static_cast<UINT>(st->s.undoLimit), FALSE); // 會送 EN_CHANGE，此時頁面還沒顯示，不算變更
         SendDlgItemMessageW(dlg, IDC_UNDOMEM, EM_SETLIMITTEXT, 5, 0);
         SetDlgItemInt(dlg, IDC_UNDOMEM, static_cast<UINT>(st->s.undoMemoryMB), FALSE);
+        SendDlgItemMessageW(dlg, IDC_PREFETCHMEM, EM_SETLIMITTEXT, 5, 0);
+        SetDlgItemInt(dlg, IDC_PREFETCHMEM, static_cast<UINT>(st->s.prefetchMB), FALSE);
         st->generalReady = true;
         return TRUE;
     }
     case WM_COMMAND:
         if (LOWORD(wp) == IDC_AUTOUPDATE && HIWORD(wp) == BN_CLICKED) { markChanged(dlg); return TRUE; }
-        if ((LOWORD(wp) == IDC_UNDOLIMIT || LOWORD(wp) == IDC_UNDOMEM) && HIWORD(wp) == EN_CHANGE && st && st->generalReady) { markChanged(dlg); return TRUE; }
+        if ((LOWORD(wp) == IDC_UNDOLIMIT || LOWORD(wp) == IDC_UNDOMEM || LOWORD(wp) == IDC_PREFETCHMEM) && HIWORD(wp) == EN_CHANGE &&
+            st && st->generalReady) { markChanged(dlg); return TRUE; }
         if (LOWORD(wp) == IDC_RESETTIP) {
             st->s.tipShown = 0;
             updateTipState(dlg, *st);
@@ -607,9 +610,11 @@ INT_PTR CALLBACK generalPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             // 空白或超出範圍：夾回允許的範圍，並把夾過的值寫回欄位
             st->s.undoLimit = undoLimitFromText(dlgText(dlg, IDC_UNDOLIMIT), st->s.undoLimit);
             st->s.undoMemoryMB = undoMemoryFromText(dlgText(dlg, IDC_UNDOMEM), st->s.undoMemoryMB);
+            st->s.prefetchMB = prefetchMBFromText(dlgText(dlg, IDC_PREFETCHMEM), st->s.prefetchMB);
             st->generalReady = false;
             SetDlgItemInt(dlg, IDC_UNDOLIMIT, static_cast<UINT>(st->s.undoLimit), FALSE);
             SetDlgItemInt(dlg, IDC_UNDOMEM, static_cast<UINT>(st->s.undoMemoryMB), FALSE);
+            SetDlgItemInt(dlg, IDC_PREFETCHMEM, static_cast<UINT>(st->s.prefetchMB), FALSE);
             st->generalReady = true;
             pageApplied(*st);
             SetWindowLongPtrW(dlg, DWLP_MSGRESULT, PSNRET_NOERROR);
@@ -1237,6 +1242,24 @@ ArchiveResult extractWithProgress(HWND owner, const std::wstring& archivePath, c
     // 建不出對話框就同步解，沒有進度也沒有取消。
     if (!runWithProgress(owner, st)) return extractImages(archivePath, destDir, opt);
     return result;
+}
+
+void runUnpackWithProgress(HWND owner, const std::wstring& archivePath,
+                           const std::function<void(const std::function<bool(uint64_t, uint64_t)>& progress)>& work) {
+    ProgressState st;
+    st.caption = tr(L"Unpacking");
+    std::wstring name = archivePath.substr(archivePath.find_last_of(L"\\/") + 1);
+    st.text.resize(wcslen(tr(L"Unpacking “%s”…")) + name.size() + 8);
+    int n = swprintf(st.text.data(), st.text.size(), tr(L"Unpacking “%s”…"), name.c_str());
+    st.text.resize(n > 0 ? static_cast<size_t>(n) : 0);
+    st.work = [&](ProgressState& s) {
+        work([&s](uint64_t done, uint64_t total) {
+            if (s.cancel.load()) return false;
+            s.setPos(done, total);
+            return true;
+        });
+    };
+    if (!runWithProgress(owner, st)) work(nullptr);
 }
 
 int tryPasswordsWithProgress(HWND owner, const std::wstring& archivePath, const std::vector<std::wstring>& passwords,

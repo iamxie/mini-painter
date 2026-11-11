@@ -41,6 +41,8 @@ add_library(mp_core STATIC
     src/core/Shelf.cpp
     src/core/Update.cpp
     src/core/Crop.cpp
+    src/core/ViewFit.cpp
+    src/core/Prefetch.cpp
 )
 target_include_directories(mp_core PUBLIC src)
 target_link_libraries(mp_core PUBLIC WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z nlohmann_json::nlohmann_json windowscodecs ole32 shlwapi propsys version advapi32 winhttp bcrypt)
@@ -83,6 +85,8 @@ add_executable(mp_tests
     src/tests/test_shelf.cpp
     src/tests/test_update.cpp
     src/tests/test_crop.cpp
+    src/tests/test_view_fit.cpp
+    src/tests/test_prefetch.cpp
     # Renderer 的點陣圖快取（畫在記憶體裡的 render target）。src/app 仍然不測。
     src/tests/test_renderer.cpp
     src/render/Renderer.cpp

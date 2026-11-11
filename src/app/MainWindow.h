@@ -16,9 +16,11 @@
 #include "core/Document.h"
 #include "core/FolderNav.h"
 #include "core/Lang.h"
+#include "core/Prefetch.h"
 #include "core/Settings.h"
 #include "core/Spreads.h"
 #include "core/TempDir.h"
+#include "core/ViewFit.h"
 #include "render/Renderer.h"
 
 namespace mp {
@@ -67,6 +69,10 @@ private:
 
     // 檔案
     bool openPath(const std::wstring& path);
+    LoadResult loadPage(const std::wstring& path); // 解一頁：預先解好的直接拿，沒有就現在解（解好的交給 prefetch_ 留著）
+    // 預先解碼：告訴背景目前這屏、翻頁方向的下一屏、上一屏，到一本的盡頭時加上換本預備。翻頁、改檢視設定、畫布大小變了時呼叫。
+    void schedulePrefetch();
+    std::wstring prefetchArchiveRoot(); // 換本預開壓縮檔要解到哪（必要時先載 7z.dll、建暫存資料夾）；不能預開回空字串
     bool confirmDiscard();
     bool save();
     bool saveAs();   // 換檔名存，之後編輯的就是新檔（只給 save() 遇到不能原地存的格式時用）
@@ -133,7 +139,7 @@ private:
     void hideTip();
 
     // 檢視模式（看漫畫）：設定裡的 viewMode 字串 <-> enum
-    enum class ViewMode { FitWindow, FitWidth, FitHeight, Actual, TwoPage };
+    using ViewMode = mp::ViewMode;
     static ViewMode viewModeFromString(const std::wstring& s);
     static const wchar_t* viewModeToString(ViewMode m);
     void setViewMode(ViewMode m);
@@ -254,7 +260,7 @@ private:
     std::wstring loadedFrom_; // 這張圖的 metadata 來源：原本開的檔；存檔成功後就是存的那個檔
     std::wstring loadError_;
     // 壓縮檔
-    InstanceTempDir tempDir_;             // 本執行個體的暫存資料夾，第一次開壓縮檔時建立
+    InstanceTempDir tempDir_;             // 本執行個體的暫存資料夾，第一次開壓縮檔（或預開下一本）時建立
     bool tempDirStale_ = false;           // 設定面板改了暫存位置：目前這本看完（closeArchive）就在新位置重建
     int archiveSeq_ = 0;                  // 每開一個壓縮檔用一個子資料夾
     std::wstring archivePath_;            // 目前開的壓縮檔；空 = 不是壓縮檔
@@ -263,6 +269,10 @@ private:
     std::vector<std::wstring> archiveNames_; // 與 archiveFiles_ 同序的壓縮檔內名字，顯示用
     InfoData infoData_;
     InfoPanelState infoState_;
+    // 預先解碼（在 tempDir_ 之後宣告：先解構，背景停了才刪暫存資料夾）
+    Prefetcher prefetch_;
+    int lastDir_ = 1;                     // 最近一次翻頁的方向：預先解碼往這個方向準備
+    float prefetchCanvasW_ = 0, prefetchCanvasH_ = 0; // 上次 schedulePrefetch 用的畫布大小；變了就再排一次
 
     // 檢視
     float zoom_ = 1.0f;

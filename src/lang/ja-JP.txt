@@ -376,6 +376,10 @@ Undo steps to keep:=元に戻せる回数：
 Memory limit (MB):=メモリ上限（MB）：
 Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.=回転・トリミング・サイズ調整・色調整は 1 回ごとに画像全体のコピーを保持します。コピーがメモリ上限を超えると古い手順から破棄されます（直前の 1 回は必ず残ります）。
 
+# --- 先読み ---
+Prefetch memory limit (MB):=先読みのメモリ上限（MB）：
+Decodes the next page in the background and keeps the previous one, so turning pages does not wait. At the end of a folder or archive, the next one is prepared too. 0 turns this off.=次のページを裏で先に読み込み、前のページも残しておくので、ページをめくっても待ちません。フォルダーや書庫の最後では次の 1 冊も準備します。0 で無効。
+
 # --- 新しいバージョンの確認と自動アップデート ---
 Check for updates when mpainter starts=起動時にアップデートを確認する
 When this is off, you can still check in Help > About mpainter.=オフにしても「ヘルプ > mpainter について」から確認できます。

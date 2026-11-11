@@ -15,9 +15,6 @@ void Document::reset(ImagePtr image) {
     savedSerial_ = cur_.serial;
 }
 
-namespace {
-
-// 文字 → [lo, hi] 的整數。不是數字回 fallback；位數多到 int 裝不下時，正的當成 hi、負的當成 lo。
 int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi) {
     try {
         return std::clamp(std::stoi(text), lo, hi);
@@ -27,8 +24,6 @@ int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi) {
         return text.find(L'-') != std::wstring::npos ? lo : hi;
     }
 }
-
-} // namespace
 
 int clampUndoLimit(int n) { return std::clamp(n, kUndoLimitMin, kUndoLimitMax); }
 

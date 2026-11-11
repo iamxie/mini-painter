@@ -80,6 +80,10 @@ bool showPasswordDialog(HWND owner, const std::wstring& archiveName, bool retry,
 // 在背景執行緒跑 extractImages，主執行緒顯示進度（0.3 秒內解完就不顯示），可取消。回傳解壓結果。
 ArchiveResult extractWithProgress(HWND owner, const std::wstring& archivePath, const std::wstring& destDir,
                                   const ExtractOptions& opt);
+// 等背景正在做的解壓（work 在背景執行緒跑），主執行緒顯示和 extractWithProgress 一樣的進度對話框（0.3 秒內結束就不顯示）。
+// work 拿到 progress(done, total)：要定時呼叫它，它回 false 表示使用者按了取消。建不出對話框時同步執行，progress 是空的。
+void runUnpackWithProgress(HWND owner, const std::wstring& archivePath,
+                           const std::function<void(const std::function<bool(uint64_t, uint64_t)>& progress)>& work);
 // 背景執行緒逐一用 testPassword 試 passwords，主執行緒顯示「正在嘗試密碼（i/n）」（同樣 0.3 秒內結束就不顯示），可取消。
 // 回傳第一個對的索引；都不對回 -1；取消時 cancelled 為 true。
 int tryPasswordsWithProgress(HWND owner, const std::wstring& archivePath, const std::vector<std::wstring>& passwords,

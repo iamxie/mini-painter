@@ -121,6 +121,10 @@ bool profileModified(const Settings& s) {
     return !p || !samePrefs(*p, profileFromCurrent(s));
 }
 
+int prefetchMBFromText(const std::wstring& text, int fallback) {
+    return clampedIntFromText(text, fallback, kPrefetchMinMB, kPrefetchMaxMB);
+}
+
 std::vector<Profile> defaultProfiles(const std::wstring& generalName, const std::wstring& comicName) {
     Profile general;
     general.name = generalName;
@@ -189,6 +193,7 @@ Settings parseSettings(const std::wstring& text) {
         else if (key == L"skipVersion") s.skipVersion = val;
         else if (key == L"undoLimit") s.undoLimit = undoLimitFromText(val, s.undoLimit);
         else if (key == L"undoMemoryMB") s.undoMemoryMB = undoMemoryFromText(val, s.undoMemoryMB);
+        else if (key == L"prefetchMB") s.prefetchMB = prefetchMBFromText(val, s.prefetchMB);
         else if (key == L"updateUrl") s.updateUrl = val;
         else if (key == L"pinnedNames") {
             s.pinnedNames.clear();
@@ -240,6 +245,7 @@ std::wstring serializeSettings(const Settings& s) {
     out += L"skipVersion=" + s.skipVersion + L"\n";
     out += L"undoLimit=" + std::to_wstring(s.undoLimit) + L"\n";
     out += L"undoMemoryMB=" + std::to_wstring(s.undoMemoryMB) + L"\n";
+    out += L"prefetchMB=" + std::to_wstring(s.prefetchMB) + L"\n";
     if (!s.updateUrl.empty()) out += L"updateUrl=" + s.updateUrl + L"\n";
     std::wstring pinned;
     for (const auto& n : s.pinnedNames) pinned += (pinned.empty() ? L"" : L"|") + n;

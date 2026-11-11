@@ -72,9 +72,9 @@ public:
     // 底圖在視窗 render target 上的點陣圖。快取只留上一幀畫過的（見 endFrame），兩頁並排時兩頁都在裡面。
     // 回傳的指標到下一次 endFrame 前有效。
     const ImageBitmap* imageBitmap(const ImagePtr& img);
-    // 高品質縮放：底圖先用 Lanczos3 重取樣到 tw×th 再上傳，同一個快取。
-    // 超過 GPU 上限或太大時回傳 nullptr，呼叫端退回 imageBitmap。
-    const ImageBitmap* scaledBitmap(const ImagePtr& img, int tw, int th);
+    // 高品質縮放：底圖先用 Lanczos3 重取樣到 tw×th 再上傳，同一個快取。prescaled 是 tw×th 的話（預先解碼時背景縮好的）
+    // 直接上傳，不重算。超過 GPU 上限或太大時回傳 nullptr，呼叫端退回 imageBitmap。
+    const ImageBitmap* scaledBitmap(const ImagePtr& img, int tw, int th, const ImagePtr& prescaled = nullptr);
     std::map<uint32_t, MosaicEntry>& mosaicCache() { return mosaic_; }
     // 每畫完一幀呼叫：這一幀沒用到的底圖點陣圖與馬賽克小圖都丟掉，連同它們握著的來源圖。
     // 翻走的圖、undo 歷史裡的圖、舊的調色預覽、舊倍率的縮圖因此不會留在記憶體。

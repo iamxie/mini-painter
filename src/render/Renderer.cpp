@@ -6,6 +6,7 @@
 #include <cmath>
 
 #include "core/ImageOps.h"
+#include "core/ViewFit.h"
 
 #pragma comment(lib, "d2d1")
 #pragma comment(lib, "dwrite")
@@ -107,7 +108,7 @@ const ImageBitmap* Renderer::imageBitmap(const ImagePtr& img) {
     return &bitmaps_.back().bmp;
 }
 
-const ImageBitmap* Renderer::scaledBitmap(const ImagePtr& img, int tw, int th) {
+const ImageBitmap* Renderer::scaledBitmap(const ImagePtr& img, int tw, int th, const ImagePtr& prescaled) {
     if (!rt_ || !img || tw <= 0 || th <= 0) return nullptr;
     for (auto& e : bitmaps_) {
         if (e.src == img && e.tw == tw && e.th == th) {
@@ -117,10 +118,16 @@ const ImageBitmap* Renderer::scaledBitmap(const ImagePtr& img, int tw, int th) {
     }
     UINT maxSize = rt_->GetMaximumBitmapSize();
     // 放大到超過 GPU 上限或 4000 萬像素就不做，記憶體和時間都不值得。
-    if (static_cast<UINT>(tw) > maxSize || static_cast<UINT>(th) > maxSize || static_cast<long long>(tw) * th > 40'000'000LL) return nullptr;
-    Image scaled = resample(*img, tw, th);
+    if (static_cast<UINT>(tw) > maxSize || static_cast<UINT>(th) > maxSize || static_cast<long long>(tw) * th > kHqMaxPixels) return nullptr;
+    // 預先解碼時背景已經縮好的就直接上傳。
+    Image own;
+    const Image* scaled = prescaled.get();
+    if (!scaled || scaled->width != tw || scaled->height != th) {
+        own = resample(*img, tw, th);
+        scaled = &own;
+    }
     ComPtr<ID2D1Bitmap> bmp;
-    rt_->CreateBitmap(D2D1::SizeU(scaled.width, scaled.height), scaled.pixels.data(), static_cast<UINT32>(scaled.stride()),
+    rt_->CreateBitmap(D2D1::SizeU(scaled->width, scaled->height), scaled->pixels.data(), static_cast<UINT32>(scaled->stride()),
                       D2D1::BitmapProperties(D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED)),
                       &bmp);
     if (!bmp) return nullptr;

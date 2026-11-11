@@ -26,11 +26,12 @@ namespace {
 constexpr wchar_t kClassName[] = L"MiniPainterMain";
 constexpr wchar_t kAppName[] = L"mpainter";
 constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer = 4, kToastTimer = 5, kArmTimer = 6,
-                   kUpdateTimer = 7;
+                   kUpdateTimer = 7, kPrefetchTimer = 8;
 constexpr UINT WM_MP_UPDATE_FOUND = WM_APP + 4; // lParam = new 出來的 ReleaseInfo*，收到的人 delete
 constexpr wchar_t kReleasesPage[] = L"https://github.com/iamxie/mini-painter/releases";
 constexpr UINT kToastMs = 2000, kArmMs = 3000;
 constexpr UINT kHqDelayMs = 200;
+constexpr UINT kPrefetchDelayMs = 300; // 拖曳改視窗大小時，停下來才重排預先縮圖
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
 constexpr float kToolbarH = 44, kMarkupH = 40, kNameH = 26, kInfoW = 320, kBtnW = 36, kBtnH = 30;
 constexpr float kHandleR = 5.0f;
@@ -255,6 +256,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == kToastTimer) { hideToast(); return 0; }
         if (wp == kArmTimer) { disarmJump(); return 0; }
         if (wp == kUpdateTimer) { KillTimer(hwnd_, kUpdateTimer); offerPendingUpdate(); return 0; }
+        if (wp == kPrefetchTimer) { schedulePrefetch(); return 0; }
         if (wp == kHqTimer) {
             KillTimer(hwnd_, kHqTimer);
             hqBusy_ = false;
@@ -340,6 +342,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         DestroyWindow(hwnd_);
         return 0;
     case WM_DESTROY:
+        prefetch_.shutdown();
         closeArchive();
         tempDir_.release();
         if (!relaunchArgs_.empty()) {
@@ -382,6 +385,8 @@ void MainWindow::layout() {
     canvasRc_ = D2D1::RectF(0, y, w - infoW, h);
     infoRc_ = D2D1::RectF(w - infoW, y, w, h);
     buildButtons();
+    if (doc_.image() && (canvasRc_.right - canvasRc_.left != prefetchCanvasW_ || canvasRc_.bottom - canvasRc_.top != prefetchCanvasH_))
+        SetTimer(hwnd_, kPrefetchTimer, kPrefetchDelayMs, nullptr);
 }
 
 void MainWindow::buildButtons() {
@@ -664,6 +669,7 @@ void MainWindow::onCommand(int id) {
         saveSettingsQuiet();
         if (fit_) { fitToView(); repaint(); }
         updateTitle();
+        schedulePrefetch();
         break;
     case IDM_RTL:
         settings_.rightToLeft = !settings_.rightToLeft;
@@ -684,6 +690,7 @@ void MainWindow::onCommand(int id) {
             if (cur >= 0 && spreads_[static_cast<size_t>(cur)].first != nav_.index()) openPath(nav_.at(spreads_[static_cast<size_t>(cur)].first));
             else { loadSecond(); fit_ = true; fitToView(); updateTitle(); repaint(); }
         }
+        schedulePrefetch();
         break;
     case IDM_PREV: goPrev(); break;
     case IDM_NEXT: goNext(); break;
@@ -692,6 +699,7 @@ void MainWindow::onCommand(int id) {
         disarmJump();
         saveSettingsQuiet();
         updateTitle();
+        schedulePrefetch();
         break;
     case IDM_MARKUP: onButton(BTN_MARKUP); break;
     case IDM_INFO: onButton(BTN_INFO); break;
@@ -744,7 +752,7 @@ bool MainWindow::openPath(const std::wstring& path) {
         repaint();
         return false;
     }
-    LoadResult r = loadImage(path);
+    LoadResult r = loadPage(path);
     path_ = path;
     loadedFrom_ = path;
     if (inArchive) nav_.setFiles(archiveFiles_, path);
@@ -764,6 +772,7 @@ bool MainWindow::openPath(const std::wstring& path) {
         updateTitle();
         layout();
         repaint();
+        schedulePrefetch();
         return false;
     }
     if (!settings_.askedDefault && !askPending_) {
@@ -798,7 +807,101 @@ bool MainWindow::openPath(const std::wstring& path) {
     updateTitle();
     layout();
     repaint();
+    schedulePrefetch();
     return true;
+}
+
+LoadResult MainWindow::loadPage(const std::wstring& path) {
+    if (auto r = prefetch_.take(path)) return *r;
+    LoadResult r = loadImage(path);
+    if (settings_.prefetchMB > 0) prefetch_.put(path, r);
+    return r;
+}
+
+void MainWindow::schedulePrefetch() {
+    KillTimer(hwnd_, kPrefetchTimer);
+    float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
+    prefetchCanvasW_ = cw;
+    prefetchCanvasH_ = ch;
+    size_t limit = static_cast<size_t>(settings_.prefetchMB) * 1024 * 1024;
+    if (limit == 0 || !doc_.image() || nav_.index() < 0) {
+        prefetch_.setWanted({}, {}, std::nullopt, {}, 0);
+        return;
+    }
+    std::vector<std::wstring> current{path_};
+    if (twoPage() && second_) current.push_back(secondPath_);
+    // 翻頁方向的下一屏優先，再來是上一屏（翻回來也不用等）。
+    std::vector<std::vector<std::wstring>> others;
+    bool atEdge = false;
+    if (twoPage()) {
+        int cur = currentSpread(), n = static_cast<int>(spreads_.size());
+        auto pages = [&](int k) {
+            const Spread& sp = spreads_[static_cast<size_t>(k)];
+            std::vector<std::wstring> v{nav_.at(sp.first)};
+            if (sp.second >= 0) v.push_back(nav_.at(sp.second));
+            return v;
+        };
+        int next = cur + lastDir_, prev = cur - lastDir_;
+        atEdge = cur >= 0 && (next < 0 || next >= n);
+        if (cur >= 0 && !atEdge) others.push_back(pages(next));
+        if (cur >= 0 && prev >= 0 && prev < n) others.push_back(pages(prev));
+    } else {
+        int i = nav_.index(), n = nav_.count();
+        int next = i + lastDir_, prev = i - lastDir_;
+        atEdge = next < 0 || next >= n;
+        if (!atEdge) others.push_back({nav_.at(next)});
+        if (prev >= 0 && prev < n) others.push_back({nav_.at(prev)});
+    }
+    // 到一本的盡頭、開了「接著看下一本」：先準備同一層的下一本（或上一本）。
+    std::optional<BookRequest> book;
+    std::wstring from = currentBook();
+    if (atEdge && settings_.autoNextBook && !from.empty()) {
+        BookRequest req;
+        req.fromBook = from;
+        req.dir = lastDir_;
+        req.twoPage = viewMode_ == ViewMode::TwoPage;
+        req.firstAlone = settings_.firstPageAlone;
+        req.shiftOne = shiftOne_;
+        req.pinned = settings_.pinnedNames;
+        req.passwords = settings_.passwords;
+        req.archiveRoot = prefetchArchiveRoot();
+        book = std::move(req);
+    }
+    // 高品質模式：照翻過去之後 fitToView 會算出的倍率，先縮好。
+    TargetSizes target;
+    if (settings_.highQuality) {
+        ViewMode mode = viewMode_;
+        bool upscale = settings_.upscaleSmall;
+        unsigned maxSide = renderer_.rt() ? renderer_.rt()->GetMaximumBitmapSize() : 16384;
+        target = [mode, upscale, maxSide, cw, ch](const std::vector<Size2>& pages) {
+            float vw = 0, vh = 0; // 和 viewW / viewH 一樣：並排時寬相加、高取大的
+            for (auto [w, h] : pages) {
+                vw += static_cast<float>(w);
+                vh = std::max(vh, static_cast<float>(h));
+            }
+            float z = fitZoom(mode, cw, ch, vw, vh, upscale);
+            std::vector<Size2> out;
+            for (auto [w, h] : pages) {
+                int tw = 0, th = 0;
+                out.push_back(hqTargetSize(w, h, z, maxSide, tw, th) ? Size2{tw, th} : Size2{0, 0});
+            }
+            return out;
+        };
+    }
+    prefetch_.setWanted(std::move(current), std::move(others), std::move(book), std::move(target), limit);
+}
+
+std::wstring MainWindow::prefetchArchiveRoot() {
+    if (tempDirStale_) return L""; // 暫存位置改了、還沒搬：這一本先不預開
+    if (!archiveLibraryLoaded()) {
+        size_t slash = exePath_.find_last_of(L"\\/");
+        std::wstring dll = (slash == std::wstring::npos ? L"" : exePath_.substr(0, slash + 1)) + L"7z.dll";
+        if (!loadArchiveLibrary(dll)) return L"";
+    }
+    if (!tempDir_.valid() && !tempDir_.create(resolveUnzipRoot(settings_.unzipDir, exeDir())) &&
+        !tempDir_.create(fallbackUnzipRoot()))
+        return L"";
+    return tempDir_.path();
 }
 
 // ---------------------------------------------------------------------------
@@ -874,9 +977,21 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg) {
     if (!tempDir_.valid() && !tempDir_.create(resolveUnzipRoot(settings_.unzipDir, exeDir())) &&
         !tempDir_.create(fallbackUnzipRoot()))
         return fail(tr(L"Cannot create the temp folder for unpacking archives."));
-    std::wstring dest = tempDir_.path() + L"\\" + std::to_wstring(++archiveSeq_);
+    // 換本預備：背景預開過這一本就等它解完直接用（含密碼列表試出來的密碼），不再解一次。
+    std::optional<BookPlan> pre;
+    runUnpackWithProgress(hwnd_, path, [&](const std::function<bool(uint64_t, uint64_t)>& progress) {
+        pre = prefetch_.takeBook(path, progress);
+    });
+    if (pre && pre->extracted.status == ArchiveStatus::Cancelled) return fail(L"");
+    bool adopted = pre && pre->usable();
+    if (pre && !adopted && !pre->dest.empty()) removeDirectoryRecursive(pre->dest);
+    std::wstring dest = adopted ? pre->dest : tempDir_.path() + L"\\" + std::to_wstring(++archiveSeq_);
     ExtractOptions opt;
-    ArchiveResult r = extractWithProgress(hwnd_, path, dest, opt);
+    if (adopted) {
+        opt.password = pre->password;
+        for (const auto& [f, wide] : pre->wide) wideCache_[f] = wide; // 每頁寬高讀過了，updateSpreads 不用再讀檔頭
+    }
+    ArchiveResult r = adopted ? pre->extracted : extractWithProgress(hwnd_, path, dest, opt);
     bool fromList = false;
     if (r.status == ArchiveStatus::NeedPassword && !settings_.passwords.empty()) {
         // 先把密碼列表試一輪，都不對才問。
@@ -1096,6 +1211,7 @@ void MainWindow::step(int dir) {
     }
     if (target < 0) { bookEdge(dir); return; }
     if (!confirmDiscard()) return;
+    lastDir_ = dir;
     openPath(nav_.at(target));
 }
 
@@ -1124,6 +1240,11 @@ void MainWindow::bookEdge(int dir) {
     armedDir_ = dir;
     armedTarget_ = target;
     SetTimer(hwnd_, kArmTimer, kArmMs, nullptr);
+    // 剛從另一個方向翻過來（例如從下一本退回這本的最後一屏）時，下一本還沒準備：趁待命的這段時間在背景準備。
+    if (lastDir_ != dir) {
+        lastDir_ = dir;
+        schedulePrefetch();
+    }
     showToast(dir > 0 ? fmt2(L"%s is finished. Press Next again to start %s", fileNameOf(book), fileNameOf(target))
                       : fmt2(L"This is the first page of %s. Press Previous again to go back to the end of %s",
                              fileNameOf(book), fileNameOf(target)), true);
@@ -1133,7 +1254,11 @@ bool MainWindow::openBook(const std::wstring& book, int dir) {
     // 失敗（密碼對話框取消、解壓失敗、沒有圖）就留在原本這本，說一聲為什麼；再按翻頁會重新走「提示 → 再按一次」。
     std::wstring from = fileNameOf(currentBook());
     bool ok = false;
+    lastDir_ = dir;
     if (isDirectoryPath(book)) {
+        // 背景準備過這一本的話，每頁寬高已經讀過，updateSpreads 不用再讀檔頭。
+        if (auto plan = prefetch_.takeBook(book, nullptr); plan && plan->usable())
+            for (const auto& [f, wide] : plan->wide) wideCache_[f] = wide;
         auto files = listImageFiles(book);
         movePinnedFirst(files, settings_.pinnedNames);
         if (files.empty()) { showToast(fmt2(L"Could not open %s: %s", fileNameOf(book), tr(L"This folder has no supported images")), false); return false; }
@@ -1235,7 +1360,7 @@ void MainWindow::loadSecond() {
     second_.reset();
     secondPath_ = path;
     if (path.empty()) return;
-    LoadResult r = loadImage(path);
+    LoadResult r = loadPage(path);
     if (r.image) second_ = r.image;
 }
 
@@ -1354,6 +1479,7 @@ void MainWindow::setViewMode(ViewMode m) {
     positionEdit();
     updateTitle();
     repaint();
+    schedulePrefetch();
 }
 
 // 依檢視模式算 zoom。符合類模式預設不放大小圖，開了「小圖放大」才放大；1:1 永遠不放大。
@@ -1361,19 +1487,9 @@ void MainWindow::fitToView(bool resetOffset) {
     auto img = doc_.image();
     if (!img) return;
     float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
-    float vw = viewW(), vh = viewH();
     // 裁切模式剛進入時整張圖放進畫布（不改檢視模式設定）
     ViewMode mode = cropping_ && cropFit_ ? ViewMode::FitWindow : viewMode_;
-    float z;
-    switch (mode) {
-    case ViewMode::FitWidth: z = cw / vw; break;
-    case ViewMode::FitHeight: z = ch / vh; break;
-    case ViewMode::TwoPage: z = std::min(cw / vw, ch / vh); break; // 兩頁並排：符合高度，兩頁都放不下時再縮
-    case ViewMode::Actual: z = 1.0f; break;
-    default: z = std::min(cw / vw, ch / vh); break;
-    }
-    if (!settings_.upscaleSmall || mode == ViewMode::Actual) z = std::min(1.0f, z);
-    zoom_ = std::max(0.01f, z);
+    zoom_ = fitZoom(mode, cw, ch, viewW(), viewH(), settings_.upscaleSmall);
     if (resetOffset) offset_ = {0, 0}; // 從左上開始，放得下的方向由 clampOffset 置中
     clampOffset();
     buildButtons();
@@ -1694,11 +1810,10 @@ void MainWindow::drawCanvas() {
     // 高品質縮放：不在連續縮放中、不在調色預覽中、倍率不是 1 時，用 Lanczos3 先縮好的點陣圖。
     auto bitmapFor = [&](const ImagePtr& im) {
         const ImageBitmap* b = nullptr;
-        if (settings_.highQuality && !hqBusy_ && !adjusting_ && std::abs(zoom_ - 1.0f) > 1e-4f) {
-            int tw = std::max(1, static_cast<int>(std::lround(im->width * zoom_)));
-            int th = std::max(1, static_cast<int>(std::lround(im->height * zoom_)));
-            b = renderer_.scaledBitmap(im, tw, th);
-        }
+        int tw = 0, th = 0;
+        if (settings_.highQuality && !hqBusy_ && !adjusting_ &&
+            hqTargetSize(im->width, im->height, zoom_, renderer_.rt()->GetMaximumBitmapSize(), tw, th))
+            b = renderer_.scaledBitmap(im, tw, th, prefetch_.scaled(im, tw, th)); // 預先解碼時背景縮好的就直接用
         if (!b) b = renderer_.imageBitmap(im);
         return b;
     };
@@ -2372,6 +2487,7 @@ void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendin
     doc_.setUndoLimit(settings_.undoLimit); // 改小時立刻丟掉最舊的步驟
     settings_.undoMemoryMB = s.undoMemoryMB;
     doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
+    settings_.prefetchMB = s.prefetchMB;
     // 模式：換了模式、或正在用的那個內容被改了，就重新套用（目前的值 = 模式本體）
     const Profile* np = findProfile(s, s.profileName);
     const Profile* op = findProfile(settings_, settings_.profileName);
@@ -2384,12 +2500,14 @@ void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendin
     if (pinnedChanged) applyPinnedNow();
     if (unzipChanged) {
         // 正在看壓縮檔就等它關掉再搬（看到一半不搬）；沒在看就現在把舊的刪掉，下次開在新位置建。
+        prefetch_.dropBook(); // 背景可能正把下一本解到舊位置：先停下來
         tempDirStale_ = true;
         if (archivePath_.empty()) { tempDir_.release(); tempDirStale_ = false; }
     }
     disarmJump();
     updateTitle();
     saveSettingsQuiet();
+    schedulePrefetch();
 }
 
 void MainWindow::applyPinnedNow() {

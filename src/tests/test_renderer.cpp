@@ -45,7 +45,40 @@ struct Fixture {
 
 ImagePtr img(int w, int h) { return std::make_shared<Image>(w, h); }
 
+// 畫完之後 render target 底下那張 WIC 點陣圖 (x, y) 的像素（BGRA）。
+uint32_t pixelAt(Fixture& f, int x, int y) {
+    WICRect rc{x, y, 1, 1};
+    ComPtr<IWICBitmapLock> lock;
+    REQUIRE(SUCCEEDED(f.surface->Lock(&rc, WICBitmapLockRead, &lock)));
+    UINT size = 0;
+    BYTE* p = nullptr;
+    REQUIRE(SUCCEEDED(lock->GetDataPointer(&size, &p)));
+    return *reinterpret_cast<const uint32_t*>(p);
+}
+
 } // namespace
+
+TEST_CASE("Renderer：高品質縮放給了先縮好的圖（尺寸相同）就直接上傳；尺寸不對就自己縮") {
+    Fixture f;
+    auto a = img(64, 64); // 全 0（透明）
+    auto pre = std::make_shared<Image>(16, 16);
+    for (auto& b : pre->pixels) b = 255; // 白
+    f.frame([&] {
+        f.r.rt()->Clear(D2D1::ColorF(0, 0, 0, 0));
+        const ImageBitmap* s = f.r.scaledBitmap(a, 16, 16, pre);
+        REQUIRE(s != nullptr);
+        f.r.rt()->DrawBitmap(s->bitmap.Get(), D2D1::RectF(0, 0, 16, 16));
+    });
+    CHECK(pixelAt(f, 8, 8) == 0xFFFFFFFFu);
+    f.frame([&] {
+        f.r.rt()->Clear(D2D1::ColorF(0, 0, 0, 0));
+        const ImageBitmap* s = f.r.scaledBitmap(a, 20, 20, pre);
+        REQUIRE(s != nullptr);
+        CHECK(s->bitmap->GetPixelSize().width == 20);
+        f.r.rt()->DrawBitmap(s->bitmap.Get(), D2D1::RectF(0, 0, 20, 20));
+    });
+    CHECK(pixelAt(f, 8, 8) == 0u);
+}
 
 TEST_CASE("Renderer：連續兩幀畫同一張圖，點陣圖沿用") {
     Fixture f;

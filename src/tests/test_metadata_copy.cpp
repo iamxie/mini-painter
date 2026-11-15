@@ -201,6 +201,26 @@ TEST_CASE("patchExifTiff：Orientation 歸 1、尺寸欄位依 sizeChanged 改�
     CHECK(bigEndianBad.size() == 8);
 }
 
+TEST_CASE("patchExifTiff：IFD0 的位移接近 4 GB，原樣不動") {
+    // 32 位元的 off + 2 會繞回 0 或 1，檢查沒擋住的話接著就讀 4 GB 外的位元組。
+    for (uint32_t off : {0xFFFFFFFEu, 0xFFFFFFFFu}) {
+        std::vector<uint8_t> t = {'I', 'I', 42, 0, 0, 0, 0, 0, 1, 0, 0x12, 0x01, 3, 0, 1, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0};
+        for (int i = 0; i < 4; ++i) t[4 + i] = static_cast<uint8_t>(off >> (8 * i));
+        auto before = t;
+        patchExifTiff(t, true, 300, 200);
+        CHECK(t == before);
+    }
+}
+
+TEST_CASE("patchExifTiff：Exif IFD 的位移接近 4 GB，只改 IFD0") {
+    auto t = tinyExif();
+    for (int i = 0; i < 4; ++i) t[8 + 2 + 24 + 8 + i] = static_cast<uint8_t>(0xFFFFFFFEu >> (8 * i)); // Exif IFD 指標
+    auto exifPart = std::vector<uint8_t>(t.begin() + 54, t.end());
+    patchExifTiff(t, true, 300, 200);
+    CHECK(t[8 + 2 + 12 + 8] == 1); // Orientation 照樣歸 1
+    CHECK(std::vector<uint8_t>(t.begin() + 54, t.end()) == exifPart); // 原本的 Exif IFD 沒被動到
+}
+
 TEST_CASE("JPEG 存回 JPEG：Make 照抄、Orientation 改 1、尺寸欄位跟著像素、縮圖重新產生") {
     Com com;
     setActiveLang({});

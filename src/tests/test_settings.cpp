@@ -2,6 +2,9 @@
 
 #include <windows.h>
 
+#include <atomic>
+#include <thread>
+
 #include "core/Settings.h"
 
 using namespace mp;
@@ -12,6 +15,9 @@ std::wstring tempPath(const wchar_t* name) {
     GetTempPathW(MAX_PATH, dir);
     return std::wstring(dir) + L"mp_test_" + name;
 }
+bool fileExists(const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
+// saveSettings 用的暫存檔名（見 Settings.h）。
+std::wstring saveTempOf(const std::wstring& path) { return path + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp"; }
 } // namespace
 
 TEST_CASE("parseSettings：預設值與各 key") {
@@ -87,22 +93,86 @@ TEST_CASE("loadSettings / saveSettings 檔案往返") {
     std::wstring p = tempPath(L"settings.ini");
     DeleteFileW(p.c_str());
     Settings s;
-    CHECK_FALSE(loadSettings(p, s)); // 不存在
+    CHECK(loadSettings(p, s) == SettingsLoad::Missing); // 不存在
     CHECK(s.tipShown == 0);
 
     s.tipShown = 1;
     s.askedDefault = true;
     REQUIRE(saveSettings(p, s));
+    CHECK_FALSE(fileExists(saveTempOf(p))); // 暫存檔已經變成正式的檔
     Settings back;
-    REQUIRE(loadSettings(p, back));
+    REQUIRE(loadSettings(p, back) == SettingsLoad::Loaded);
     CHECK(back.tipShown == 1);
     CHECK(back.askedDefault);
     CHECK(isPathWritable(p));
 
     SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_READONLY);
     CHECK_FALSE(isPathWritable(p));
+    s.tipShown = 2;
     CHECK_FALSE(saveSettings(p, s));
+    CHECK_FALSE(fileExists(saveTempOf(p)));
+    REQUIRE(loadSettings(p, back) == SettingsLoad::Loaded);
+    CHECK(back.tipShown == 1); // 存不進去時原檔不動
     SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+    DeleteFileW(p.c_str());
+}
+
+TEST_CASE("loadSettings：檔案在但讀不到是 Unreadable，不是 Missing") {
+    std::wstring p = tempPath(L"locked.ini");
+    DeleteFileW(p.c_str());
+    Settings s;
+    s.tipShown = 3;
+    s.passwords = {L"secret"};
+    REQUIRE(saveSettings(p, s));
+    // 別的程式獨佔開著
+    HANDLE h = CreateFileW(p.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    REQUIRE(h != INVALID_HANDLE_VALUE);
+    Settings back;
+    back.tipShown = 9;
+    CHECK(loadSettings(p, back) == SettingsLoad::Unreadable);
+    CHECK(back.tipShown == 0); // out 是預設值
+    CHECK(back.passwords.empty());
+    // 這時存檔：取代不了，回 false，原檔內容還在，暫存檔不留
+    CHECK_FALSE(saveSettings(p, Settings{}));
+    CHECK_FALSE(fileExists(saveTempOf(p)));
+    CloseHandle(h);
+    REQUIRE(loadSettings(p, back) == SettingsLoad::Loaded);
+    CHECK(back.tipShown == 3);
+    CHECK(back.passwords == std::vector<std::wstring>{L"secret"});
+    // 資料夾不存在也算 Missing
+    CHECK(loadSettings(tempPath(L"no-such-dir\\mpainter.ini"), back) == SettingsLoad::Missing);
+    DeleteFileW(p.c_str());
+}
+
+TEST_CASE("saveSettings：存檔途中另一邊讀到的一定是完整的內容") {
+    // 兩個 mpainter 同開：一個在存設定，另一個剛好啟動在讀。讀到半份的話，缺的欄位變預設值，之後一存檔就把原本的蓋掉。
+    std::wstring p = tempPath(L"race.ini");
+    DeleteFileW(p.c_str());
+    Settings s;
+    for (int i = 0; i < 3000; ++i) s.passwords.push_back(L"password-" + std::to_wstring(i));
+    REQUIRE(saveSettings(p, s));
+    std::atomic<bool> done{false};
+    std::atomic<int> saveFailed{0};
+    std::thread writer([&] {
+        for (int i = 0; i < 300; ++i)
+            if (!saveSettings(p, s)) ++saveFailed;
+        done = true;
+    });
+    int loaded = 0, partial = 0, missing = 0;
+    while (!done) {
+        Settings back;
+        SettingsLoad r = loadSettings(p, back);
+        if (r == SettingsLoad::Missing) ++missing;
+        if (r != SettingsLoad::Loaded) continue;
+        ++loaded;
+        if (back.passwords.size() != s.passwords.size()) ++partial;
+    }
+    writer.join();
+    CHECK(loaded > 0);
+    CHECK(partial == 0);
+    CHECK(missing == 0); // 取代的過程中檔案不會有「不在」的瞬間
+    CHECK(saveFailed == 0);
+    CHECK_FALSE(fileExists(saveTempOf(p)));
     DeleteFileW(p.c_str());
 }
 
@@ -115,7 +185,7 @@ TEST_CASE("loadSettings 接受 BOM") {
     WriteFile(h, bytes, sizeof(bytes) - 1, &w, nullptr);
     CloseHandle(h);
     Settings s;
-    REQUIRE(loadSettings(p, s));
+    REQUIRE(loadSettings(p, s) == SettingsLoad::Loaded);
     CHECK(s.tipShown == 2);
     DeleteFileW(p.c_str());
 }

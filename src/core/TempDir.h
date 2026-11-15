@@ -41,8 +41,11 @@ private:
     HANDLE lock_ = INVALID_HANDLE_VALUE;
 };
 
-// 掃 root 底下每個子資料夾：沒有 lock 檔、或 lock 能獨佔開啟（主人已結束）就整個刪掉。
-// 回傳刪掉的資料夾數。root 不存在回傳 0。
+// 資料夾名稱是不是 InstanceTempDir::create 建的格式：<pid 十進位>-<8 位十六進位>。
+bool isInstanceTempDirName(const std::wstring& name);
+
+// 掃 root 底下名稱符合 isInstanceTempDirName 的子資料夾：沒有 lock 檔、或 lock 能獨佔開啟（主人已結束）就整個刪掉。
+// 名稱不符的子資料夾不碰（root 可能是使用者指定的既有資料夾）。回傳刪掉的資料夾數。root 不存在回傳 0。
 int sweepStaleTempDirs(const std::wstring& root);
 
 constexpr wchar_t kTempLockName[] = L"lock";

@@ -419,3 +419,7 @@ mpainter cannot write to its folder:\n%s=mpainter のフォルダーに書き込
 Open the download page to update by hand?=ダウンロードページを開いて手動で更新しますか？
 mpainter has been updated. Please start it again.=mpainter をアップデートしました。もう一度起動してください。
 Updated to mpainter %s.=mpainter %s にアップデートしました。
+
+# --- v0.9.5 ---
+Could not draw the annotations onto the image=注釈を画像に描画できませんでした
+Could not read mpainter.ini. Default settings are used this time, and settings will not be saved.=mpainter.ini を読み込めませんでした。今回は既定の設定を使用し、設定は保存されません。

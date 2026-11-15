@@ -89,8 +89,12 @@ public:
     // 文字物件依目前寬度排版後的高度（圖片像素）。
     float textHeight(const Annotation& a);
 
-    // 把底圖與標註壓成一張圖。
-    Image flatten(const DocState& state);
+    // flatten 畫得出正確像素的最大邊長（2^19 − 1）。再大的話 Direct2D 的軟體算繪每個呼叫都成功，
+    // 但底圖取樣會錯（2026-11-16 在 Win10 VM 量的：524287 正確，524288 起有錯的像素）。
+    static constexpr int kFlattenMaxSide = 524287;
+    // 把底圖與標註壓成一張圖（存檔用）。沒有標註時 out 就是底圖的複本。
+    // 畫不出正確結果（邊長超過 kFlattenMaxSide、render target 或底圖點陣圖建不起來、繪製失敗）回 false，這時 out 不能用。
+    bool flatten(const DocState& state, Image& out);
 
     // UI 文字。
     void drawUiText(ID2D1RenderTarget* rt, const std::wstring& text, const D2D1_RECT_F& rect, float size,

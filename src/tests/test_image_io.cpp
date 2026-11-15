@@ -212,6 +212,75 @@ TEST_CASE("iccProfileDescription 解析 v2 desc tag") {
     CHECK(iccProfileDescription(icc.data(), 10).empty());
 }
 
+namespace {
+// 一個 tag 的 ICC：128 byte 檔頭 + tag 數 + tag 表（sig、offset、size），body 接在 144。
+// tagOff / tagLen 照給的寫進 tag 表，不管 body 實際多長。
+std::vector<unsigned char> iccOneTag(unsigned tagOff, unsigned tagLen, const std::vector<unsigned char>& body) {
+    std::vector<unsigned char> icc(144, 0);
+    auto be32 = [&](size_t off, unsigned v) {
+        icc[off] = static_cast<unsigned char>(v >> 24); icc[off + 1] = static_cast<unsigned char>(v >> 16);
+        icc[off + 2] = static_cast<unsigned char>(v >> 8); icc[off + 3] = static_cast<unsigned char>(v);
+    };
+    be32(128, 1);
+    memcpy(icc.data() + 132, "desc", 4);
+    be32(136, tagOff);
+    be32(140, tagLen);
+    icc.insert(icc.end(), body.begin(), body.end());
+    return icc;
+}
+void putBe32(std::vector<unsigned char>& v, size_t off, unsigned x) {
+    v[off] = static_cast<unsigned char>(x >> 24); v[off + 1] = static_cast<unsigned char>(x >> 16);
+    v[off + 2] = static_cast<unsigned char>(x >> 8); v[off + 3] = static_cast<unsigned char>(x);
+}
+} // namespace
+
+TEST_CASE("iccProfileDescription：v2 desc 的字串長度比 tag 長，回空字串") {
+    // 長度欄位 0xFFFFFFF8：32 位元的 12 + n 會繞回 4。字串後面故意留一段不是 0 的位元組（在同一塊記憶體裡），
+    // 檢查沒擋住的話會一路讀過 tag 的範圍。
+    std::vector<unsigned char> body(20, 'A');
+    memcpy(body.data(), "desc", 4);
+    putBe32(body, 4, 0);
+    putBe32(body, 8, 0xFFFFFFF8u);
+    auto icc = iccOneTag(144, 20, body);
+    size_t size = icc.size();
+    icc.insert(icc.end(), 32, 'B'); // 超出 size 的部分
+    icc.push_back(0);
+    CHECK(iccProfileDescription(icc.data(), size).empty());
+}
+
+TEST_CASE("iccProfileDescription：tag 的位移加長度超過 4 GB，回空字串") {
+    auto icc = iccOneTag(0xFFFFFFF8u, 12, std::vector<unsigned char>(32, 0));
+    CHECK(iccProfileDescription(icc.data(), icc.size()).empty());
+    auto icc2 = iccOneTag(0xFFFFFFF4u, 0x20, std::vector<unsigned char>(32, 0));
+    CHECK(iccProfileDescription(icc2.data(), icc2.size()).empty());
+}
+
+TEST_CASE("iccProfileDescription：v4 mluc 的字串位移加長度超過 4 GB，回空字串") {
+    std::vector<unsigned char> body(40, 0);
+    memcpy(body.data(), "mluc", 4);
+    putBe32(body, 8, 1);            // 一筆紀錄
+    putBe32(body, 12, 12);          // 每筆 12 bytes
+    memcpy(body.data() + 16, "enUS", 4);
+    putBe32(body, 20, 0x20);        // 字串長度
+    putBe32(body, 24, 0xFFFFFFF0u); // 字串位移
+    auto icc = iccOneTag(144, 40, body);
+    CHECK(iccProfileDescription(icc.data(), icc.size()).empty());
+}
+
+TEST_CASE("iccProfileDescription 解析 v4 mluc tag") {
+    std::vector<unsigned char> body(28 + 8, 0);
+    memcpy(body.data(), "mluc", 4);
+    putBe32(body, 8, 1);
+    putBe32(body, 12, 12);
+    memcpy(body.data() + 16, "enUS", 4);
+    putBe32(body, 20, 8);  // 4 個 UTF-16BE 字元
+    putBe32(body, 24, 28);
+    const char text[] = {0, 'P', 0, '3', 0, 'x', 0, 'y'};
+    memcpy(body.data() + 28, text, 8);
+    auto icc = iccOneTag(144, static_cast<unsigned>(body.size()), body);
+    CHECK(iccProfileDescription(icc.data(), icc.size()) == L"P3xy");
+}
+
 TEST_CASE("readImageSize：PNG / JPEG / WebP 只讀檔頭，不存在回傳 false") {
     Image img(16, 8);
     for (auto* name : {L"size.png", L"size.jpg", L"size.webp"}) {

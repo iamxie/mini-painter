@@ -116,3 +116,47 @@ TEST_CASE("sweepStaleTempDirs：活的留著，沒 lock 或 lock 沒人持有的
     removeDirectoryRecursive(root);
     CHECK(sweepStaleTempDirs(root) == 0); // root 不存在
 }
+
+TEST_CASE("isInstanceTempDirName：只認 <pid>-<8 位十六進位>") {
+    CHECK(isInstanceTempDirName(L"1234-deadbeef"));
+    CHECK(isInstanceTempDirName(L"7-0000000a"));
+    CHECK(isInstanceTempDirName(L"4294967295-DEADBEEF"));
+    for (const wchar_t* bad : {L"", L"Photos", L"2024", L"1234", L"-deadbeef", L"1234-", L"1234-deadbee", L"1234-deadbeef0",
+                               L"1234-deadbeeg", L"12a4-deadbeef", L"1234_deadbeef", L"1234-dead-eef", L" 1234-deadbeef"}) {
+        CAPTURE(std::wstring(bad).size());
+        CHECK_FALSE(isInstanceTempDirName(bad));
+    }
+    // create 建出來的名稱一定要認得，否則當掉後留下的東西永遠清不掉
+    std::wstring root = testRoot(L"name");
+    removeDirectoryRecursive(root);
+    InstanceTempDir t;
+    REQUIRE(t.create(root));
+    CHECK(isInstanceTempDirName(t.path().substr(t.path().find_last_of(L'\\') + 1)));
+    t.release();
+    removeDirectoryRecursive(root);
+}
+
+TEST_CASE("sweepStaleTempDirs：不是 mpainter 建的子資料夾不動") {
+    // 使用者把暫存位置指到既有的資料夾：裡面本來就有別的東西，都沒有 lock 檔。
+    std::wstring root = testRoot(L"sweep_foreign");
+    removeDirectoryRecursive(root);
+    REQUIRE(createDirectories(root));
+    const wchar_t* foreign[] = {L"Photos", L"2024", L"1234-deadbeef-old", L"abc-12345678", L"1234-deadbee", L"1234_deadbeef",
+                                L"-deadbeef", L"1234-deadbeeg"};
+    for (const wchar_t* name : foreign) {
+        REQUIRE(createDirectories(root + L"\\" + name + L"\\sub"));
+        writeFile(root + L"\\" + name + L"\\sub\\keep.txt", "x");
+    }
+    // 名稱像，但 lock 開不起來的原因既不是「不存在」也不是「有人持有」（這裡 lock 是個資料夾）：不確定就不刪。
+    std::wstring odd = root + L"\\4321-0badf00d";
+    REQUIRE(createDirectories(odd + L"\\" + kTempLockName));
+    writeFile(odd + L"\\page.jpg", "x");
+
+    CHECK(sweepStaleTempDirs(root) == 0);
+    for (size_t i = 0; i < std::size(foreign); ++i) {
+        CAPTURE(i);
+        CHECK(exists(root + L"\\" + foreign[i] + L"\\sub\\keep.txt"));
+    }
+    CHECK(exists(odd + L"\\page.jpg"));
+    removeDirectoryRecursive(root);
+}

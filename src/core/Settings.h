@@ -83,9 +83,13 @@ bool ensureProfiles(Settings& s, const std::wstring& generalName, const std::wst
 Settings parseSettings(const std::wstring& text);
 std::wstring serializeSettings(const Settings& s);
 
-// 讀檔。檔案不存在或讀不到時回傳 false，out 是預設值。
-bool loadSettings(const std::wstring& path, Settings& out);
-// 寫檔（UTF-8，無 BOM）。失敗回傳 false。
+// 讀檔的結果。Missing：檔案不存在（第一次執行）。Unreadable：檔案在但讀不到（被別的程式獨佔、沒權限、讀到一半失敗）。
+// Unreadable 時呼叫端不能存檔：手上只有預設值，存了就把原本的設定蓋掉。
+enum class SettingsLoad { Loaded, Missing, Unreadable };
+// 讀檔。不是 Loaded 時 out 是預設值。
+SettingsLoad loadSettings(const std::wstring& path, Settings& out);
+// 寫檔（UTF-8，無 BOM）。先寫到同資料夾的暫存檔（<path>.<pid>.tmp）再取代原檔：別人同時在讀的話，讀到的不是舊的就是新的，
+// 不會是半份；寫到一半當掉也不會留下截斷的設定檔。失敗回傳 false，原檔不動、暫存檔刪掉。
 bool saveSettings(const std::wstring& path, const Settings& s);
 // 這個路徑能不能寫（檔案存在就試開寫入，不存在就試在同資料夾建檔再刪）。
 bool isPathWritable(const std::wstring& path);

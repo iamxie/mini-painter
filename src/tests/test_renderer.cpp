@@ -171,6 +171,101 @@ TEST_CASE("Renderer：高品質縮放換倍率，舊倍率的點陣圖丟掉") {
     CHECK(f.r.cachedBitmapCount() == 1);
 }
 
+namespace {
+// 每個像素顏色都不同的不透明圖：底圖有沒有被動過，逐像素比得出來。
+std::shared_ptr<Image> patterned(int w, int h) {
+    auto im = std::make_shared<Image>(w, h);
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            uint8_t* p = im->px(x, y);
+            p[0] = static_cast<uint8_t>(x & 255);
+            p[1] = static_cast<uint8_t>((x >> 8) & 255);
+            p[2] = static_cast<uint8_t>(40 + y);
+            p[3] = 255;
+        }
+    return im;
+}
+// 加一個紅框矩形標註，中心 (cx, cy)。
+DocState withRect(ImagePtr im, float cx, float cy, float size) {
+    DocState st;
+    st.image = std::move(im);
+    Annotation a = makeShape(Kind::Rect, {cx, cy}, size, StrokeStyle{});
+    a.id = 1;
+    st.items = {a};
+    return st;
+}
+} // namespace
+
+TEST_CASE("Renderer::flatten：沒有標註時是底圖的複本") {
+    Fixture f;
+    auto im = patterned(200, 40);
+    DocState st;
+    st.image = im;
+    Image out;
+    REQUIRE(f.r.flatten(st, out));
+    CHECK(out.width == 200);
+    CHECK(out.height == 40);
+    CHECK(out.pixels == im->pixels);
+}
+
+TEST_CASE("Renderer::flatten：標註畫上去，標註以外的底圖像素不變") {
+    Fixture f;
+    auto im = patterned(200, 40);
+    Image out;
+    REQUIRE(f.r.flatten(withRect(im, 20, 20, 24), out));
+    REQUIRE(out.width == 200);
+    REQUIRE(out.height == 40);
+    int changedNear = 0, changedFar = 0;
+    for (int y = 0; y < 40; ++y)
+        for (int x = 0; x < 200; ++x) {
+            if (memcmp(out.px(x, y), im->px(x, y), 4) == 0) continue;
+            if (x < 60) ++changedNear;
+            else ++changedFar;
+        }
+    CHECK(changedNear > 0);  // 紅框有畫上去
+    CHECK(changedFar == 0);  // 離標註遠的地方和原圖一模一樣
+}
+
+TEST_CASE("Renderer::flatten：邊長到 kFlattenMaxSide 為止底圖像素正確") {
+    Fixture f;
+    const int sizes[][2] = {{Renderer::kFlattenMaxSide, 2}, {2, Renderer::kFlattenMaxSide}};
+    for (auto& s : sizes) {
+        int w = s[0], h = s[1];
+        CAPTURE(w, h);
+        auto im = patterned(w, h);
+        Image out;
+        REQUIRE(f.r.flatten(withRect(im, w > h ? 20.0f : 1.0f, 1.0f, 6), out)); // 框一定有一段落在圖內
+        long long changedNear = 0, changedAway = 0;
+        for (int y = 0; y < h; ++y)
+            for (int x = 0; x < w; ++x) {
+                if (memcmp(out.px(x, y), im->px(x, y), 4) == 0) continue;
+                if (x < 60 && y < 60) ++changedNear;
+                else ++changedAway;
+            }
+        CHECK(changedNear > 0);
+        CHECK(changedAway == 0);
+    }
+}
+
+TEST_CASE("Renderer::flatten：畫不出正確結果時回報失敗") {
+    // 舊版在這三種尺寸都回傳一張圖、不報錯（2026-11-16 在 VM 上量的）：
+    // 邊長 524288 起：每個呼叫都成功，但底圖有像素是錯的。
+    // 8388608（點陣圖邊長上限）：底圖整張是錯的。8388609：render target 建不起來，回傳沒有標註的底圖。
+    Fixture f;
+    const int sizes[][2] = {{Renderer::kFlattenMaxSide + 1, 1}, {1, Renderer::kFlattenMaxSide + 1}, {8388608, 1}, {8388609, 1}};
+    for (auto& s : sizes) {
+        CAPTURE(s[0], s[1]);
+        Image out;
+        CHECK_FALSE(f.r.flatten(withRect(patterned(s[0], s[1]), 1.0f, 1.0f, 6), out));
+    }
+    // 沒有標註就不用畫，多大都只是複製
+    DocState plain;
+    plain.image = patterned(Renderer::kFlattenMaxSide + 1, 1);
+    Image out;
+    CHECK(f.r.flatten(plain, out));
+    CHECK(out.pixels == plain.image->pixels);
+}
+
 TEST_CASE("Renderer：馬賽克小圖只留這一幀畫過的") {
     Fixture f;
     auto a = img(64, 64);

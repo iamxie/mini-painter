@@ -39,6 +39,10 @@ std::string wideToUtf8(const std::wstring& s) {
 
 const wchar_t* const kViewModes[] = {L"fitwindow", L"fitwidth", L"fitheight", L"actual", L"twopage"};
 
+// saveSettings 取代原檔暫時失敗時：重試幾次、每次隔多久。
+constexpr int kSaveRetries = 50;
+constexpr DWORD kSaveRetryMs = 5;
+
 std::wstring normalizeViewMode(const std::wstring& v) {
     for (auto* m : kViewModes) if (v == m) return v;
     return L"fitwindow";
@@ -262,31 +266,53 @@ std::wstring serializeSettings(const Settings& s) {
     return out;
 }
 
-bool loadSettings(const std::wstring& path, Settings& out) {
+SettingsLoad loadSettings(const std::wstring& path, Settings& out) {
     out = Settings{};
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    // 分享 DELETE：別的 mpainter 這時存檔（暫存檔取代原檔）不會被我們擋住。
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? SettingsLoad::Missing : SettingsLoad::Unreadable;
+    }
     std::string bytes;
     char buf[4096];
     DWORD got = 0;
-    while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) bytes.append(buf, got);
+    bool ok = true;
+    for (;;) {
+        if (!ReadFile(h, buf, sizeof(buf), &got, nullptr)) { ok = false; break; }
+        if (got == 0) break;
+        bytes.append(buf, got);
+    }
     CloseHandle(h);
+    if (!ok) return SettingsLoad::Unreadable; // 讀到一半失敗：半份不能當成設定用
     if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF && static_cast<unsigned char>(bytes[1]) == 0xBB &&
         static_cast<unsigned char>(bytes[2]) == 0xBF)
         bytes.erase(0, 3);
     out = parseSettings(utf8ToWide(bytes));
-    return true;
+    return SettingsLoad::Loaded;
 }
 
 bool saveSettings(const std::wstring& path, const Settings& s) {
     std::string bytes = wideToUtf8(serializeSettings(s));
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) return false;
+    std::wstring tmp = path + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
     DWORD written = 0;
-    bool ok = WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) && written == bytes.size();
+    bool ok = WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) && written == bytes.size() &&
+              FlushFileBuffers(h);
     CloseHandle(h);
-    return ok;
+    // 取代原檔。原檔剛好被別人開著（另一個 mpainter 正在讀、防毒掃描）時會暫時失敗，等一下再試，最多約 0.25 秒。
+    for (int attempt = 0; ok; ++attempt) {
+        if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+        DWORD e = GetLastError();
+        if ((e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED) || attempt >= kSaveRetries) break;
+        Sleep(kSaveRetryMs);
+    }
+    DeleteFileW(tmp.c_str());
+    return false;
 }
 
 bool isPathWritable(const std::wstring& path) {

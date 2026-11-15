@@ -400,3 +400,7 @@ mpainter cannot write to its folder:\n%s=mpainter 無法寫入它所在的資料
 Open the download page to update by hand?=要開啟下載頁面，自己下載更新嗎？
 mpainter has been updated. Please start it again.=mpainter 已更新，請重新開啟。
 Updated to mpainter %s.=已更新到 mpainter %s。
+
+# --- v0.9.5 ---
+Could not draw the annotations onto the image=無法把標註畫到圖上
+Could not read mpainter.ini. Default settings are used this time, and settings will not be saved.=讀不到 mpainter.ini。這次先用預設設定，而且不會存回設定檔。

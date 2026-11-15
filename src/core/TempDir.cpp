@@ -121,6 +121,18 @@ void InstanceTempDir::release() {
     path_.clear();
 }
 
+bool isInstanceTempDirName(const std::wstring& name) {
+    size_t dash = name.find(L'-');
+    if (dash == std::wstring::npos || dash == 0 || name.size() != dash + 1 + 8) return false;
+    for (size_t i = 0; i < dash; ++i)
+        if (name[i] < L'0' || name[i] > L'9') return false;
+    for (size_t i = dash + 1; i < name.size(); ++i) {
+        wchar_t c = name[i];
+        if (!((c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F'))) return false;
+    }
+    return true;
+}
+
 int sweepStaleTempDirs(const std::wstring& root) {
     WIN32_FIND_DATAW fd;
     HANDLE h = FindFirstFileExW(joinPath(root, L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
@@ -129,15 +141,17 @@ int sweepStaleTempDirs(const std::wstring& root) {
     do {
         if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
         if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+        // root 是使用者可以改的設定，可能指到本來就有東西的資料夾：只認自己建的名稱，其他的不碰。
+        if (!isInstanceTempDirName(fd.cFileName)) continue;
         std::wstring dir = joinPath(root, fd.cFileName);
         HANDLE lock = openLock(dir, OPEN_EXISTING, 0);
         if (lock != INVALID_HANDLE_VALUE) {
             CloseHandle(lock); // 開得起來 = 沒人持有
             stale.push_back(dir);
-        } else if (GetLastError() != ERROR_SHARING_VIOLATION) {
+        } else if (GetLastError() == ERROR_FILE_NOT_FOUND) {
             stale.push_back(dir); // 沒有 lock 檔（主人當掉後系統刪了它）
         }
-        // ERROR_SHARING_VIOLATION：另一個 mpainter 還在用，跳過
+        // ERROR_SHARING_VIOLATION：另一個 mpainter 還在用，跳過。其他錯誤（沒權限…）看不出狀況，也跳過。
     } while (FindNextFileW(h, &fd));
     FindClose(h);
     int removed = 0;

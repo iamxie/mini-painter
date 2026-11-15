@@ -236,6 +236,7 @@ private:
     std::wstring exePath_, settingsPath_;
     std::vector<LangTable> langs_; // 可選的語系，順序同語言選單
     bool settingsWritable_ = true;
+    bool settingsUnreadable_ = false; // 啟動時設定檔在但讀不到：這次執行用預設值，而且不存檔（存了會蓋掉原本的設定）
     bool askPending_ = false;
     HWND tip_ = nullptr;
     TOOLINFOW tipInfo_{};

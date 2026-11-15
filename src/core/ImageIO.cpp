@@ -949,7 +949,8 @@ void patchExifTiff(std::vector<uint8_t>& t, bool sizeChanged, int newW, int newH
     };
     if (rd16(2) != 42) return;
     uint32_t ifd0 = rd32(4);
-    auto validIfd = [&](uint32_t off) { return off >= 8 && off + 2 <= t.size() && off + 2 + static_cast<size_t>(rd16(off)) * 12 + 4 <= t.size(); };
+    // off 來自檔案，可能接近 4 GB：用 size_t 算，32 位元的 off + 2 會繞回去。
+    auto validIfd = [&](size_t off) { return off >= 8 && off + 2 <= t.size() && off + 2 + static_cast<size_t>(rd16(off)) * 12 + 4 <= t.size(); };
     if (!validIfd(ifd0)) return;
     uint32_t exifIfd = 0;
     unsigned n0 = rd16(ifd0);

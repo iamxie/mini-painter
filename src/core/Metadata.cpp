@@ -20,25 +20,26 @@ std::wstring iccProfileDescription(const unsigned char* data, size_t size) {
     for (unsigned i = 0; i < count; ++i) {
         const unsigned char* t = data + 132 + i * 12;
         if (std::memcmp(t, "desc", 4) != 0) continue;
-        unsigned off = be32(t + 4), len = be32(t + 8);
-        if (off + 12 > size || off + len > size || len < 12) return L"";
+        // 位移與長度都來自檔案，可能是任何值：用 size_t 算，而且只做減法，32 位元相加會繞回去。
+        size_t off = be32(t + 4), len = be32(t + 8);
+        if (len < 12 || off > size || len > size - off) return L"";
         const unsigned char* d = data + off;
         if (std::memcmp(d, "desc", 4) == 0) {
             // v2：textDescriptionType，ASCII 長度在 +8，字串在 +12（含結尾 0）。
-            unsigned n = be32(d + 8);
-            if (n == 0 || 12 + n > len) return L"";
+            size_t n = be32(d + 8);
+            if (n == 0 || n > len - 12) return L"";
             std::wstring s;
-            for (unsigned k = 0; k < n && d[12 + k]; ++k) s += static_cast<wchar_t>(d[12 + k]);
+            for (size_t k = 0; k < n && d[12 + k]; ++k) s += static_cast<wchar_t>(d[12 + k]);
             return s;
         }
         if (std::memcmp(d, "mluc", 4) == 0) {
             // v4：multiLocalizedUnicodeType，取第一筆紀錄，UTF-16BE。
             if (len < 28) return L"";
             unsigned recLen = be32(d + 16);
-            unsigned strLen = be32(d + 20), strOff = be32(d + 24);
-            if (recLen < 12 || strOff + strLen > len) return L"";
+            size_t strLen = be32(d + 20), strOff = be32(d + 24);
+            if (recLen < 12 || strOff > len || strLen > len - strOff) return L"";
             std::wstring s;
-            for (unsigned k = 0; k + 1 < strLen; k += 2) {
+            for (size_t k = 0; k + 1 < strLen; k += 2) {
                 wchar_t ch = static_cast<wchar_t>(be16(d + strOff + k));
                 if (ch == 0) break;
                 s += ch;

@@ -410,25 +410,28 @@ void Renderer::drawAnnotation(DrawCtx& ctx, const Annotation& a) {
     }
 }
 
-Image Renderer::flatten(const DocState& state) {
+bool Renderer::flatten(const DocState& state, Image& out) {
     const Image& src = *state.image;
-    Image out = src;
-    if (state.items.empty()) return out;
+    out = src;
+    if (state.items.empty()) return true;
+    if (src.width > kFlattenMaxSide || src.height > kFlattenMaxSide) return false;
 
     ComPtr<IWICImagingFactory> wic;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return out;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return false;
     ComPtr<IWICBitmap> wicBmp;
     if (FAILED(wic->CreateBitmap(src.width, src.height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnDemand, &wicBmp)))
-        return out;
+        return false;
     ComPtr<ID2D1RenderTarget> rt;
     auto props = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
         96.0f, 96.0f);
-    if (FAILED(d2d_->CreateWicBitmapRenderTarget(wicBmp.Get(), props, &rt))) return out;
+    if (FAILED(d2d_->CreateWicBitmapRenderTarget(wicBmp.Get(), props, &rt))) return false;
 
     ImageBitmap ib;
     ib.bitmap = makeBitmap(rt.Get(), src, &ib.scale);
     ib.source = &src;
+    // 底圖點陣圖建不起來：畫出來只有標註、沒有底圖。被縮小過：底圖不是原本的像素。兩種都不能拿去存。
+    if (!ib.bitmap || ib.scale != 1.0f) return false;
     std::map<uint32_t, MosaicEntry> cache;
     DrawCtx ctx{rt.Get(), &src, &ib, &cache};
 
@@ -438,17 +441,16 @@ Image Renderer::flatten(const DocState& state) {
     drawAnnotations(ctx, state.items);
     HRESULT hr = rt->EndDraw();
     forgetTarget(rt.Get());
-    if (FAILED(hr)) return out;
+    if (FAILED(hr)) return false;
 
     ComPtr<IWICBitmapLock> lock;
     WICRect full{0, 0, src.width, src.height};
-    if (FAILED(wicBmp->Lock(&full, WICBitmapLockRead, &lock))) return out;
+    if (FAILED(wicBmp->Lock(&full, WICBitmapLockRead, &lock))) return false;
     UINT stride = 0, size = 0;
     BYTE* data = nullptr;
-    lock->GetStride(&stride);
-    lock->GetDataPointer(&size, &data);
+    if (FAILED(lock->GetStride(&stride)) || FAILED(lock->GetDataPointer(&size, &data)) || !data) return false;
     for (int y = 0; y < src.height; ++y) memcpy(out.row(y), data + static_cast<size_t>(y) * stride, out.stride());
-    return out;
+    return true;
 }
 
 // ---- UI 文字 ----

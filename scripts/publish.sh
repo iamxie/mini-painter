@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 把開發 repo 裡「對外公開的子集」同步到公開 repo（GitHub 上的 mini-painter），並在那邊 commit。
-# 開發 repo 的四份管理文件、CLAUDE.md、docs/ref 的參考截圖不進公開 repo；歷史也分開（公開 repo 從 v0.6.0 起算）。
+# 開發 repo 的四份管理文件、reflection.md、CLAUDE.md、docs/ref 的參考截圖不進公開 repo；歷史也分開（公開 repo 從 v0.6.0 起算）。
 #
 # 用法：scripts/publish.sh "<commit 訊息>" [--push]
 #   公開 repo 的位置預設是本資料夾旁邊的 mini-painter-pub，可用環境變數 PUBLIC_REPO 覆蓋。
@@ -17,7 +17,7 @@ MSG="${1:-}"
 [[ -d "$PUB/.git" ]] || { echo "公開 repo 不存在：$PUB（先 git init -b main）"; exit 1; }
 
 # 排除清單（開發 repo 內部用的東西）
-EXCLUDE='^(project_info\.md|file_info\.md|plan\.md|history\.md|CLAUDE\.md|bunny-size-preview\.png|docs/)'
+EXCLUDE='^(project_info\.md|file_info\.md|plan\.md|history\.md|reflection\.md|CLAUDE\.md|bunny-size-preview\.png|docs/)'
 
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "開發 repo 有未 commit 的變更，先 commit 再發佈。"; exit 1

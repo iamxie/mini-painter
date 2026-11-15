@@ -70,6 +70,10 @@ bool askOk(HWND owner, const std::wstring& text, PCWSTR icon, bool withCancel) {
 }
 constexpr UINT kToastMs = 2000, kArmMs = 3000;
 constexpr UINT kUndoToastMs = 6000; // 復原紀錄快滿的提示比較長，多留一點時間
+constexpr UINT kSettingsToastMs = 10000; // 設定檔讀不到的提示：影響整次執行，留久一點
+// 啟動時設定檔讀不到：重試幾次、每次隔多久（最多多等 1 秒）
+constexpr int kSettingsReadRetries = 10;
+constexpr DWORD kSettingsReadRetryMs = 100;
 constexpr UINT kHqDelayMs = 200;
 constexpr UINT kPrefetchDelayMs = 300; // 拖曳改視窗大小時，停下來才重排預先縮圖
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
@@ -176,6 +180,9 @@ bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCm
     updateTitle();
     showMainWindow(nCmdShow);
     if (justUpdated_) showToast(fmt1(L"Updated to mpainter %s.", MP_VERSION_WSTRING), false);
+    if (settingsUnreadable_)
+        showToast(tr(L"Could not read mpainter.ini. Default settings are used this time, and settings will not be saved."), false,
+                  kSettingsToastMs);
     if (settings_.autoCheckUpdate) startAutoUpdateCheck();
     return true;
 }
@@ -1164,7 +1171,13 @@ bool MainWindow::save() {
 }
 
 bool MainWindow::writeFlattened(const std::wstring& target) {
-    Image flat = renderer_.flatten(doc_.state());
+    Image flat;
+    if (!renderer_.flatten(doc_.state(), flat)) {
+        // 標註畫不上去（多半是圖太大、記憶體不夠）：不能把少了標註的圖當成存好了。
+        MessageBoxW(hwnd_, fmt1(L"Save failed: %s", tr(L"Could not draw the annotations onto the image")).c_str(), kAppName,
+                    MB_ICONERROR);
+        return false;
+    }
     std::wstring err;
     SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     SaveOptions opt;
@@ -2451,7 +2464,13 @@ void MainWindow::loadSettingsAndRegister() {
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     exePath_ = exe;
     settingsPath_ = settingsPathForExe(exePath_);
-    loadSettings(settingsPath_, settings_);
+    SettingsLoad loaded = loadSettings(settingsPath_, settings_);
+    // 設定檔在但讀不到（別的程式正獨佔它）：多半很快就放開，等一下再試。
+    for (int i = 0; i < kSettingsReadRetries && loaded == SettingsLoad::Unreadable; ++i) {
+        Sleep(kSettingsReadRetryMs);
+        loaded = loadSettings(settingsPath_, settings_);
+    }
+    settingsUnreadable_ = loaded == SettingsLoad::Unreadable;
     nav_.setPinnedNames(settings_.pinnedNames);
     doc_.setUndoLimit(settings_.undoLimit);
     doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
@@ -2467,6 +2486,8 @@ void MainWindow::loadSettingsAndRegister() {
 }
 
 void MainWindow::saveSettingsQuiet() {
+    // 啟動時設定檔讀不到：手上是預設值，存了會把原本的設定（密碼列表、模式…）蓋掉，所以這次執行都不存。
+    if (settingsUnreadable_) { settingsWritable_ = false; return; }
     // 寫不進去（唯讀位置）就算了，本次執行內的狀態還在。
     settingsWritable_ = saveSettings(settingsPath_, settings_);
 }

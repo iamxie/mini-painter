@@ -47,19 +47,20 @@ Requirements: Visual Studio 2022 Build Tools (MSVC x64 + Windows SDK), CMake ≥
 
 ```bat
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release ^
-  -DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake ^
-  -DVCPKG_TARGET_TRIPLET=x64-windows-static ^
-  -DMP_7Z_DLL=C:\path\to\7z.dll
-cmake --build build
-build\mp_tests.exe
+set VCPKG_ROOT=C:/path/to/vcpkg
+set MP_7Z_DLL=C:/path/to/7z.dll
+cmake --preset release
+cmake --build --preset release
+ctest --preset release
+python scripts/lang_check.py
 ```
 
+- The build settings live in `CMakePresets.json` (preset `release`: Ninja, Release, triplet `x64-windows-static`, output in `build/`). CI and the maintainers' VM script use the same preset.
 - `MP_7Z_DLL` points at the official `7z.dll` from the 7-Zip release pinned in `scripts/7zip.lock`; it is copied next to the exe and the test binary after the build. Without it the program runs but cannot open archives, and `test_archive` fails.
 - Everything is statically linked (`/MT`); the only DLL is the optional `7z.dll`, loaded at run time.
 - `scripts/` holds the maintainers' helpers: `vm-sync.sh` / `vm-build.cmd` build on a Windows VM over SSH, `package.sh` assembles the release folder, `make_rar_fixtures.cmd` regenerates the rar test files, `lang_check.py` checks that every UI string has a translation entry.
 
-CI (`.github/workflows/build.yml`) does the same on `windows-latest` for every push and pull request. Pushing a tag `vX.Y.Z` that matches `project(VERSION …)` in `CMakeLists.txt` (and `version-string` in `vcpkg.json`; CI checks both) builds, tests and publishes a GitHub Release with the zip and the matching 7-Zip source archive.
+CI (`.github/workflows/build.yml`) does the same on `windows-latest` for every push and pull request. Pushing a tag `vX.Y.Z` that matches `project(VERSION …)` in `CMakeLists.txt` (and `version-string` in `vcpkg.json`; the CMake configure step fails when the two differ) builds, tests and publishes a GitHub Release with the zip and the matching 7-Zip source archive.
 
 ## License / 授權
 

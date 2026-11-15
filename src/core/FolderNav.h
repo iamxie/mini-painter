@@ -2,19 +2,16 @@
 #include <string>
 #include <vector>
 
+#include "core/ImageFormat.h" // isSupportedExtension / supportedExtensions：圖片格式的表在那裡
+#include "core/PathUtil.h"    // extensionOf / isDirectoryPath
+
 namespace mp {
 
-// 副檔名是不是支援的圖片格式（不分大小寫，含點，例如 L".jpg"）。
-bool isSupportedExtension(const std::wstring& ext);
-// 全部支援的副檔名（小寫、含點）。
-const std::vector<std::wstring>& supportedExtensions();
 // 壓縮檔副檔名（小寫、含點）：.zip .7z .rar 與同格式改名的 .cbz .cb7 .cbr。
 bool isArchiveExtension(const std::wstring& ext);
 const std::vector<std::wstring>& archiveExtensions();
 // 只有漫畫專用的三個（.cbz .cb7 .cbr）：登錄「預設程式」只用這些，不搶 zip / 7z / rar 的關聯。
 const std::vector<std::wstring>& comicExtensions();
-// 路徑是不是存在的資料夾。
-bool isDirectoryPath(const std::wstring& path);
 // 依檔案總管的排序（StrCmpLogicalW）就地排序。
 void sortLogical(std::vector<std::wstring>& paths);
 // 把檔名（不含路徑，不分大小寫）在 pinnedNames 裡的檔案搬到最前面：先依 pinnedNames 的順序，同名的維持原本順序；
@@ -25,9 +22,6 @@ void movePinnedFirst(std::vector<std::wstring>& paths, std::vector<std::wstring>
                      const std::vector<std::wstring>& pinnedNames);
 // 把檔名裡 Windows 不允許的字元（\ / : * ? " < > | 與控制字元）換成 _。
 std::wstring sanitizeFileName(const std::wstring& name);
-
-// 取路徑的副檔名（含點，小寫）。沒有就回傳空字串。
-std::wstring extensionOf(const std::wstring& path);
 
 // 列出資料夾裡支援的圖片檔完整路徑，依檔案總管的排序（StrCmpLogicalW）。
 std::vector<std::wstring> listImageFiles(const std::wstring& dir);

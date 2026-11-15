@@ -7,100 +7,28 @@
 #include <utility>
 #include <vector>
 
-#include <bit7z/bit7zlibrary.hpp>
-#include <bit7z/bitarchivewriter.hpp>
-#include <bit7z/bitformat.hpp>
 
 #include "core/Archive.h"
 #include "core/Image.h"
 #include "core/ImageIO.h"
+#include "core/PathUtil.h"
 #include "core/TempDir.h"
+#include "test_archive_util.h"
+#include "test_util.h"
 
 using namespace mp;
 
 namespace {
 
-// 7z.dll 由 CMake（MP_7Z_DLL）複製到測試程式旁。
-std::wstring dllPath() {
-    wchar_t exe[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring p = exe;
-    return p.substr(0, p.find_last_of(L"\\/") + 1) + L"7z.dll";
-}
+using mp::test::dllPath;
+using mp::test::makeArchive;
+using mp::test::pngBytes;
+using mp::test::readBytes;
+using mp::test::writeBytes;
+using Entry = mp::test::ArchiveEntry;
+using MakeOptions = mp::test::MakeArchiveOptions;
 
-std::wstring testRoot(const wchar_t* name) {
-    wchar_t dir[MAX_PATH];
-    GetTempPathW(MAX_PATH, dir);
-    std::wstring root = std::wstring(dir) + L"mp_test_archive_" + name;
-    removeDirectoryRecursive(root);
-    REQUIRE(createDirectories(root));
-    return root;
-}
-
-struct Entry {
-    std::string path;    // 壓縮檔內路徑（UTF-8，/ 分隔）
-    std::string content; // 內容
-};
-
-struct MakeOptions {
-    std::string password;
-    bool cryptHeaders = false;
-    bool solid = false;
-};
-
-// 用 bit7z 現場產 zip / 7z 當 fixture。
-void makeArchive(const std::wstring& out, const bit7z::BitInOutFormat& fmt, const std::vector<Entry>& entries,
-                 const MakeOptions& mo = {}) {
-    static bit7z::Bit7zLibrary lib(bit7z::to_tstring(dllPath()));
-    bit7z::BitArchiveWriter w(lib, fmt);
-    if (!mo.password.empty())
-        w.setPassword(mo.password, mo.cryptHeaders ? bit7z::EncryptionScope::DataAndHeaders : bit7z::EncryptionScope::DataOnly);
-    w.setSolidMode(mo.solid);
-    std::vector<bit7z::buffer_t> buffers; // addFile 只存參考，buffer 要活到 compressTo 之後
-    buffers.reserve(entries.size());
-    for (const auto& e : entries) {
-        buffers.emplace_back(e.content.begin(), e.content.end());
-        w.addFile(buffers.back(), e.path);
-    }
-    w.compressTo(bit7z::to_tstring(out));
-}
-
-// 真的 PNG bytes（給 readImageSize 驗證解出來的檔案能讀）。
-std::string pngBytes(int w, int h) {
-    std::wstring tmp = testRoot(L"png") + L"\\p.png";
-    Image img(w, h);
-    for (auto& b : img.pixels) b = 255;
-    REQUIRE(saveImage(img, tmp, nullptr));
-    HANDLE f = CreateFileW(tmp.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    REQUIRE(f != INVALID_HANDLE_VALUE);
-    std::string bytes;
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(f, buf, sizeof(buf), &got, nullptr) && got > 0) bytes.append(buf, got);
-    CloseHandle(f);
-    return bytes;
-}
-
-std::wstring fileNameOf(const std::wstring& p) { return p.substr(p.find_last_of(L"\\/") + 1); }
-
-std::string readBytes(const std::wstring& path) {
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    REQUIRE(f != INVALID_HANDLE_VALUE);
-    std::string bytes;
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(f, buf, sizeof(buf), &got, nullptr) && got > 0) bytes.append(buf, got);
-    CloseHandle(f);
-    return bytes;
-}
-
-void writeBytes(const std::wstring& path, const std::string& bytes) {
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    REQUIRE(f != INVALID_HANDLE_VALUE);
-    DWORD w = 0;
-    WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &w, nullptr);
-    CloseHandle(f);
-}
+std::wstring testRoot(const wchar_t* name) { return mp::test::freshDir((std::wstring(L"archive_") + name).c_str()); }
 
 uint32_t crc32Of(const std::string& s) {
     uint32_t c = 0xFFFFFFFFu;
@@ -138,14 +66,7 @@ void writeStoredZip(const std::wstring& out, const std::vector<std::pair<std::st
     writeBytes(out, local + central + eocd);
 }
 
-bool g_loaded = false;
-void ensureLib() {
-    if (!g_loaded) {
-        REQUIRE(loadArchiveLibrary(dllPath()));
-        g_loaded = true;
-    }
-    REQUIRE(archiveLibraryLoaded());
-}
+void ensureLib() { mp::test::requireArchiveLibrary(); }
 
 } // namespace
 
@@ -170,7 +91,7 @@ TEST_CASE("looksLikeArchive：zip / 7z 認得，PNG 與不存在的檔不認") {
     CHECK(looksLikeArchive(root + L"\\a.7z"));
     std::wstring png = root + L"\\p.png";
     Image img(2, 2);
-    REQUIRE(saveImage(img, png, nullptr));
+    REQUIRE(saveImage(img, png));
     CHECK_FALSE(looksLikeArchive(png));
     CHECK_FALSE(looksLikeArchive(root + L"\\nothing.zip"));
     removeDirectoryRecursive(root);
@@ -204,7 +125,7 @@ TEST_CASE("extractImages：zip 攤平、自然排序、略過非圖片與 __MACO
     CHECK(readImageSize(r.files[1], w, h));
     CHECK(w == 4);
     CHECK(h == 3);
-    CHECK(listImageFilesRecursive(root + L"\\out").size() == 4); // 沒有多解出別的東西（notes.txt、__MACOSX）
+    CHECK(mp::test::listImagesRecursive(root + L"\\out").size() == 4); // 沒有多解出別的東西（notes.txt、__MACOSX）
     CHECK(GetFileAttributesW((root + L"\\out\\ch1").c_str()) == INVALID_FILE_ATTRIBUTES);
     removeDirectoryRecursive(root);
 }
@@ -238,7 +159,7 @@ TEST_CASE("extractImages：加密 zip：沒密碼問、錯密碼拒、對密碼�
     removeDirectoryRecursive(root);
 }
 
-TEST_CASE("extractImages：7z 加密檔頭：列檔前就要密碒") {
+TEST_CASE("extractImages：7z 加密檔頭：列檔前就要密碼") {
     ensureLib();
     std::wstring root = testRoot(L"enc7z");
     makeArchive(root + L"\\e.7z", bit7z::BitFormat::SevenZip, {{"a/1.png", pngBytes(2, 2)}}, {"pw", true, true});
@@ -261,7 +182,7 @@ TEST_CASE("extractImages：不是壓縮檔、沒圖片、太大") {
     std::wstring root = testRoot(L"errors");
     std::wstring png = root + L"\\p.png";
     Image img(2, 2);
-    REQUIRE(saveImage(img, png, nullptr));
+    REQUIRE(saveImage(img, png));
     CHECK(extractImages(png, root + L"\\o1", {}).status == ArchiveStatus::NotArchive);
     CHECK(extractImages(root + L"\\missing.zip", root + L"\\o1", {}).status == ArchiveStatus::NotArchive);
     makeArchive(root + L"\\t.zip", bit7z::BitFormat::Zip, {{"readme.txt", "x"}});
@@ -289,27 +210,6 @@ TEST_CASE("extractImages：進度回呼會被叫到，回 false 就取消") {
     ExtractOptions cancel;
     cancel.progress = [](uint64_t, uint64_t) { return false; };
     CHECK(extractImages(root + L"\\c.zip", root + L"\\o2", cancel).status == ArchiveStatus::Cancelled);
-    removeDirectoryRecursive(root);
-}
-
-TEST_CASE("listImageFilesRecursive：遞迴、排序、只收圖片") {
-    std::wstring root = testRoot(L"list");
-    REQUIRE(createDirectories(root + L"\\b\\c"));
-    auto touch = [&](const std::wstring& rel) {
-        HANDLE h = CreateFileW((root + L"\\" + rel).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-        REQUIRE(h != INVALID_HANDLE_VALUE);
-        CloseHandle(h);
-    };
-    touch(L"10.jpg");
-    touch(L"9.jpg");
-    touch(L"b\\c\\1.webp");
-    touch(L"b\\x.txt");
-    auto files = listImageFilesRecursive(root);
-    REQUIRE(files.size() == 3);
-    CHECK(files[0] == root + L"\\9.jpg");
-    CHECK(files[1] == root + L"\\10.jpg");
-    CHECK(files[2] == root + L"\\b\\c\\1.webp");
-    CHECK(listImageFilesRecursive(root + L"\\none").empty());
     removeDirectoryRecursive(root);
 }
 
@@ -382,7 +282,7 @@ TEST_CASE("extractImages：cp932 檔名、沒有 UTF-8 旗標的 zip：每一張
     }
     CHECK(sawAscii);
     CHECK(sawFolder);
-    CHECK(listImageFilesRecursive(root + L"\\out").size() == 7);
+    CHECK(mp::test::listImagesRecursive(root + L"\\out").size() == 7);
     CHECK(GetFileAttributesW((root + L"\\out\\00008").c_str()) == INVALID_FILE_ATTRIBUTES); // readme 被刪了
     removeDirectoryRecursive(root);
 }
@@ -448,7 +348,7 @@ TEST_CASE("extractImages：中間一個項目損毀（CRC 錯）：那一張略�
 
 // rar 沒有開源 writer，fixture 是 WinRAR 造好放在 src/tests/fixtures/ 的（scripts/make_rar_fixtures.cmd）。
 // 三個檔內容相同：a.png、sub/b.png、sub/中文 c.png、Thumbs.db、readme.txt。
-std::wstring fixture(const wchar_t* name) { return std::wstring(MP_TEST_FIXTURES) + L"/" + name; }
+std::wstring fixture(const wchar_t* name) { return mp::test::fixturePath(name); }
 
 void checkRarContents(const ArchiveResult& r, const std::wstring& out) {
     REQUIRE(r.status == ArchiveStatus::Ok);
@@ -468,7 +368,7 @@ void checkRarContents(const ArchiveResult& r, const std::wstring& out) {
     CHECK(h == 1);
     CHECK(readImageSize(r.files[2], w, h));
     CHECK(w == 3);
-    CHECK(listImageFilesRecursive(out).size() == 3); // Thumbs.db、readme.txt 沒解出來
+    CHECK(mp::test::listImagesRecursive(out).size() == 3); // Thumbs.db、readme.txt 沒解出來
 }
 
 TEST_CASE("rar：檔頭辨識、無密碼解壓、子資料夾攤平、中文檔名、略過規則") {

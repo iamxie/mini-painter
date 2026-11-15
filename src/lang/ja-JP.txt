@@ -20,6 +20,9 @@
 #   原文に = が含まれる場合は \= と書く。 Write \= for an equals sign inside the English text.
 #   %d %s %u %lu %llu %.0f %08X はプログラムが値を埋める場所。順番どおりに残す。
 #   %d %s %u %lu %llu %.0f %08X are filled in by the program; keep them in the same order.
+#   数・種類・順番が原文と違う行は読み込み時に無視され、英語のまま表示される。% という文字そのものは原文にあるときだけ使える。
+#   A line whose placeholders differ from the English text (count, type or order) is ignored when the file is loaded
+#   and shown in English. A literal % can only be used where the English text has one.
 #   &File のような & は、その次の文字をメニューのアクセスキーにする。
 #   & in "&File" marks the next letter as the menu access key.
 _code=ja-JP
@@ -220,7 +223,6 @@ JPEG image=JPEG 画像
 PNG image=PNG 画像
 BMP image=BMP 画像
 TIFF image=TIFF 画像
-GIF image=GIF 画像
 WebP image=WebP 画像
 JFIF version=JFIF バージョン
 Density unit=密度の単位
@@ -309,7 +311,7 @@ Cannot unpack: %s=展開できません：%s
 Leave empty to use the “temp” folder next to mpainter.exe (the system temp folder if that cannot be created). Unpacked files (decrypted) stay there while viewing and are deleted on exit.=空欄のままなら mpainter.exe と同じ場所の temp フォルダーを使います（作成できない場合はシステムの一時フォルダー）。閲覧中は展開した（復号済みの）ファイルがそこに置かれ、終了時に削除されます。
 Not enough free disk space in the temp folder to unpack this archive.=一時フォルダーのあるディスクの空き容量が足りないため、このアーカイブを展開できません。
 Password=パスワード
-The images in this archive are too large to unpack (limit 8 GB).=このアーカイブ内の画像は展開後のサイズが大きすぎます（上限 8 GB）。
+The images in this archive are too large to unpack (limit %s).=このアーカイブ内の画像は展開後のサイズが大きすぎます（上限 %s）。
 This archive has no supported images=このアーカイブには対応している画像がありません
 This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it.=この画像はアーカイブ内にあるため読み取り専用です。\n\n編集するには先にアーカイブを展開してください。
 Unpack to:=展開先：
@@ -423,3 +425,7 @@ Updated to mpainter %s.=mpainter %s にアップデートしました。
 # --- v0.9.5 ---
 Could not draw the annotations onto the image=注釈を画像に描画できませんでした
 Could not read mpainter.ini. Default settings are used this time, and settings will not be saved.=mpainter.ini を読み込めませんでした。今回は既定の設定を使用し、設定は保存されません。
+
+# --- v0.9.6 ---
+Saved, but some of the original metadata could not be written to the file.=保存しましたが、元のメタデータの一部をファイルに書き込めませんでした。
+The image is too large: not enough memory=画像が大きすぎます：メモリが足りません

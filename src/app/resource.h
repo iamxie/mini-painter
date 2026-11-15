@@ -1,41 +1,6 @@
 #pragma once
 
-// 選單
-#define IDM_OPEN 101
-#define IDM_SAVE 102
-#define IDM_SAVEAS 103
-#define IDM_EXIT 104
-#define IDM_UNDO 111
-#define IDM_REDO 112
-#define IDM_DELETE 113
-#define IDM_ROTATE 114
-#define IDM_SETTINGS 115
-#define IDM_ZOOMIN 121
-#define IDM_ZOOMOUT 122
-#define IDM_ZOOM100 123
-#define IDM_ZOOMFIT 124
-#define IDM_MARKUP 135
-#define IDM_INFO 136
-#define IDM_FITWIDTH 127
-#define IDM_FITHEIGHT 128
-#define IDM_TWOPAGE 129
-#define IDM_UPSCALE 133
-#define IDM_RTL 137
-#define IDM_FIRSTALONE 138
-#define IDM_SHIFTONE 139
-#define IDM_PREV 131
-#define IDM_NEXT 132
-#define IDM_AUTONEXT 140
-// 語言選單：IDM_LANG_SYSTEM 是「跟隨系統」，之後每個語系一個 id
-#define IDM_LANG_SYSTEM 141
-#define IDM_LANG_FIRST 150
-#define IDM_LANG_LAST 199
-#define IDM_ABOUT 161
-// 模式（設定集）：顯示 › 模式 子選單
-#define IDM_PROFILE_SAVE 211
-#define IDM_PROFILE_MANAGE 212
-#define IDM_PROFILE_FIRST 220
-#define IDM_PROFILE_LAST 249
+// 選單與鍵盤的指令 id（IDM_*）在 core/Commands.h：選單是程式建的，app.rc 用不到。
 
 // 調整尺寸對話框
 #define IDD_RESIZE 201

@@ -225,9 +225,11 @@ struct LineStylePopup : PopupBase {
                 if (c.value == 0) rt->DrawLine(a, b, br(ink), px(3), renderer->roundStyle());
                 else if (c.value == 1) rt->DrawLine(a, b, br(ink), px(3), renderer->dashStyle());
                 else {
-                    D2D1_COLOR_F f = ink; f.a = 0.15f; rt->DrawLine(a, b, br(f), px(9), renderer->roundStyle());
-                    f.a = 0.3f; rt->DrawLine(a, b, br(f), px(6), renderer->roundStyle());
-                    f.a = 0.8f; rt->DrawLine(a, b, br(f), px(3), renderer->roundStyle());
+                    for (const FuzzyLayer& layer : kFuzzyLayers) { // 和實際畫出來的同一組參數
+                        D2D1_COLOR_F f = ink;
+                        f.a = ink.a * layer.alpha;
+                        rt->DrawLine(a, b, br(f), px(3) * layer.widthScale, renderer->roundStyle());
+                    }
                 }
             } else {
                 if (static_cast<int>(cur.arrows) == c.value) drawSelectedFrame(c.rect);

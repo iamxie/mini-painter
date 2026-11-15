@@ -1,0 +1,10 @@
+# 只固定兩種腳本的換行，其他檔案照各自 git 的設定（不加 `* text=auto`：它會讓 Windows 上的工作目錄整批變成 CRLF）。
+# bash 腳本一定要 LF，cmd 腳本一定要 CRLF（LF 的 .cmd 在 cmd.exe 會解析錯）。repo 裡都是 LF。
+*.sh text eol=lf
+*.cmd text eol=crlf
+# 二進位檔
+*.png binary
+*.ico binary
+*.webp binary
+*.rar binary
+*.db binary

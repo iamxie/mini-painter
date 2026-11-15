@@ -176,14 +176,11 @@ void Renderer::strokeGeometry(ID2D1RenderTarget* rt, ID2D1Geometry* geo, const S
         rt->DrawGeometry(geo, brushFor(rt, c), w, dash_.Get());
         break;
     case LineStyle::Fuzzy: {
-        // 沒有真正的模糊，用三層漸淡的描邊模擬。
-        D2D1_COLOR_F faint = c;
-        faint.a = c.a * 0.12f;
-        rt->DrawGeometry(geo, brushFor(rt, faint), w * 3.0f, round_.Get());
-        faint.a = c.a * 0.25f;
-        rt->DrawGeometry(geo, brushFor(rt, faint), w * 2.0f, round_.Get());
-        faint.a = c.a * 0.8f;
-        rt->DrawGeometry(geo, brushFor(rt, faint), w, round_.Get());
+        for (const FuzzyLayer& layer : kFuzzyLayers) {
+            D2D1_COLOR_F faint = c;
+            faint.a = c.a * layer.alpha;
+            rt->DrawGeometry(geo, brushFor(rt, faint), w * layer.widthScale, round_.Get());
+        }
         break;
     }
     }

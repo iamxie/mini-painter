@@ -100,7 +100,9 @@ struct Annotation {
 
 // 在指定中心建立預設形狀。size 是可見區域短邊，決定預設大小。
 Annotation makeShape(Kind kind, Pt center, float size, const StrokeStyle& style);
-Annotation makeText(Pt center, float size, const StrokeStyle& style, const TextStyle& textStyle);
+// text：方塊裡預設的字（app 給翻譯好的「文字」）。
+Annotation makeText(Pt center, float size, const StrokeStyle& style, const TextStyle& textStyle,
+                    const std::wstring& text = L"Text");
 // 從滑鼠軌跡建立塗鴉（軌跡至少一點）。
 Annotation makeFreehand(const std::vector<Pt>& path, const StrokeStyle& style);
 

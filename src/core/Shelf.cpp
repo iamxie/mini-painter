@@ -1,18 +1,11 @@
 #include "core/Shelf.h"
 
-#include <windows.h>
-
 #include "core/Archive.h"
 #include "core/FolderNav.h"
 
 namespace mp {
 
 namespace {
-
-std::wstring withSlash(const std::wstring& dir) {
-    if (dir.empty() || dir.back() == L'\\' || dir.back() == L'/') return dir;
-    return dir + L"\\";
-}
 
 std::wstring stripSlash(const std::wstring& path) {
     std::wstring p = path;
@@ -22,38 +15,41 @@ std::wstring stripSlash(const std::wstring& path) {
 
 } // namespace
 
+PathKind classifyPath(const std::wstring& path) {
+    if (isDirectoryPath(path)) return PathKind::Folder;
+    const std::wstring ext = extensionOf(path);
+    if (isArchiveExtension(ext) || (!isSupportedExtension(ext) && looksLikeArchive(path))) return PathKind::Archive;
+    return PathKind::Image;
+}
+
+std::wstring firstInFolder(const std::wstring& dir) {
+    auto files = listImageFiles(dir);
+    if (!files.empty()) return files.front();
+    auto books = listBooks(dir);
+    return books.empty() ? L"" : books.front();
+}
+
 bool hasImageFiles(const std::wstring& dir) {
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileExW((withSlash(dir) + L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
-                                FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return false;
     bool found = false;
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (isSupportedExtension(extensionOf(fd.cFileName))) { found = true; break; }
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        found = !e.directory && isSupportedExtension(extensionOf(e.name));
+        return !found;
+    });
     return found;
 }
 
 std::vector<std::wstring> listBooks(const std::wstring& parentDir) {
     std::vector<std::wstring> out;
-    std::wstring base = withSlash(parentDir);
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileExW((base + L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
-                                FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return out;
-    do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        std::wstring p = base + fd.cFileName;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+    forEachDirEntry(parentDir, [&](const DirEntry& e) {
+        std::wstring p = joinPath(parentDir, e.name);
+        if (e.directory) {
             if (hasImageFiles(p)) out.push_back(p);
-            continue;
+            return true;
         }
-        std::wstring ext = extensionOf(fd.cFileName);
+        std::wstring ext = extensionOf(e.name);
         if (isArchiveExtension(ext) || (!isSupportedExtension(ext) && looksLikeArchive(p))) out.push_back(p);
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+        return true;
+    });
     sortLogical(out);
     return out;
 }

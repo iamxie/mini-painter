@@ -4,32 +4,13 @@
 #include <shlwapi.h>
 
 #include <algorithm>
-#include <cwctype>
+
+#include "core/TextUtil.h"
 
 namespace mp {
 
-static const wchar_t* const kExts[] = {L".bmp", L".dib", L".tif", L".tiff", L".jpg", L".jpeg", L".jpe", L".jfif",
-                                       L".png", L".webp"};
 static const wchar_t* const kArchiveExts[] = {L".zip", L".7z", L".rar", L".cbz", L".cb7", L".cbr"};
 static const wchar_t* const kComicExts[] = {L".cbz", L".cb7", L".cbr"};
-
-static std::wstring lowerCopy(const std::wstring& s) {
-    std::wstring lower = s;
-    for (auto& ch : lower) ch = static_cast<wchar_t>(std::towlower(ch));
-    return lower;
-}
-
-bool isSupportedExtension(const std::wstring& ext) {
-    std::wstring lower = lowerCopy(ext);
-    for (auto* e : kExts)
-        if (lower == e) return true;
-    return false;
-}
-
-const std::vector<std::wstring>& supportedExtensions() {
-    static const std::vector<std::wstring> v(std::begin(kExts), std::end(kExts));
-    return v;
-}
 
 bool isArchiveExtension(const std::wstring& ext) {
     std::wstring lower = lowerCopy(ext);
@@ -92,35 +73,12 @@ std::wstring sanitizeFileName(const std::wstring& name) {
     return out;
 }
 
-bool isDirectoryPath(const std::wstring& path) {
-    DWORD attr = GetFileAttributesW(path.c_str());
-    return attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
-}
-
-std::wstring extensionOf(const std::wstring& path) {
-    size_t slash = path.find_last_of(L"\\/");
-    size_t dot = path.find_last_of(L'.');
-    if (dot == std::wstring::npos || (slash != std::wstring::npos && dot < slash)) return L"";
-    std::wstring ext = path.substr(dot);
-    for (auto& ch : ext) ch = static_cast<wchar_t>(std::towlower(ch));
-    return ext;
-}
-
 std::vector<std::wstring> listImageFiles(const std::wstring& dir) {
     std::vector<std::wstring> out;
-    std::wstring pattern = dir;
-    if (!pattern.empty() && pattern.back() != L'\\' && pattern.back() != L'/') pattern += L'\\';
-    std::wstring base = pattern;
-    pattern += L'*';
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileExW(pattern.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
-                                FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return out;
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (isSupportedExtension(extensionOf(fd.cFileName))) out.push_back(base + fd.cFileName);
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        if (!e.directory && isSupportedExtension(extensionOf(e.name))) out.push_back(joinPath(dir, e.name));
+        return true;
+    });
     sortLogical(out);
     return out;
 }

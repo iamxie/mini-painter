@@ -12,15 +12,18 @@
 #include "core/Annotation.h"
 #include "core/Archive.h"
 #include "core/ColorAdjust.h"
+#include "core/Commands.h"
 #include "core/Crop.h"
 #include "core/Document.h"
 #include "core/FolderNav.h"
 #include "core/Lang.h"
+#include "core/Paging.h"
 #include "core/Prefetch.h"
 #include "core/Settings.h"
 #include "core/Spreads.h"
 #include "core/TempDir.h"
 #include "core/ViewFit.h"
+#include "core/Viewport.h"
 #include "render/Renderer.h"
 
 namespace mp {
@@ -68,11 +71,19 @@ private:
     float px(float v) const { return v * ui_; }
 
     // 檔案
-    bool openPath(const std::wstring& path);
+    // 開一個路徑（圖片、資料夾或壓縮檔），換掉目前的圖。呼叫前要先問過使用者（confirmLeaveImage）：
+    // 這裡不問，因為有些呼叫端已經問過、或是剛啟動沒有東西可問。還沒問過的入口用 openConfirmed。
+    // landAtBottom：開好後捲到底（用 ↑ 翻到上一張時）。
+    bool openPath(const std::wstring& path, bool landAtBottom = false);
+    bool openConfirmed(const std::wstring& path); // confirmLeaveImage 通過才 openPath
+    // 開不了：把訊息畫在畫布上，目前的圖清掉。resetList：連翻頁清單與檔案資訊也清掉（資料夾沒圖、壓縮檔打不開）。
+    void showLoadError(const std::wstring& path, const std::wstring& message, bool resetList);
     LoadResult loadPage(const std::wstring& path); // 解一頁：預先解好的直接拿，沒有就現在解（解好的交給 prefetch_ 留著）
     // 預先解碼：告訴背景目前這屏、翻頁方向的下一屏、上一屏，到一本的盡頭時加上換本預備。翻頁、改檢視設定、畫布大小變了時呼叫。
     void schedulePrefetch();
     std::wstring prefetchArchiveRoot(); // 換本預開壓縮檔要解到哪（必要時先載 7z.dll、建暫存資料夾）；不能預開回空字串
+    bool ensureArchiveLibrary();      // 載入 exe 旁的 7z.dll（已載入就直接回 true）
+    bool ensureTempDir();             // 建這個執行個體的解壓暫存資料夾（已建就直接回 true）
     bool confirmDiscard(bool leavingImage = false); // leavingImage：換圖時多說一句復原紀錄會清空
     // 換到別張圖之前（翻頁、跳本、拖檔、開啟、兩頁並排換到別頁）：沒存的修改問存檔，存過但還有復原紀錄就提醒會清空。
     bool confirmLeaveImage();
@@ -84,7 +95,7 @@ private:
     void openDialog();
     void goPrev();
     void goNext();
-    void step(int dir);                 // 翻頁：dir +1 下一頁、-1 上一頁；到底了交給 bookEdge
+    void step(int dir, bool landAtBottom = false); // 翻頁：dir +1 下一頁、-1 上一頁；到底了交給 bookEdge
     void bookEdge(int dir);             // 翻到底：提示；開了「接著看下一本」時第一次待命、3 秒內再按就跳本
     bool openBook(const std::wstring& book, int dir); // 開書架上的一本：dir > 0 從第一頁、< 0 從最後一頁
     std::wstring currentBook() const;   // 目前這本書：壓縮檔路徑，或圖片所在的資料夾
@@ -143,17 +154,16 @@ private:
     static const wchar_t* buttonName(int id);
     void hideTip();
 
-    // 檢視模式（看漫畫）：設定裡的 viewMode 字串 <-> enum
+    // 檢視模式（看漫畫）
     using ViewMode = mp::ViewMode;
-    static ViewMode viewModeFromString(const std::wstring& s);
-    static const wchar_t* viewModeToString(ViewMode m);
     bool setViewMode(ViewMode m); // 切到兩頁並排要換掉正在改的圖、使用者取消時回 false，什麼都不改
     bool scrollBy(float dx, float dy); // 回傳有沒有真的動
     void scrollKey(int vk);            // 上下鍵：捲動，必要時翻頁
 
     // 兩頁並排：不能編輯，只看。
     bool twoPage() const { return viewMode_ == ViewMode::TwoPage && doc_.image() != nullptr; }
-    void updateSpreads();          // 依資料夾清單與每頁寬高算配對（結果快取）
+    void updateSpreads();          // 依資料夾清單與每頁寬高算配對（結果在 spreadCache_）
+    const std::vector<Spread>& spreads() const { return spreadCache_.spreads(); }
     int currentSpread() const;     // 目前這頁所在的屏，-1 表示不在清單
     bool confirmSpreadMove();      // spreads_ 算好後：目前這頁不是那屏的第一頁就要換圖，照 confirmLeaveImage 問
     void loadSecond();             // 載入同一屏的另一頁
@@ -183,6 +193,7 @@ private:
     void repaint() { InvalidateRect(hwnd_, nullptr, FALSE); }
 
     // 按鈕與選單
+    CommandState commandState() const; // 指令可用條件要看的狀態（core/Commands.h）；選單、工具列、鍵盤共用
     int hitButton(POINT pt, const Button** out = nullptr) const;
     void onButton(int id);
     void onCommand(int id);
@@ -214,7 +225,13 @@ private:
     TextStyle currentText() const;
     void rotateImage();
     void adjustSize();
-    void finishDrag();
+    void finishDrag();                 // 拖曳的結果套用到文件（由 endDrag 呼叫）
+    // 結束拖曳並放掉滑鼠。apply：套用拖曳的結果（放開滑鼠）；false：丟掉（被別的動作打斷、滑鼠被搶走）。
+    void endDrag(bool apply);
+    // 收掉進行中的互動，回到閒置：拖到一半的丟掉、文字編輯結束（commitText：留下打的字）、裁切取消、
+    // 調整顏色的面板關掉不套用。每個會換掉或改掉整張圖的入口都先呼叫這個，清理只寫在這一處。
+    void endInteraction(bool commitText);
+    Viewport viewport() const { return {zoom_, offset_}; }
 
     // 裁切模式：框預設整張圖，拖四角、四邊或框內調整，按「裁切」文字按鈕才真的裁。
     void beginCrop();
@@ -233,6 +250,7 @@ private:
     HINSTANCE inst_ = nullptr;
     HWND hwnd_ = nullptr;
     Settings settings_;
+    Settings settingsBase_;           // 上次和設定檔同步時的 settings_（存檔時的三方合併用，見 mergeSettings）
     std::wstring exePath_, settingsPath_;
     std::vector<LangTable> langs_; // 可選的語系，順序同語言選單
     bool settingsWritable_ = true;
@@ -288,7 +306,6 @@ private:
     bool fit_ = true;  // 跟著檢視模式走；手動縮放後 false，翻頁或改模式後又回 true
     ViewMode viewMode_ = ViewMode::FitWindow;
     bool hqBusy_ = false;   // 連續縮放中：先畫 bilinear，停下來（timer）再換高品質
-    bool scrollToEnd_ = false; // 用上鍵翻到上一張時，開在底部
 
     // 翻到底接著看下一本
     int armedDir_ = 0;             // 已經在底提示過一次、等再按一次的方向；0 = 沒有待命
@@ -299,9 +316,7 @@ private:
     // 兩頁並排
     ImagePtr second_;              // 同一屏的另一頁；沒有就是 nullptr
     std::wstring secondPath_;
-    std::vector<Spread> spreads_;
-    std::wstring spreadsKey_;      // spreads_ 對應的資料夾清單（第一個檔 + 數量 + 選項）
-    std::map<std::wstring, bool> wideCache_; // 路徑 -> 寬大於高；只留目前這本的（updateSpreads 重建）
+    SpreadCache spreadCache_;      // 目前這本的配對與每頁是不是寬圖；清單或選項變了會自己重算
     bool shiftOne_ = false;        // 「錯開一頁」，不存 ini
 
     // 樣式

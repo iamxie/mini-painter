@@ -247,3 +247,88 @@ TEST_CASE("hasTransparency 與 compositeOnWhite（premultiplied 疊在白底上�
         for (int x = 0; x < 2; ++x) set(opaque, x, y, 1, 2, 3);
     CHECK_FALSE(hasTransparency(opaque));
 }
+
+TEST_CASE("applyExifOrientation：八種方向逐像素對照 EXIF 的定義") {
+    // 3×2，每個像素的值是 y * 3 + x。
+    const int W = 3, H = 2;
+    Image img(W, H);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) set(img, x, y, static_cast<uint8_t>(y * W + x), 0, 0);
+    auto src = [&](int x, int y) { return y * W + x; };
+    for (int o = 1; o <= 8; ++o) {
+        INFO("orientation " << o);
+        Image out = applyExifOrientation(img, o);
+        const bool swapped = o >= 5;
+        REQUIRE(out.width == (swapped ? H : W));
+        REQUIRE(out.height == (swapped ? W : H));
+        for (int y = 0; y < out.height; ++y)
+            for (int x = 0; x < out.width; ++x) {
+                int want = 0;
+                switch (o) {
+                case 1: want = src(x, y); break;
+                case 2: want = src(W - 1 - x, y); break;         // 左右鏡射
+                case 3: want = src(W - 1 - x, H - 1 - y); break; // 轉 180
+                case 4: want = src(x, H - 1 - y); break;         // 上下鏡射
+                case 5: want = src(y, x); break;                 // 沿主對角線翻
+                case 6: want = src(y, H - 1 - x); break;         // 順時針 90
+                case 7: want = src(W - 1 - y, H - 1 - x); break; // 沿副對角線翻
+                case 8: want = src(W - 1 - y, x); break;         // 逆時針 90
+                }
+                INFO("at " << x << "," << y);
+                CHECK(out.px(x, y)[0] == want);
+            }
+    }
+    CHECK(applyExifOrientation(img, 0).pixels == img.pixels); // 範圍外的值當成 1
+    CHECK(applyExifOrientation(img, 9).pixels == img.pixels);
+}
+
+TEST_CASE("toStraight / toPremultiplied：換算、不透明與全透明的像素不動、尺寸與 DPI 跟著走") {
+    StraightImage s(4, 1);
+    s.dpiX = 150;
+    s.dpiY = 72;
+    auto put = [&](int x, uint8_t b, uint8_t g, uint8_t r, uint8_t a) {
+        uint8_t* p = s.px(x, 0);
+        p[0] = b; p[1] = g; p[2] = r; p[3] = a;
+    };
+    put(0, 10, 20, 30, 255);  // 不透明
+    put(1, 200, 100, 50, 128); // 半透明
+    put(2, 0, 0, 0, 0);       // 全透明
+    put(3, 255, 255, 255, 1);
+    const uint8_t* buffer = s.pixels.data();
+    Image p = toPremultiplied(std::move(s));
+    CHECK(p.pixels.data() == buffer); // 緩衝區是搬過去的，沒有複製
+    CHECK(p.width == 4);
+    CHECK(p.height == 1);
+    CHECK(p.dpiX == 150);
+    CHECK(p.dpiY == 72);
+    CHECK(p.px(0, 0)[2] == 30);
+    CHECK(p.px(1, 0)[0] == 100); // 200 × 128 / 255
+    CHECK(p.px(1, 0)[1] == 50);
+    CHECK(p.px(1, 0)[2] == 25);
+    CHECK(p.px(1, 0)[3] == 128);
+    CHECK(p.px(3, 0)[0] == 1);
+    for (int x = 0; x < 4; ++x)
+        for (int c = 0; c < 3; ++c) CHECK(p.px(x, 0)[c] <= p.px(x, 0)[3]); // premultiplied：顏色不超過 alpha
+    CHECK(hasTransparency(p));
+    StraightImage back = toStraight(std::move(p));
+    CHECK(back.pixels.data() == buffer);
+    CHECK(back.dpiX == 150);
+    CHECK(back.px(0, 0)[0] == 10);
+    CHECK(std::abs(back.px(1, 0)[0] - 200) <= 1); // 捨入誤差一階以內
+    CHECK(std::abs(back.px(1, 0)[1] - 100) <= 1);
+    CHECK(std::abs(back.px(1, 0)[2] - 50) <= 1);
+    CHECK(back.px(2, 0)[3] == 0);
+    CHECK(back.px(3, 0)[0] == 255);
+    CHECK(hasTransparency(back));
+}
+
+TEST_CASE("premultiplyChannel / unpremultiplyChannel") {
+    CHECK(premultiplyChannel(200, 255) == 200);
+    CHECK(premultiplyChannel(200, 0) == 0);
+    CHECK(premultiplyChannel(255, 128) == 128);
+    CHECK(unpremultiplyChannel(128, 128) == 255);
+    CHECK(unpremultiplyChannel(64, 128) == 128);
+    CHECK(unpremultiplyChannel(7, 255) == 7);
+    CHECK(unpremultiplyChannel(7, 0) == 7);     // alpha 0：沒有顏色可還原，原樣
+    CHECK(unpremultiplyChannel(200, 100) == 255); // 不合法的輸入（顏色大於 alpha）夾在 255
+}

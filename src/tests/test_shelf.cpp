@@ -4,29 +4,15 @@
 
 #include "core/Shelf.h"
 #include "core/TempDir.h"
+#include "test_util.h"
 
 using namespace mp;
 
 namespace {
 
-std::wstring shelfRoot() {
-    wchar_t dir[MAX_PATH];
-    GetTempPathW(MAX_PATH, dir);
-    std::wstring root = std::wstring(dir) + L"mp_test_shelf";
-    removeDirectoryRecursive(root);
-    REQUIRE(createDirectories(root));
-    return root;
-}
+std::wstring shelfRoot() { return mp::test::freshDir(L"shelf"); }
 
-void touch(const std::wstring& path, const char* bytes = "x") {
-    size_t slash = path.find_last_of(L"\\/");
-    createDirectories(path.substr(0, slash));
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    REQUIRE(h != INVALID_HANDLE_VALUE);
-    DWORD w = 0;
-    WriteFile(h, bytes, static_cast<DWORD>(strlen(bytes)), &w, nullptr);
-    CloseHandle(h);
-}
+void touch(const std::wstring& path, const char* bytes = "x") { mp::test::writeBytes(path, bytes); }
 
 } // namespace
 

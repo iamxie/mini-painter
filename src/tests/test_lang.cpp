@@ -2,25 +2,14 @@
 
 #include <windows.h>
 
-#include <fstream>
-
 #include "core/Lang.h"
+#include "test_util.h"
 
 using namespace mp;
 
 namespace {
-std::wstring tempPath(const wchar_t* name) {
-    wchar_t dir[MAX_PATH];
-    GetTempPathW(MAX_PATH, dir);
-    return std::wstring(dir) + L"mp_test_" + name;
-}
-void writeBytes(const std::wstring& path, const std::string& bytes) {
-    std::ofstream f(path, std::ios::binary);
-    f.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
-}
-struct ResetLang {
-    ~ResetLang() { setActiveLang({}); }
-};
+using mp::test::tempPath;
+using mp::test::writeBytes;
 } // namespace
 
 TEST_CASE("parseLangText：檔頭、註解、空白、跳脫") {
@@ -38,8 +27,7 @@ TEST_CASE("parseLangText：檔頭、註解、空白、跳脫") {
 }
 
 TEST_CASE("tr：沒有語系時回傳 key，有語系時查表，缺 key 退回 key") {
-    ResetLang guard;
-    setActiveLang({});
+    mp::test::LangGuard guard;
     CHECK(std::wstring(tr(L"Open…")) == L"Open…");
     LangTable t = parseLangText(L"_code=zh-TW\nOpen…=開啟…\n");
     setActiveLang(t);
@@ -105,4 +93,65 @@ TEST_CASE("pickLanguage：其他語言比對語言部分，沒有退回 en") {
     CHECK(pickLanguage(L"", L"fr-FR", avail) == L"en");
     CHECK(pickLanguage(L"", L"", avail) == L"en");
     CHECK(pickLanguage(L"", L"JA-jp", avail) == L"ja-JP"); // 大小寫不分，回傳清單裡的寫法
+}
+
+TEST_CASE("formatSpecs：列出會吃引數的轉換；不合法的格式回 false") {
+    std::wstring s;
+    CHECK(formatSpecs(L"plain text", s));
+    CHECK(s.empty());
+    CHECK(formatSpecs(L"%s: %d%%", s));
+    CHECK(s == L"s,d");
+    CHECK(formatSpecs(L"%.0f × %.0f pixels/inch", s));
+    CHECK(s == L"f,f");
+    CHECK(formatSpecs(L"%llu bytes / %lu / %08X / %-5.2ls / %I64d", s));
+    CHECK(s == L"llu,lu,X,ls,I64d");
+    CHECK(formatSpecs(L"%*d %.*s", s)); // 寫 * 的寬度、精度也吃一個引數
+    CHECK(s == L"*,d,*,s");
+    CHECK(formatSpecs(L"100%% sure", s));
+    CHECK(s.empty());
+    CHECK_FALSE(formatSpecs(L"100%", s));      // 結尾單獨的 %
+    CHECK(formatSpecs(L"50% off", s));         // 空格是旗標、o 是轉換：對 printf 來說是合法的
+    CHECK(s == L"o");
+    CHECK_FALSE(formatSpecs(L"%n", s));        // 一律不收
+    CHECK_FALSE(formatSpecs(L"%s %n", s));
+    CHECK_FALSE(formatSpecs(L"% 以上", s));    // % 後面不是轉換
+    CHECK_FALSE(formatSpecs(L"%5", s));
+}
+
+TEST_CASE("parseLangText：佔位符和 key 不一樣的翻譯丟掉，記在 rejected") {
+    LangTable t = parseLangText(L"_code=xx\n"
+                                L"Cannot open: %s=無法開啟：%s\n"          // 一樣：收
+                                L"Saved %d of %d=存了 %d 個，共 %d 個\n"   // 一樣：收
+                                L"Bad: %s=壞：%d\n"                        // 型別不同
+                                L"More: %s=多：%s %s\n"                    // 多一個
+                                L"Less: %s=少\n"                           // 少一個
+                                L"Swap: %s %d=換：%d %s\n"                 // 順序不同
+                                L"N: %s=%n%s\n"                            // %n
+                                L"Plain=普通\n"                            // 都沒有：收
+                                L"Plain2=意外的 %s\n"                      // key 沒有，翻譯多了
+                                L"Percent=100%\n"                          // 翻譯不是合法的格式
+                                L"Half 50%=一半 50%\n"                     // key 本身不是合法的格式：不檢查
+                                L"Rate %d%%=比率 %d%%\n");                 // %% 不算
+    CHECK(t.map.count(L"Cannot open: %s") == 1);
+    CHECK(t.map.count(L"Saved %d of %d") == 1);
+    CHECK(t.map.count(L"Plain") == 1);
+    CHECK(t.map.count(L"Half 50%") == 1);
+    CHECK(t.map.count(L"Rate %d%%") == 1);
+    CHECK(t.map.size() == 5);
+    CHECK(t.rejected == std::vector<std::wstring>{L"Bad: %s", L"More: %s", L"Less: %s", L"Swap: %s %d", L"N: %s", L"Plain2", L"Percent"});
+    mp::test::LangGuard guard;
+    setActiveLang(t);
+    CHECK(std::wstring(tr(L"Bad: %s")) == L"Bad: %s"); // 丟掉的顯示英文
+    CHECK(std::wstring(tr(L"Plain")) == L"普通");
+}
+
+TEST_CASE("隨程式發佈的語系檔：沒有任何一行因為佔位符被丟掉") {
+    for (auto* name : {L"zh-TW.txt", L"ja-JP.txt"}) {
+        LangTable t;
+        REQUIRE(loadLangFile(std::wstring(MP_SOURCE_LANG_DIR) + L"/" + name, t));
+        INFO("rejected: " << t.rejected.size());
+        CHECK(t.rejected.empty());
+        CHECK(t.map.size() > 300);
+        CHECK_FALSE(t.code.empty());
+    }
 }

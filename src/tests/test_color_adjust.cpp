@@ -8,9 +8,9 @@ using namespace mp;
 
 namespace {
 
-// 直接寫 straight BGRA，再呼叫 premultiply。
+// 直接寫 straight BGRA，再轉成 premultiplied。
 Image solid(int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
-    Image img(w, h);
+    StraightImage img(w, h);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             uint8_t* p = img.px(x, y);
@@ -19,12 +19,11 @@ Image solid(int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
             p[2] = r;
             p[3] = a;
         }
-    premultiply(img);
-    return img;
+    return toPremultiplied(std::move(img));
 }
 
 Image gradient(int w, int h) {
-    Image img(w, h);
+    StraightImage img(w, h);
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             uint8_t* p = img.px(x, y);
@@ -33,8 +32,7 @@ Image gradient(int w, int h) {
             p[2] = static_cast<uint8_t>(((x + y) * 127) / (w + h - 2));
             p[3] = static_cast<uint8_t>((x % 3 == 0) ? 128 : ((y % 4 == 0) ? 0 : 255));
         }
-    premultiply(img);
-    return img;
+    return toPremultiplied(std::move(img));
 }
 
 bool near(int a, int b, int tol) { return std::abs(a - b) <= tol; }
@@ -89,8 +87,7 @@ TEST_CASE("exposure works on semi-transparent pixel in straight space") {
     Image src = solid(2, 2, 64, 64, 64, 128);
     ColorAdjustParams p;
     p.exposure = 1.0f;
-    Image out = applyColorAdjust(src, p);
-    unpremultiply(out);
+    StraightImage out = toStraight(applyColorAdjust(src, p));
     CHECK(near(out.px(0, 0)[2], 128, 3));
     CHECK(out.px(0, 0)[3] == 128);
 }
@@ -99,8 +96,7 @@ TEST_CASE("saturation -1 makes gray") {
     Image src = gradient(16, 16);
     ColorAdjustParams p;
     p.saturation = -1.0f;
-    Image out = applyColorAdjust(src, p);
-    unpremultiply(out);
+    StraightImage out = toStraight(applyColorAdjust(src, p));
     for (int y = 0; y < 16; ++y)
         for (int x = 0; x < 16; ++x) {
             const uint8_t* q = out.px(x, y);

@@ -9,7 +9,6 @@
 #include "core/Archive.h"
 #include "core/ColorAdjust.h"
 #include "core/Image.h"
-#include "core/Settings.h"
 #include "core/Update.h"
 
 namespace mp {
@@ -63,21 +62,6 @@ bool downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, const st
 // 再等 processes（要有 SYNCHRONIZE）都結束，最多 30 秒。有一個不關、逾時或使用者取消就回 false。
 bool closeWindowsWithProgress(HWND owner, UINT closeMsg, const std::vector<HWND>& windows,
                               const std::vector<HANDLE>& processes);
-
-// 「設定」（modal PropertySheet：一般 / 模式 / 壓縮檔 / Windows 整合，取消 / 確定 / 套用）。
-struct SettingsDialogInfo {
-    std::wstring iniPath;
-    bool iniWritable = true;
-    bool isWin11 = false;
-    std::function<void()> onSetDefault; // 按「設為預設圖片程式…」
-    std::vector<std::pair<std::wstring, std::wstring>> languages; // (代碼, 名稱)，語言下拉的順序；「跟隨系統」由對話框自己加在最前面
-    std::wstring exeDir;                // 算預設暫存位置用
-    std::wstring unzipRootInUse;        // 目前實際使用中的暫存根目錄（顯示路徑與用量）
-    int startPage = 0;                  // 0 一般、1 模式、2 壓縮檔、3 Windows 整合
-    // 按「套用」或「確定」：s 是整份新設定（目前的檢視值照抄進來，對話框不改它們）。對話框還開著，呼叫端自己 diff 後套用。
-    std::function<void(const Settings& s)> onApply;
-};
-void showSettingsDialog(HWND owner, const Settings& s, const SettingsDialogInfo& info);
 
 // 壓縮檔的密碼對話框（modal）。retry 為 true 時多一行「密碼不對」。回傳 false 表示取消。
 bool showPasswordDialog(HWND owner, const std::wstring& archiveName, bool retry, std::wstring& password);

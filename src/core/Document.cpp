@@ -1,5 +1,7 @@
 #include "core/Document.h"
 
+#include "core/TextUtil.h"
+
 #include <algorithm>
 #include <set>
 #include <stdexcept>
@@ -13,16 +15,6 @@ void Document::reset(ImagePtr image) {
     undo_.clear();
     redo_.clear();
     savedSerial_ = cur_.serial;
-}
-
-int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi) {
-    try {
-        return std::clamp(std::stoi(text), lo, hi);
-    } catch (const std::invalid_argument&) {
-        return fallback;
-    } catch (const std::out_of_range&) {
-        return text.find(L'-') != std::wstring::npos ? lo : hi;
-    }
 }
 
 int clampUndoLimit(int n) { return std::clamp(n, kUndoLimitMin, kUndoLimitMax); }

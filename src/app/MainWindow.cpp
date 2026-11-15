@@ -11,13 +11,17 @@
 #include <cmath>
 
 #include "app/Popups.h"
+#include "app/SettingsDialog.h"
+#include "app/UiText.h"
 #include "app/resource.h"
 #include "app/version.h"
 #include "core/ImageIO.h"
 #include "core/ImageOps.h"
+#include "core/Launch.h"
 #include "core/Lang.h"
 #include "core/ShellReg.h"
 #include "core/Shelf.h"
+#include "core/SysInfo.h"
 
 namespace mp {
 
@@ -27,6 +31,10 @@ constexpr wchar_t kClassName[] = L"MiniPainterMain";
 constexpr wchar_t kAppName[] = L"mpainter";
 constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer = 4, kToastTimer = 5, kArmTimer = 6,
                    kUpdateTimer = 7, kPrefetchTimer = 8;
+// 主視窗自己用的訊息。WM_APP 起的編號全專案只有這些：彈出選單關閉的 WM_MP_POPUP_CLOSED 是 WM_APP + 3（Popups.h），
+// 進度對話框內部用 WM_APP + 10 起（Dialogs.cpp）。
+constexpr UINT WM_MP_EDIT_LOST_FOCUS = WM_APP + 1; // 文字編輯框把焦點交回主視窗
+constexpr UINT WM_MP_ASK_DEFAULT = WM_APP + 2;     // 第一次開圖後詢問預設程式
 constexpr UINT WM_MP_UPDATE_FOUND = WM_APP + 4; // lParam = new 出來的 ReleaseInfo*，收到的人 delete
 constexpr wchar_t kReleasesPage[] = L"https://github.com/iamxie/mini-painter/releases";
 
@@ -100,27 +108,22 @@ bool inRect(const D2D1_RECT_F& r, POINT p) {
     return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
 }
 
-std::wstring fileNameOf(const std::wstring& path) {
-    size_t s = path.find_last_of(L"\\/");
-    return s == std::wstring::npos ? path : path.substr(s + 1);
+// 登錄裡給使用者看的文字，跟著目前的語系。
+ShellRegOptions shellRegOptions() {
+    ShellRegOptions o;
+    o.text.openWith = tr(L"Open with mpainter");
+    o.text.fileType = tr(L"mpainter image");
+    o.text.appDescription = tr(L"Lightweight image viewer and annotator");
+    return o;
 }
 
-// 翻譯後的格式字串填一個 %s。
-std::wstring fmt1(const wchar_t* key, const std::wstring& arg) {
-    const wchar_t* f = tr(key);
-    std::wstring out(wcslen(f) + arg.size() + 8, L'\0');
-    int n = swprintf(out.data(), out.size(), f, arg.c_str());
-    out.resize(n > 0 ? static_cast<size_t>(n) : 0);
-    return out;
-}
-
-// 翻譯後的格式字串填兩個 %s。
-std::wstring fmt2(const wchar_t* key, const std::wstring& a, const std::wstring& b) {
-    const wchar_t* f = tr(key);
-    std::wstring out(wcslen(f) + a.size() + b.size() + 8, L'\0');
-    int n = swprintf(out.data(), out.size(), f, a.c_str(), b.c_str());
-    out.resize(n > 0 ? static_cast<size_t>(n) : 0);
-    return out;
+// 開「設定 > 預設應用程式」。Win11 可以直接開到某個程式的頁面；Win10 不認得 registeredAppUser，開整頁。
+bool openDefaultAppsSettings() {
+    const wchar_t* uri = isWindows11() ? L"ms-settings:defaultapps?registeredAppUser=mpainter" : L"ms-settings:defaultapps";
+    auto r = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", uri, nullptr, nullptr, SW_SHOWNORMAL));
+    if (r > 32) return true;
+    r = reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", L"ms-settings:defaultapps", nullptr, nullptr, SW_SHOWNORMAL));
+    return r > 32;
 }
 
 } // namespace
@@ -242,7 +245,7 @@ LRESULT CALLBACK MainWindow::editProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
     if (msg == WM_KILLFOCUS) {
         // 焦點跑到別的頂層視窗（例如彈出選單）時不結束編輯；跑回主視窗才結束。
         HWND to = reinterpret_cast<HWND>(wp);
-        if (to == self->hwnd_) PostMessageW(self->hwnd_, WM_APP + 1, 0, 0);
+        if (to == self->hwnd_) PostMessageW(self->hwnd_, WM_MP_EDIT_LOST_FOCUS, 0, 0);
     }
     return DefSubclassProc(hwnd, msg, wp, lp);
 }
@@ -296,6 +299,10 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONDBLCLK: onLButtonDblClk({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}); return 0;
     case WM_MOUSEMOVE: onMouseMove({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}, wp); return 0;
     case WM_LBUTTONUP: onLButtonUp({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}); return 0;
+    case WM_CAPTURECHANGED:
+        // 拖到一半滑鼠被別的視窗拿走（跳出對話框、切到別的程式）：這次拖曳不算，不然 drag_ 會一直卡著。
+        if (reinterpret_cast<HWND>(lp) != hwnd_) endDrag(false);
+        return 0;
     case WM_MOUSELEAVE:
         trackingMouse_ = false;
         if (hoverBtn_ != BTN_NONE) { hoverBtn_ = BTN_NONE; repaint(); }
@@ -342,7 +349,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_ENTERMENULOOP: menuLoop_ = true; break;
     case WM_EXITMENULOOP: menuLoop_ = false; break;
-    case WM_APP + 2: // 第一次開圖後詢問預設程式
+    case WM_MP_ASK_DEFAULT:
         askPending_ = false;
         if (!settings_.askedDefault) askDefaultProgram(false);
         return 0;
@@ -383,13 +390,13 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
             return reinterpret_cast<LRESULT>(editBrush_);
         }
         break;
-    case WM_APP + 1: // 編輯框失去焦點給主視窗
+    case WM_MP_EDIT_LOST_FOCUS:
         if (edit_ && GetFocus() != edit_) endTextEdit(true);
         return 0;
     case WM_DROPFILES: {
         HDROP drop = reinterpret_cast<HDROP>(wp);
         wchar_t buf[MAX_PATH];
-        if (DragQueryFileW(drop, 0, buf, MAX_PATH) && confirmLeaveImage()) openPath(buf);
+        if (DragQueryFileW(drop, 0, buf, MAX_PATH)) openConfirmed(buf);
         DragFinish(drop);
         return 0;
     }
@@ -408,7 +415,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         tempDir_.release();
         if (!relaunchArgs_.empty()) {
             // 自動更新：檔案已換好，用新的 exe 重開（它會等這個行程結束才開始）。
-            std::wstring cmd = L"\"" + exePath_ + L"\" " + relaunchArgs_;
+            std::wstring cmd = quoteArg(exePath_) + L" " + relaunchArgs_;
             STARTUPINFOW si{sizeof(si)};
             PROCESS_INFORMATION pi{};
             if (CreateProcessW(exePath_.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
@@ -496,6 +503,8 @@ void MainWindow::buildButtons() {
             buttons_.push_back(b);
         }
     }
+    CommandState state = commandState();
+    state.dragging = false; // 按鈕的灰色不跟著拖曳變（拖曳中本來就按不到）
     for (auto& b : buttons_) {
         switch (b.id) {
         case BTN_ZOOM100: b.enabled = std::abs(zoom_ - 1.0f) > 1e-4f; break;
@@ -506,9 +515,27 @@ void MainWindow::buildButtons() {
         case BTN_CROP: b.pressed = cropping_; break;
         default: break;
         }
-        if (!doc_.image() && b.id != BTN_INFO && b.id != BTN_MARKUP) b.enabled = false;
-        if (twoPage() && (b.id == BTN_MARKUP || b.id == BTN_ROTATE)) b.enabled = false;
+        // 對應到指令的按鈕用指令的可用條件（和選單、快捷鍵同一份）；其他的工具按鈕要有圖才能按。
+        const int command = b.id == BTN_ZOOMIN ? IDM_ZOOMIN : b.id == BTN_ZOOMOUT ? IDM_ZOOMOUT : b.id == BTN_ROTATE ? IDM_ROTATE
+                          : b.id == BTN_MARKUP ? IDM_MARKUP : b.id == BTN_INFO ? IDM_INFO : IDM_NONE;
+        if (command != IDM_NONE) b.enabled = commandEnabled(command, state);
+        else if (!doc_.image()) b.enabled = false;
     }
+}
+
+CommandState MainWindow::commandState() const {
+    CommandState st;
+    st.hasImage = doc_.image() != nullptr;
+    st.dirty = doc_.dirty();
+    st.canUndo = doc_.canUndo();
+    st.canRedo = doc_.canRedo();
+    st.hasSelection = selected_ != 0;
+    st.twoPage = twoPage();
+    st.hasPages = nav_.count() > 0;
+    st.cropping = cropping_;
+    st.profileModified = profileModified(settings_) && findProfile(settings_, settings_.profileName) != nullptr;
+    st.dragging = drag_ != Drag::None;
+    return st;
 }
 
 RECT MainWindow::buttonScreenRect(int id) const {
@@ -537,60 +564,61 @@ int MainWindow::hitButton(POINT pt, const Button** out) const {
 
 void MainWindow::buildMenu() {
     menu_ = CreateMenu();
-    // 快捷鍵文字不進翻譯表：翻譯者只翻名稱。
-    auto item = [](HMENU m, int id, const wchar_t* key, const wchar_t* accel = nullptr) {
-        std::wstring t = trs(key);
-        if (accel) { t += L'\t'; t += accel; }
+    // 名稱與快捷鍵文字照指令表（core/Commands.cpp）。快捷鍵文字不進翻譯表：翻譯者只翻名稱。
+    auto item = [](HMENU m, int id) {
+        const CommandInfo* c = commandInfo(id);
+        std::wstring t = c ? trs(c->name) : L"";
+        if (c && c->shortcut) { t += L'\t'; t += c->shortcut; }
         AppendMenuW(m, MF_STRING, id, t.c_str());
     };
     auto sep = [](HMENU m) { AppendMenuW(m, MF_SEPARATOR, 0, nullptr); };
     HMENU file = CreatePopupMenu();
-    item(file, IDM_OPEN, L"Open…", L"Ctrl+O");
-    item(file, IDM_SAVE, L"Save", L"Ctrl+S");
-    item(file, IDM_SAVEAS, L"Export As…", L"Ctrl+Shift+S");
+    item(file, IDM_OPEN);
+    item(file, IDM_SAVE);
+    item(file, IDM_SAVEAS);
     sep(file);
-    item(file, IDM_EXIT, L"Exit", L"Alt+F4");
+    item(file, IDM_EXIT);
     HMENU edit = CreatePopupMenu();
-    item(edit, IDM_UNDO, L"Undo", L"Ctrl+Z");
-    item(edit, IDM_REDO, L"Redo", L"Ctrl+Y");
+    item(edit, IDM_UNDO);
+    item(edit, IDM_REDO);
     sep(edit);
-    item(edit, IDM_DELETE, L"Delete Selected Object", L"Del");
+    item(edit, IDM_DELETE);
     sep(edit);
-    item(edit, IDM_ROTATE, L"Rotate 90° Counterclockwise", L"Ctrl+R");
+    item(edit, IDM_ROTATE);
     sep(edit);
-    item(edit, IDM_SETTINGS, L"Settings…");
+    item(edit, IDM_SETTINGS);
     HMENU view = CreatePopupMenu();
     // 模式（設定集）：選一個整組套上；內容由 rebuildProfileMenu 填
     profileMenu_ = CreatePopupMenu();
     rebuildProfileMenu();
     AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(profileMenu_), tr(L"Mode"));
     sep(view);
-    item(view, IDM_ZOOMIN, L"Zoom In", L"Ctrl++");
-    item(view, IDM_ZOOMOUT, L"Zoom Out", L"Ctrl+-");
+    item(view, IDM_ZOOMIN);
+    item(view, IDM_ZOOMOUT);
     sep(view);
     // 檢視模式（單選，跨翻頁延續）
-    item(view, IDM_ZOOMFIT, L"Fit to Window", L"Ctrl+9");
-    item(view, IDM_FITWIDTH, L"Fit to Width");
-    item(view, IDM_FITHEIGHT, L"Fit to Height");
-    item(view, IDM_ZOOM100, L"Actual Size", L"Ctrl+0");
-    item(view, IDM_TWOPAGE, L"Two Pages Side by Side");
+    item(view, IDM_ZOOMFIT);
+    item(view, IDM_FITWIDTH);
+    item(view, IDM_FITHEIGHT);
+    item(view, IDM_ZOOM100);
+    item(view, IDM_TWOPAGE);
     sep(view);
-    item(view, IDM_UPSCALE, L"Enlarge Small Images to Fit");
+    item(view, IDM_UPSCALE);
     sep(view);
     // 兩頁並排的選項
-    item(view, IDM_RTL, L"Right to Left (Manga)");
-    item(view, IDM_FIRSTALONE, L"First Page Alone");
-    item(view, IDM_SHIFTONE, L"Shift Pairing by One Page");
+    item(view, IDM_RTL);
+    item(view, IDM_FIRSTALONE);
+    item(view, IDM_SHIFTONE);
     sep(view);
-    item(view, IDM_PREV, L"Previous Image", L"←");
-    item(view, IDM_NEXT, L"Next Image", L"→");
-    item(view, IDM_AUTONEXT, L"Continue to the next folder or archive at the end");
+    item(view, IDM_PREV);
+    item(view, IDM_NEXT);
+    item(view, IDM_AUTONEXT);
     sep(view);
-    item(view, IDM_MARKUP, L"Markup Toolbar");
-    item(view, IDM_INFO, L"Info Panel");
+    item(view, IDM_MARKUP);
+    item(view, IDM_INFO);
     // 語言：跟隨系統 + 內建 + lang/ 掃到的。切錯語系也找得到回來的路，所以標題兩種語言並列。
     HMENU lang = CreatePopupMenu();
-    item(lang, IDM_LANG_SYSTEM, L"Follow System");
+    item(lang, IDM_LANG_SYSTEM);
     sep(lang);
     for (size_t i = 0; i < langs_.size() && IDM_LANG_FIRST + static_cast<int>(i) <= IDM_LANG_LAST; ++i)
         AppendMenuW(lang, MF_STRING, IDM_LANG_FIRST + static_cast<UINT_PTR>(i), langs_[i].name.c_str());
@@ -599,7 +627,7 @@ void MainWindow::buildMenu() {
     AppendMenuW(menu_, MF_POPUP, reinterpret_cast<UINT_PTR>(view), tr(L"&View"));
     AppendMenuW(menu_, MF_POPUP, reinterpret_cast<UINT_PTR>(lang), L"語言 / &Language");
     HMENU help = CreatePopupMenu();
-    item(help, IDM_ABOUT, L"About mpainter…");
+    item(help, IDM_ABOUT);
     AppendMenuW(menu_, MF_POPUP, reinterpret_cast<UINT_PTR>(help), tr(L"&Help"));
 }
 
@@ -610,18 +638,16 @@ void MainWindow::rebuildProfileMenu() {
         AppendMenuW(profileMenu_, MF_STRING, IDM_PROFILE_FIRST + static_cast<UINT_PTR>(i), settings_.profiles[i].name.c_str());
     AppendMenuW(profileMenu_, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(profileMenu_, MF_STRING, IDM_PROFILE_SAVE, L""); // 文字在 updateMenu 填（帶模式名）
-    AppendMenuW(profileMenu_, MF_STRING, IDM_PROFILE_MANAGE, tr(L"Manage Modes…"));
+    AppendMenuW(profileMenu_, MF_STRING, IDM_PROFILE_MANAGE, tr(commandInfo(IDM_PROFILE_MANAGE)->name));
 }
 
 void MainWindow::switchProfile(const Profile& p) {
     Settings before = settings_;
     applyProfile(settings_, p);
-    spreadsKey_.clear(); // 兩頁並排的選項可能變了，配對重算
     disarmJump();
-    if (!setViewMode(viewModeFromString(settings_.viewMode))) { // 會存 ini、重算配對、重新符合、更新標題、重畫
+    if (!setViewMode(settings_.view.viewMode)) { // 會存 ini、重算配對、重新符合、更新標題、重畫
         // 套用後要換掉正在改的圖，使用者取消：檢視值回到套用前
         settings_ = before;
-        spreadsKey_.clear();
         if (twoPage()) updateSpreads();
         updateTitle();
     }
@@ -653,49 +679,28 @@ void MainWindow::updateMenu() {
     if (curProfile >= 0) CheckMenuRadioItem(profileMenu_, IDM_PROFILE_FIRST, IDM_PROFILE_LAST, IDM_PROFILE_FIRST + curProfile, MF_BYCOMMAND);
     ModifyMenuW(profileMenu_, IDM_PROFILE_SAVE, MF_BYCOMMAND | MF_STRING, IDM_PROFILE_SAVE,
                 fmt1(L"Save Current Settings to “%s”", settings_.profileName).c_str());
-    en(IDM_PROFILE_SAVE, modified && curProfile >= 0);
     chk(IDM_LANG_SYSTEM, settings_.language.empty());
     for (size_t i = 0; i < langs_.size(); ++i)
         chk(IDM_LANG_FIRST + static_cast<int>(i), !settings_.language.empty() && _wcsicmp(langs_[i].code.c_str(), settings_.language.c_str()) == 0);
-    bool has = doc_.image() != nullptr;
-    en(IDM_SAVE, has && doc_.dirty());
-    en(IDM_SAVEAS, has);
-    en(IDM_UNDO, doc_.canUndo());
-    en(IDM_REDO, doc_.canRedo());
-    en(IDM_DELETE, selected_ != 0);
-    en(IDM_ROTATE, has);
-    en(IDM_ZOOMIN, has);
-    en(IDM_ZOOMOUT, has);
-    en(IDM_ZOOM100, has);
-    en(IDM_ZOOMFIT, has);
-    // 開了「接著看下一本」時到底了也能按（按了會提示 / 跳本）
-    bool more = settings_.autoNextBook && nav_.count() > 0;
-    en(IDM_PREV, nav_.hasPrev() || more);
-    en(IDM_NEXT, nav_.hasNext() || more);
-    chk(IDM_AUTONEXT, settings_.autoNextBook);
+    // 灰不灰照指令表的條件（快捷鍵用的是同一份，選單停用的指令快捷鍵也不動作）。
+    const CommandState state = commandState();
+    for (const CommandInfo& c : commands()) en(c.id, commandEnabled(c.id, state));
+    chk(IDM_AUTONEXT, settings_.view.autoNextBook);
     chk(IDM_MARKUP, showMarkup_);
     chk(IDM_INFO, showInfo_);
-    en(IDM_FITWIDTH, has);
-    en(IDM_FITHEIGHT, has);
-    en(IDM_TWOPAGE, has);
-    // 五種模式的 id 連續（123..129，中間沒有別的項目），用 CheckMenuRadioItem 畫圓點。
+    // 檢視模式的單選圓點：這五個 id 之間沒有別的指令（test_commands.cpp 有檢查）。
     int modeId = viewMode_ == ViewMode::FitWidth ? IDM_FITWIDTH : viewMode_ == ViewMode::FitHeight ? IDM_FITHEIGHT
                : viewMode_ == ViewMode::Actual ? IDM_ZOOM100 : viewMode_ == ViewMode::TwoPage ? IDM_TWOPAGE : IDM_ZOOMFIT;
-    CheckMenuRadioItem(menu_, IDM_ZOOM100, IDM_TWOPAGE, modeId, MF_BYCOMMAND);
-    chk(IDM_UPSCALE, settings_.upscaleSmall);
-    chk(IDM_RTL, settings_.rightToLeft);
-    chk(IDM_FIRSTALONE, settings_.firstPageAlone);
+    CheckMenuRadioItem(menu_, kViewModeCommandFirst, kViewModeCommandLast, modeId, MF_BYCOMMAND);
+    chk(IDM_UPSCALE, settings_.view.upscaleSmall);
+    chk(IDM_RTL, settings_.view.rightToLeft);
+    chk(IDM_FIRSTALONE, settings_.view.firstPageAlone);
     chk(IDM_SHIFTONE, shiftOne_);
-    // 兩頁並排只看不編
-    if (twoPage()) {
-        for (int id : {IDM_UNDO, IDM_REDO, IDM_DELETE, IDM_ROTATE, IDM_MARKUP, IDM_SAVE}) en(id, false);
-        int cur = currentSpread();
-        en(IDM_PREV, cur > 0 || more);
-        en(IDM_NEXT, (cur >= 0 && cur + 1 < static_cast<int>(spreads_.size())) || more);
-    }
 }
 
 void MainWindow::onCommand(int id) {
+    // 選單、快捷鍵、別的程式送來的 WM_COMMAND 都從這裡進來：不能用的指令（含拖曳到一半時的所有指令）一律不做。
+    if (!commandEnabled(id, commandState())) return;
     if (id != IDM_PREV && id != IDM_NEXT) disarmJump(); // 待命中的跳本：做了翻頁以外的事就取消
     switch (id) {
     case IDM_OPEN: openDialog(); break;
@@ -705,7 +710,8 @@ void MainWindow::onCommand(int id) {
     case IDM_UNDO:
     case IDM_REDO: {
         if (cropping_) { cancelCrop(); break; } // 裁切模式中只取消裁切，不動編輯歷史
-        endTextEdit(true);
+        // 調整顏色的面板也要收：它拿著復原前那張圖當底，之後按「好」會把那張圖換回來。
+        endInteraction(true);
         if (id == IDM_UNDO ? !doc_.canUndo() : !doc_.canRedo()) break;
         auto before = doc_.image();
         if (id == IDM_UNDO) doc_.undo(); else doc_.redo();
@@ -733,14 +739,14 @@ void MainWindow::onCommand(int id) {
     case IDM_FITHEIGHT: setViewMode(ViewMode::FitHeight); break;
     case IDM_TWOPAGE: setViewMode(ViewMode::TwoPage); break;
     case IDM_UPSCALE:
-        settings_.upscaleSmall = !settings_.upscaleSmall;
+        settings_.view.upscaleSmall = !settings_.view.upscaleSmall;
         saveSettingsQuiet();
         if (fit_) { fitToView(); repaint(); }
         updateTitle();
         schedulePrefetch();
         break;
     case IDM_RTL:
-        settings_.rightToLeft = !settings_.rightToLeft;
+        settings_.view.rightToLeft = !settings_.view.rightToLeft;
         saveSettingsQuiet();
         if (twoPage()) { fit_ = true; fitToView(); }
         updateTitle();
@@ -748,15 +754,13 @@ void MainWindow::onCommand(int id) {
         break;
     case IDM_FIRSTALONE:
     case IDM_SHIFTONE: {
-        bool& flag = id == IDM_FIRSTALONE ? settings_.firstPageAlone : shiftOne_;
+        bool& flag = id == IDM_FIRSTALONE ? settings_.view.firstPageAlone : shiftOne_;
         flag = !flag;
         if (twoPage()) {
             // 配對變了：重算，目前這頁可能變成某屏的第二頁，重開到那屏的第一頁（換圖前先問，取消就不改）。
-            spreadsKey_.clear();
             updateSpreads();
             if (!confirmSpreadMove()) {
                 flag = !flag;
-                spreadsKey_.clear();
                 updateSpreads();
                 break;
             }
@@ -764,7 +768,7 @@ void MainWindow::onCommand(int id) {
         if (id == IDM_FIRSTALONE) { saveSettingsQuiet(); updateTitle(); }
         if (twoPage()) {
             int cur = currentSpread();
-            if (cur >= 0 && spreads_[static_cast<size_t>(cur)].first != nav_.index()) openPath(nav_.at(spreads_[static_cast<size_t>(cur)].first));
+            if (cur >= 0 && spreads()[static_cast<size_t>(cur)].first != nav_.index()) openPath(nav_.at(spreads()[static_cast<size_t>(cur)].first));
             else { loadSecond(); fit_ = true; fitToView(); updateTitle(); repaint(); }
         }
         schedulePrefetch();
@@ -773,7 +777,7 @@ void MainWindow::onCommand(int id) {
     case IDM_PREV: goPrev(); break;
     case IDM_NEXT: goNext(); break;
     case IDM_AUTONEXT:
-        settings_.autoNextBook = !settings_.autoNextBook;
+        settings_.view.autoNextBook = !settings_.view.autoNextBook;
         disarmJump();
         saveSettingsQuiet();
         updateTitle();
@@ -795,39 +799,41 @@ void MainWindow::onCommand(int id) {
 // ---------------------------------------------------------------------------
 // 檔案
 
-bool MainWindow::openPath(const std::wstring& path) {
-    endTextEdit(false);
+bool MainWindow::openConfirmed(const std::wstring& path) { return confirmLeaveImage() && openPath(path); }
+
+void MainWindow::showLoadError(const std::wstring& path, const std::wstring& message, bool resetList) {
+    path_ = path;
+    if (resetList) {
+        nav_ = FolderNav{};
+        infoData_ = {};
+    }
+    loadError_ = message;
+    doc_.reset(nullptr);
+    second_.reset();
+    secondPath_.clear();
+    updateTitle();
+    layout();
+    repaint();
+}
+
+bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
+    endInteraction(false); // 正在打的字丟掉：那張圖要被換掉了
     closePopup();
     hideTip();
     disarmJump();
     hoverItem_ = 0;
-    if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
-    cancelCrop();
     selected_ = 0;
-    drag_ = Drag::None;
-    bool isDir = isDirectoryPath(path);
-    if (!isDir && (isArchiveExtension(extensionOf(path)) ||
-                   (!isSupportedExtension(extensionOf(path)) && looksLikeArchive(path))))
-        return openArchive(path);
+    // 先決定要開的是什麼（core/Shelf.h）：壓縮檔交給 openArchive；資料夾換成裡面的第一張圖或第一本書。
+    const PathKind kind = classifyPath(path);
+    if (kind == PathKind::Archive) return openArchive(path);
     // 不是目前壓縮檔解出來的檔就離開壓縮檔模式（刪暫存）。
     bool inArchive = insideArchive(path);
     if (!inArchive) closeArchive();
-    if (isDir) {
+    if (kind == PathKind::Folder) {
         // 右鍵資料夾「用 mpainter 開啟」：從第一張開始。沒有散圖但有書（子資料夾 / 壓縮檔）就開第一本。
-        auto files = listImageFiles(path);
-        if (!files.empty()) return openPath(files.front());
-        auto books = listBooks(path);
-        if (!books.empty()) return openPath(books.front());
-        path_ = path;
-        nav_ = FolderNav{};
-        infoData_ = {};
-        loadError_ = tr(L"This folder has no supported images");
-        doc_.reset(nullptr);
-        second_.reset();
-        secondPath_.clear();
-        updateTitle();
-        layout();
-        repaint();
+        const std::wstring first = firstInFolder(path);
+        if (!first.empty()) return openPath(first, landAtBottom);
+        showLoadError(path, tr(L"This folder has no supported images"), true);
         return false;
     }
     LoadResult r = loadPage(path);
@@ -843,19 +849,13 @@ bool MainWindow::openPath(const std::wstring& path) {
     }
     infoState_.scroll = 0;
     if (!r.image) {
-        loadError_ = fmt1(L"Cannot open: %s", r.error);
-        doc_.reset(nullptr);
-        second_.reset();
-        secondPath_.clear();
-        updateTitle();
-        layout();
-        repaint();
+        showLoadError(path, fmt1(L"Cannot open: %s", ioErrorText(r.error)), false);
         schedulePrefetch();
         return false;
     }
     if (!settings_.askedDefault && !askPending_) {
         askPending_ = true;
-        PostMessageW(hwnd_, WM_APP + 2, 0, 0);
+        PostMessageW(hwnd_, WM_MP_ASK_DEFAULT, 0, 0);
     }
     loadError_.clear();
     doc_.reset(r.image);
@@ -864,9 +864,9 @@ bool MainWindow::openPath(const std::wstring& path) {
     if (viewMode_ == ViewMode::TwoPage) {
         updateSpreads();
         int cur = currentSpread();
-        if (cur >= 0 && spreads_[static_cast<size_t>(cur)].first != nav_.index()) {
+        if (cur >= 0 && spreads()[static_cast<size_t>(cur)].first != nav_.index()) {
             // 開到的是某屏的第二頁：改開那屏的第一頁（它會再載入這一頁當第二頁）。
-            return openPath(nav_.at(spreads_[static_cast<size_t>(cur)].first));
+            return openPath(nav_.at(spreads()[static_cast<size_t>(cur)].first), landAtBottom);
         }
         loadSecond();
     }
@@ -877,8 +877,7 @@ bool MainWindow::openPath(const std::wstring& path) {
     infoData_.dpiY = r.image->dpiY;
     fit_ = true;
     fitToView();
-    if (scrollToEnd_) {
-        scrollToEnd_ = false;
+    if (landAtBottom) {
         offset_.y = -1e9f;
         clampOffset();
     }
@@ -909,36 +908,18 @@ void MainWindow::schedulePrefetch() {
     std::vector<std::wstring> current{path_};
     if (twoPage() && second_) current.push_back(secondPath_);
     // 翻頁方向的下一屏優先，再來是上一屏（翻回來也不用等）。
-    std::vector<std::vector<std::wstring>> others;
-    bool atEdge = false;
-    if (twoPage()) {
-        int cur = currentSpread(), n = static_cast<int>(spreads_.size());
-        auto pages = [&](int k) {
-            const Spread& sp = spreads_[static_cast<size_t>(k)];
-            std::vector<std::wstring> v{nav_.at(sp.first)};
-            if (sp.second >= 0) v.push_back(nav_.at(sp.second));
-            return v;
-        };
-        int next = cur + lastDir_, prev = cur - lastDir_;
-        atEdge = cur >= 0 && (next < 0 || next >= n);
-        if (cur >= 0 && !atEdge) others.push_back(pages(next));
-        if (cur >= 0 && prev >= 0 && prev < n) others.push_back(pages(prev));
-    } else {
-        int i = nav_.index(), n = nav_.count();
-        int next = i + lastDir_, prev = i - lastDir_;
-        atEdge = next < 0 || next >= n;
-        if (!atEdge) others.push_back({nav_.at(next)});
-        if (prev >= 0 && prev < n) others.push_back({nav_.at(prev)});
-    }
+    WantedPages wanted = wantedPages(nav_.files(), nav_.index(), lastDir_, twoPage() ? &spreads() : nullptr);
+    std::vector<std::vector<std::wstring>> others = std::move(wanted.others);
+    const bool atEdge = wanted.atEdge;
     // 到一本的盡頭、開了「接著看下一本」：先準備同一層的下一本（或上一本）。
     std::optional<BookRequest> book;
     std::wstring from = currentBook();
-    if (atEdge && settings_.autoNextBook && !from.empty()) {
+    if (atEdge && settings_.view.autoNextBook && !from.empty()) {
         BookRequest req;
         req.fromBook = from;
         req.dir = lastDir_;
         req.twoPage = viewMode_ == ViewMode::TwoPage;
-        req.firstAlone = settings_.firstPageAlone;
+        req.firstAlone = settings_.view.firstPageAlone;
         req.shiftOne = shiftOne_;
         req.pinned = settings_.pinnedNames;
         req.passwords = settings_.passwords;
@@ -947,9 +928,9 @@ void MainWindow::schedulePrefetch() {
     }
     // 高品質模式：照翻過去之後 fitToView 會算出的倍率，先縮好。
     TargetSizes target;
-    if (settings_.highQuality) {
+    if (settings_.view.highQuality) {
         ViewMode mode = viewMode_;
-        bool upscale = settings_.upscaleSmall;
+        bool upscale = settings_.view.upscaleSmall;
         unsigned maxSide = renderer_.rt() ? renderer_.rt()->GetMaximumBitmapSize() : 16384;
         target = [mode, upscale, maxSide, cw, ch](const std::vector<Size2>& pages) {
             float vw = 0, vh = 0; // 和 viewW / viewH 一樣：並排時寬相加、高取大的
@@ -971,32 +952,26 @@ void MainWindow::schedulePrefetch() {
 
 std::wstring MainWindow::prefetchArchiveRoot() {
     if (tempDirStale_) return L""; // 暫存位置改了、還沒搬：這一本先不預開
-    if (!archiveLibraryLoaded()) {
-        size_t slash = exePath_.find_last_of(L"\\/");
-        std::wstring dll = (slash == std::wstring::npos ? L"" : exePath_.substr(0, slash + 1)) + L"7z.dll";
-        if (!loadArchiveLibrary(dll)) return L"";
-    }
-    if (!tempDir_.valid() && !tempDir_.create(resolveUnzipRoot(settings_.unzipDir, exeDir())) &&
-        !tempDir_.create(fallbackUnzipRoot()))
-        return L"";
+    if (!ensureArchiveLibrary() || !ensureTempDir()) return L"";
     return tempDir_.path();
+}
+
+// 7z.dll 放在 exe 旁邊，第一次用到壓縮檔時才載入。
+bool MainWindow::ensureArchiveLibrary() { return archiveLibraryLoaded() || loadArchiveLibrary(exeDir() + L"7z.dll"); }
+
+// 這個執行個體的解壓暫存資料夾：照設定的位置建，建不了（exe 在唯讀的地方）退到 %TEMP%。
+bool MainWindow::ensureTempDir() {
+    return tempDir_.valid() || tempDir_.create(resolveUnzipRoot(settings_.unzipDir, exeDir())) ||
+           tempDir_.create(fallbackUnzipRoot());
 }
 
 // ---------------------------------------------------------------------------
 // 壓縮檔
 
-bool MainWindow::insideArchive(const std::wstring& path) const {
-    if (archiveDir_.empty() || path.size() <= archiveDir_.size()) return false;
-    if (_wcsnicmp(path.c_str(), archiveDir_.c_str(), archiveDir_.size()) != 0) return false;
-    wchar_t sep = path[archiveDir_.size()];
-    return sep == L'\\' || sep == L'/';
-}
+bool MainWindow::insideArchive(const std::wstring& path) const { return isInsideDir(archiveDir_, path); }
 
 std::wstring MainWindow::archiveNameOf(const std::wstring& path) const {
-    if (!insideArchive(path)) return L"";
-    for (size_t i = 0; i < archiveFiles_.size() && i < archiveNames_.size(); ++i)
-        if (_wcsicmp(archiveFiles_[i].c_str(), path.c_str()) == 0) return archiveNames_[i];
-    return fileNameOf(path);
+    return archiveEntryName(archiveDir_, archiveFiles_, archiveNames_, path);
 }
 
 std::wstring MainWindow::displayName(const std::wstring& path) const {
@@ -1033,28 +1008,12 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
         closeArchive();
         showMarkup_ = false;
         freehandMode_ = false;
-        path_ = path;
-        nav_ = FolderNav{};
-        infoData_ = {};
-        loadError_ = msg;
-        doc_.reset(nullptr);
-        second_.reset();
-        secondPath_.clear();
-        updateTitle();
-        layout();
-        repaint();
+        showLoadError(path, msg, true);
         return false;
     };
-    if (!archiveLibraryLoaded()) {
-        size_t slash = exePath_.find_last_of(L"\\/");
-        std::wstring dll = (slash == std::wstring::npos ? L"" : exePath_.substr(0, slash + 1)) + L"7z.dll";
-        if (!loadArchiveLibrary(dll))
-            return fail(tr(L"7z.dll was not found next to mpainter.exe, so archives cannot be opened."));
-    }
+    if (!ensureArchiveLibrary()) return fail(tr(L"7z.dll was not found next to mpainter.exe, so archives cannot be opened."));
     if (tempDirStale_ && archivePath_.empty()) { tempDir_.release(); tempDirStale_ = false; }
-    if (!tempDir_.valid() && !tempDir_.create(resolveUnzipRoot(settings_.unzipDir, exeDir())) &&
-        !tempDir_.create(fallbackUnzipRoot()))
-        return fail(tr(L"Cannot create the temp folder for unpacking archives."));
+    if (!ensureTempDir()) return fail(tr(L"Cannot create the temp folder for unpacking archives."));
     // 換本預備：背景預開過這一本就等它解完直接用（含密碼列表試出來的密碼），不再解一次。
     std::optional<BookPlan> pre;
     runUnpackWithProgress(hwnd_, path, [&](const std::function<bool(uint64_t, uint64_t)>& progress) {
@@ -1067,7 +1026,7 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
     ExtractOptions opt;
     if (adopted) {
         opt.password = pre->password;
-        for (const auto& [f, wide] : pre->wide) wideCache_[f] = wide; // 每頁寬高讀過了，updateSpreads 不用再讀檔頭
+        for (const auto& [f, wide] : pre->wide) spreadCache_.remember(f, wide); // 每頁寬高讀過了，updateSpreads 不用再讀檔頭
     }
     ArchiveResult r = adopted ? pre->extracted : extractWithProgress(hwnd_, path, dest, opt);
     bool fromList = false;
@@ -1098,7 +1057,7 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
         switch (r.status) {
         case ArchiveStatus::Cancelled: return fail(L"");
         case ArchiveStatus::NoImages: return fail(tr(L"This archive has no supported images"));
-        case ArchiveStatus::TooLarge: return fail(tr(L"The images in this archive are too large to unpack (limit 8 GB)."));
+        case ArchiveStatus::TooLarge: return fail(fmt1(L"The images in this archive are too large to unpack (limit %s).", fileSizeText(kArchiveMaxTotalBytes)));
         case ArchiveStatus::NoSpace: return fail(tr(L"Not enough free disk space in the temp folder to unpack this archive."));
         case ArchiveStatus::NotArchive: return fail(fmt1(L"Cannot open: %s", r.error.empty() ? tr(L"not a supported archive") : r.error));
         default: return fail(fmt1(L"Cannot unpack: %s", r.error));
@@ -1157,9 +1116,7 @@ bool MainWindow::confirmLeaveImage() {
 bool MainWindow::save() {
     if (!doc_.image()) return false;
     if (!editGuard()) return false;
-    endTextEdit(true);
-    if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
-    cancelCrop();
+    endInteraction(true);
     if (!canSaveExtension(extensionOf(path_))) return saveAs();
     if (!writeFlattened(path_)) return false;
     loadedFrom_ = path_;
@@ -1178,18 +1135,18 @@ bool MainWindow::writeFlattened(const std::wstring& target) {
                     MB_ICONERROR);
         return false;
     }
-    std::wstring err;
     SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     SaveOptions opt;
     opt.metadataSource = loadedFrom_; // 全部照抄，只改與像素不符的欄位
-    if (!saveImage(flat, target, &err, opt)) {
-        MessageBoxW(hwnd_, fmt1(L"Save failed: %s", err).c_str(), kAppName, MB_ICONERROR);
+    SaveResult saved = saveImage(flat, target, opt);
+    if (!saved) {
+        MessageBoxW(hwnd_, fmt1(L"Save failed: %s", ioErrorText(saved.error)).c_str(), kAppName, MB_ICONERROR);
         return false;
     }
+    // 圖存好了，但原檔的 metadata 有一部分寫不進去：存檔不擋，事後說一聲。
+    if (saved.metadataDropped) showToast(tr(L"Saved, but some of the original metadata could not be written to the file."), false);
     // 寬高可能變了（旋轉、裁切、調整尺寸）：兩頁並排的配對要照存好的檔重算。
-    for (auto it = wideCache_.begin(); it != wideCache_.end();)
-        it = _wcsicmp(it->first.c_str(), target.c_str()) == 0 ? wideCache_.erase(it) : std::next(it);
-    spreadsKey_.clear();
+    spreadCache_.invalidateFile(target);
     return true;
 }
 
@@ -1206,18 +1163,21 @@ bool MainWindow::pickSavePath(std::wstring& out, bool exporting) {
     OPENFILENAMEW ofn{sizeof(ofn)};
     ofn.hwndOwner = hwnd_;
     if (exporting) ofn.lpstrTitle = tr(L"Export As");
-    ofn.lpstrFilter = L"PNG (*.png)\0*.png\0JPEG (*.jpg)\0*.jpg;*.jpeg\0BMP (*.bmp)\0*.bmp\0TIFF (*.tif)\0*.tif;*.tiff\0WebP (*.webp)\0*.webp\0";
-    std::wstring ext = extensionOf(path_);
-    ofn.nFilterIndex = ext == L".jpg" || ext == L".jpeg" ? 2 : ext == L".bmp" ? 3 : ext == L".tif" || ext == L".tiff" ? 4 : ext == L".webp" ? 5 : 1;
+    // 篩選、預設選哪一種、沒打副檔名時補什麼，都照 core 的格式表。
+    const std::vector<ImageFormat>& formats = saveDialogFormats();
+    const std::wstring filter = saveDialogFilter();
+    ofn.lpstrFilter = filter.c_str();
+    auto current = std::find(formats.begin(), formats.end(), imageFormatOfExtension(extensionOf(path_)));
+    ofn.nFilterIndex = current == formats.end() ? 1 : static_cast<DWORD>(current - formats.begin()) + 1;
     ofn.lpstrFile = buf;
     ofn.nMaxFile = MAX_PATH;
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-    ofn.lpstrDefExt = L"png";
+    ofn.lpstrDefExt = imageFormatInfo(formats.front())->extensions.front() + 1; // 不含點
     if (!GetSaveFileNameW(&ofn)) return false;
     std::wstring newPath = buf;
     if (!canSaveExtension(extensionOf(newPath))) {
-        static const wchar_t* exts[] = {L".png", L".jpg", L".bmp", L".tif", L".webp"};
-        newPath += exts[std::clamp<int>(static_cast<int>(ofn.nFilterIndex) - 1, 0, 4)];
+        int picked = std::clamp<int>(static_cast<int>(ofn.nFilterIndex) - 1, 0, static_cast<int>(formats.size()) - 1);
+        newPath += imageFormatInfo(formats[static_cast<size_t>(picked)])->extensions.front();
     }
     std::wstring extUpper = extensionOf(newPath).substr(1);
     for (auto& ch : extUpper) ch = static_cast<wchar_t>(towupper(ch));
@@ -1228,11 +1188,12 @@ bool MainWindow::pickSavePath(std::wstring& out, bool exporting) {
             return false;
     }
     // 跨格式：目標裝不下的 metadata 區塊先列出來問。
-    if (settings_.warnMetadataLoss) {
-        auto lost = metadataLossOnSave(infoData_.info, extensionOf(loadedFrom_), extensionOf(newPath));
+    if (settings_.view.warnMetadataLoss) {
+        // 來源的格式看檔案內容（infoData_.info.format），不看 loadedFrom_ 的副檔名：兩者可能不一樣。
+        auto lost = metadataLossOnSave(infoData_.info, imageFormatOfExtension(extensionOf(newPath)));
         if (!lost.empty()) {
             std::wstring list;
-            for (size_t i = 0; i < lost.size(); ++i) list += (i ? L", " : L"") + lost[i];
+            for (size_t i = 0; i < lost.size(); ++i) list += (i ? L", " : L"") + trs(lost[i].c_str());
             wchar_t body[512];
             swprintf(body, 512, tr(L"Saving as %s will drop this metadata:\n%s\n\nThe pixels are kept. Continue?"), extUpper.c_str(), list.c_str());
             TASKDIALOGCONFIG td{sizeof(td)};
@@ -1247,7 +1208,7 @@ bool MainWindow::pickSavePath(std::wstring& out, bool exporting) {
             int pressed = 0;
             BOOL dontAsk = FALSE;
             if (FAILED(TaskDialogIndirect(&td, &pressed, nullptr, &dontAsk))) pressed = IDOK;
-            if (dontAsk) { settings_.warnMetadataLoss = false; saveSettingsQuiet(); updateTitle(); }
+            if (dontAsk) { settings_.view.warnMetadataLoss = false; saveSettingsQuiet(); updateTitle(); }
             if (pressed != IDOK) return false;
         }
     }
@@ -1261,8 +1222,13 @@ bool MainWindow::saveAs() {
     endTextEdit(true);
     std::wstring newPath;
     if (!pickSavePath(newPath, false)) return false;
+    // save() 寫的是 path_。寫不進去的話要換回來：不然之後編輯的對象變成一個不存在的檔。
+    const std::wstring original = path_;
     path_ = newPath;
-    if (!save()) return false;
+    if (!save()) {
+        path_ = original;
+        return false;
+    }
     nav_.load(path_);
     fillFileFacts(infoData_, path_);
     updateTitle();
@@ -1287,11 +1253,13 @@ void MainWindow::openDialog() {
     // 篩選字串以 \0 分段，不能整串進翻譯表，分段組。
     std::wstring filter = trs(L"Image files");
     filter += L'\0';
-    filter += L"*.png;*.jpg;*.jpeg;*.jpe;*.jfif;*.bmp;*.dib;*.tif;*.tiff;*.webp;*.zip;*.7z;*.rar;*.cbz;*.cb7;*.cbr";
+    std::wstring archivePatterns;
+    for (const auto& e : archiveExtensions()) archivePatterns += (archivePatterns.empty() ? L"*" : L";*") + e;
+    filter += allImagePatterns() + L";" + archivePatterns;
     filter += L'\0';
     filter += trs(L"Archives (zip, 7z, rar, cbz, cb7, cbr)");
     filter += L'\0';
-    filter += L"*.zip;*.7z;*.rar;*.cbz;*.cb7;*.cbr";
+    filter += archivePatterns;
     filter += L'\0';
     filter += trs(L"All files");
     filter += L'\0';
@@ -1307,28 +1275,21 @@ void MainWindow::openDialog() {
 void MainWindow::goPrev() { step(-1); }
 void MainWindow::goNext() { step(+1); }
 
-void MainWindow::step(int dir) {
+void MainWindow::step(int dir, bool landAtBottom) {
     if (armedDir_ && armedDir_ != dir) disarmJump();
-    int target = -1;
-    if (twoPage()) {
-        int cur = currentSpread();
-        if (cur < 0) return;
-        int n = static_cast<int>(spreads_.size());
-        if (dir > 0 ? cur + 1 < n : cur > 0) target = spreads_[static_cast<size_t>(cur + dir)].first;
-    } else if (nav_.index() >= 0) {
-        if (dir > 0 ? nav_.hasNext() : nav_.hasPrev()) target = nav_.index() + dir;
-    }
+    if (twoPage() && currentSpread() < 0) return; // 目前這頁不在配對裡（清單讀不到）：不知道往哪翻
+    const int target = pageTurnTarget(dir, nav_.index(), nav_.count(), twoPage() ? &spreads() : nullptr);
     if (target < 0) { bookEdge(dir); return; }
     if (!confirmLeaveImage()) return;
     lastDir_ = dir;
-    openPath(nav_.at(target));
+    openPath(nav_.at(target), landAtBottom);
 }
 
 // 翻到底。工作模式（沒開「接著看下一本」）只說到底了：在「備選」資料夾挑圖的人不會想被帶到隔壁的「棄選」。
 // 看漫畫模式第一次按先提示要去哪一本，3 秒內再按同方向才跳；跳過去再提示一次進了哪本。
 void MainWindow::bookEdge(int dir) {
     if (nav_.count() == 0) return;
-    if (!settings_.autoNextBook) {
+    if (!settings_.view.autoNextBook) {
         showToast(dir > 0 ? tr(L"This is the last image") : tr(L"This is the first image"), false);
         return;
     }
@@ -1367,7 +1328,7 @@ bool MainWindow::openBook(const std::wstring& book, int dir) {
     if (isDirectoryPath(book)) {
         // 背景準備過這一本的話，每頁寬高已經讀過，updateSpreads 不用再讀檔頭。
         if (auto plan = prefetch_.takeBook(book, nullptr); plan && plan->usable())
-            for (const auto& [f, wide] : plan->wide) wideCache_[f] = wide;
+            for (const auto& [f, wide] : plan->wide) spreadCache_.remember(f, wide);
         auto files = listImageFiles(book);
         movePinnedFirst(files, settings_.pinnedNames);
         if (files.empty()) { showToast(fmt2(L"Could not open %s: %s", fileNameOf(book), tr(L"This folder has no supported images")), false); return false; }
@@ -1445,40 +1406,23 @@ void MainWindow::drawToast() {
 // 兩頁並排
 
 void MainWindow::updateSpreads() {
-    const auto& files = nav_.files();
-    std::wstring key = (files.empty() ? L"" : files.front()) + L"|" + std::to_wstring(files.size()) +
-                       (settings_.firstPageAlone ? L"|A" : L"|a") + (shiftOne_ ? L"S" : L"s");
-    if (key == spreadsKey_) return;
-    std::vector<bool> wide;
-    wide.reserve(files.size());
-    std::map<std::wstring, bool> kept; // 只留目前這本的：換了資料夾或壓縮檔，舊的路徑不會再用到
-    for (const auto& f : files) {
-        auto it = wideCache_.find(f);
-        bool isWide;
-        if (it != wideCache_.end()) isWide = it->second;
-        else {
-            int w = 0, h = 0;
-            isWide = readImageSize(f, w, h) && w > h;
-        }
-        kept.emplace(f, isWide);
-        wide.push_back(isWide);
-    }
-    wideCache_ = std::move(kept);
-    spreads_ = buildSpreads(wide, settings_.firstPageAlone, shiftOne_);
-    spreadsKey_ = key;
+    spreadCache_.get(nav_.files(), settings_.view.firstPageAlone, shiftOne_, [](const std::wstring& f) {
+        int w = 0, h = 0;
+        return readImageSize(f, w, h) && w > h;
+    });
 }
 
-int MainWindow::currentSpread() const { return spreadIndexOf(spreads_, nav_.index()); }
+int MainWindow::currentSpread() const { return spreadIndexOf(spreads(), nav_.index()); }
 
 bool MainWindow::confirmSpreadMove() {
     int cur = currentSpread();
-    if (cur < 0 || spreads_[static_cast<size_t>(cur)].first == nav_.index()) return true;
+    if (cur < 0 || spreads()[static_cast<size_t>(cur)].first == nav_.index()) return true;
     return confirmLeaveImage();
 }
 
 void MainWindow::loadSecond() {
     int cur = currentSpread();
-    std::wstring path = cur >= 0 ? nav_.at(spreads_[static_cast<size_t>(cur)].second) : L"";
+    std::wstring path = cur >= 0 ? nav_.at(spreads()[static_cast<size_t>(cur)].second) : L"";
     if (path == secondPath_ && (second_ || path.empty())) return;
     second_.reset();
     secondPath_ = path;
@@ -1487,57 +1431,55 @@ void MainWindow::loadSecond() {
     if (r.image) second_ = r.image;
 }
 
+namespace {
+PageSize pageSizeOf(const Image& img) { return {img.width, img.height}; }
+} // namespace
+
 float MainWindow::viewW() const {
     auto img = doc_.image();
     if (!img) return 0;
-    if (twoPage() && second_) return static_cast<float>(img->width + second_->width);
-    return static_cast<float>(img->width);
+    PageSize second = second_ ? pageSizeOf(*second_) : PageSize{};
+    return spreadSize(pageSizeOf(*img), twoPage() && second_ ? &second : nullptr).x;
 }
 
 float MainWindow::viewH() const {
     auto img = doc_.image();
     if (!img) return 0;
-    if (twoPage() && second_) return static_cast<float>(std::max(img->height, second_->height));
-    return static_cast<float>(img->height);
+    PageSize second = second_ ? pageSizeOf(*second_) : PageSize{};
+    return spreadSize(pageSizeOf(*img), twoPage() && second_ ? &second : nullptr).y;
 }
 
 Rc MainWindow::pageRect(bool second) const {
     auto img = doc_.image();
     if (!img) return {};
-    if (!(twoPage() && second_)) return {0, 0, static_cast<float>(img->width), static_cast<float>(img->height)};
-    float h = viewH();
-    float w1 = static_cast<float>(img->width), w2 = static_cast<float>(second_->width);
-    // 閱讀順序左到右：第一頁在左；右到左（日漫）：第一頁在右。底對齊。
-    bool firstOnLeft = !settings_.rightToLeft;
-    float x1 = firstOnLeft ? 0 : w2, x2 = firstOnLeft ? w1 : 0;
-    if (!second) return {x1, h - img->height, x1 + w1, h};
-    return {x2, h - second_->height, x2 + w2, h};
+    PageSize other = second_ ? pageSizeOf(*second_) : PageSize{};
+    const bool two = twoPage() && second_;
+    // 單頁時不管問哪一頁都是整張圖。
+    return pageRectInSpread(pageSizeOf(*img), two ? &other : nullptr, two && second, settings_.view.rightToLeft);
 }
 
 void MainWindow::updateTitle() {
-    std::wstring t;
+    TitleInfo t;
     if (!path_.empty()) {
-        t = displayName(path_);
-        if (doc_.dirty()) t += L"*";
+        t.name = displayName(path_);
+        t.dirty = doc_.dirty();
+        t.index = nav_.index();
+        t.count = nav_.count();
         if (twoPage() && second_) {
-            // 依畫面上左右順序列出兩個檔名，頁碼寫成 1-2。
-            std::wstring a = displayName(path_), b = displayName(secondPath_);
-            t = settings_.rightToLeft ? b + L" | " + a : a + L" | " + b;
-            if (doc_.dirty()) t += L"*";
+            t.secondName = displayName(secondPath_);
+            t.rightToLeft = settings_.view.rightToLeft;
             int cur = currentSpread();
-            if (cur >= 0 && nav_.count() > 1) {
-                const Spread& s = spreads_[static_cast<size_t>(cur)];
-                t += L"  (" + std::to_wstring(s.first + 1) + L"-" + std::to_wstring(s.second + 1) + L"/" + std::to_wstring(nav_.count()) + L")";
+            if (cur >= 0) {
+                t.spreadFirst = spreads()[static_cast<size_t>(cur)].first;
+                t.spreadSecond = spreads()[static_cast<size_t>(cur)].second;
             }
-        } else if (nav_.count() > 1 && nav_.index() >= 0) {
-            t += L"  (" + std::to_wstring(nav_.index() + 1) + L"/" + std::to_wstring(nav_.count()) + L")";
         }
-        t += L" - ";
     }
     // 目前的模式；有臨時調整（選單改過、和模式本體不同）就加 *
-    if (!settings_.profileName.empty()) t += settings_.profileName + (profileModified(settings_) ? L"* - " : L" - ");
-    t += kAppName;
-    SetWindowTextW(hwnd_, t.c_str());
+    t.profile = settings_.profileName;
+    t.profileModified = profileModified(settings_);
+    t.appName = kAppName;
+    SetWindowTextW(hwnd_, composeTitle(t).c_str());
     checkUndoRoom();
 }
 
@@ -1553,24 +1495,6 @@ POINT MainWindow::canvasCenter() const {
     return {static_cast<LONG>((canvasRc_.left + canvasRc_.right) / 2), static_cast<LONG>((canvasRc_.top + canvasRc_.bottom) / 2)};
 }
 
-MainWindow::ViewMode MainWindow::viewModeFromString(const std::wstring& s) {
-    if (s == L"fitwidth") return ViewMode::FitWidth;
-    if (s == L"fitheight") return ViewMode::FitHeight;
-    if (s == L"actual") return ViewMode::Actual;
-    if (s == L"twopage") return ViewMode::TwoPage;
-    return ViewMode::FitWindow;
-}
-
-const wchar_t* MainWindow::viewModeToString(ViewMode m) {
-    switch (m) {
-    case ViewMode::FitWidth: return L"fitwidth";
-    case ViewMode::FitHeight: return L"fitheight";
-    case ViewMode::Actual: return L"actual";
-    case ViewMode::TwoPage: return L"twopage";
-    default: return L"fitwindow";
-    }
-}
-
 bool MainWindow::setViewMode(ViewMode m) {
     if (m == ViewMode::TwoPage && doc_.image()) {
         // 目前這頁會變成某屏的第二頁時，要改開那屏的第一頁：先照換圖的規則問。
@@ -1579,24 +1503,21 @@ bool MainWindow::setViewMode(ViewMode m) {
     }
     bool wasTwo = viewMode_ == ViewMode::TwoPage;
     viewMode_ = m;
-    settings_.viewMode = viewModeToString(m);
+    settings_.view.viewMode = m;
     saveSettingsQuiet();
     cropFit_ = false;
     if (m == ViewMode::TwoPage) {
         // 只看不編：收掉編輯狀態與標示工具列。
-        cancelCrop();
-        endTextEdit(true);
-        if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
+        endInteraction(true);
         closePopup();
         selected_ = 0;
         freehandMode_ = false;
-        pickingWhite_ = false;
         showMarkup_ = false;
         layout();
         if (doc_.image()) {
             updateSpreads();
             int cur = currentSpread();
-            if (cur >= 0 && spreads_[static_cast<size_t>(cur)].first != nav_.index()) { openPath(nav_.at(spreads_[static_cast<size_t>(cur)].first)); return true; }
+            if (cur >= 0 && spreads()[static_cast<size_t>(cur)].first != nav_.index()) { openPath(nav_.at(spreads()[static_cast<size_t>(cur)].first)); return true; }
             loadSecond();
         }
     } else if (wasTwo) {
@@ -1619,24 +1540,15 @@ void MainWindow::fitToView(bool resetOffset) {
     float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
     // 裁切模式剛進入時整張圖放進畫布（不改檢視模式設定）
     ViewMode mode = cropping_ && cropFit_ ? ViewMode::FitWindow : viewMode_;
-    zoom_ = fitZoom(mode, cw, ch, viewW(), viewH(), settings_.upscaleSmall);
+    zoom_ = fitZoom(mode, cw, ch, viewW(), viewH(), settings_.view.upscaleSmall);
     if (resetOffset) offset_ = {0, 0}; // 從左上開始，放得下的方向由 clampOffset 置中
     clampOffset();
     buildButtons();
 }
 
 void MainWindow::clampOffset() {
-    auto img = doc_.image();
-    if (!img) return;
-    float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
-    float iw = viewW() * zoom_, ih = viewH() * zoom_;
-    if (iw <= cw) offset_.x = (cw - iw) / 2;
-    else offset_.x = std::clamp(offset_.x, cw - iw, 0.0f);
-    if (ih <= ch) offset_.y = (ch - ih) / 2;
-    else offset_.y = std::clamp(offset_.y, ch - ih, 0.0f);
-    // 對齊整數像素：高品質縮放的點陣圖才會 1:1 貼上，不被 bilinear 再糊一次。
-    offset_.x = std::round(offset_.x);
-    offset_.y = std::round(offset_.y);
+    if (!doc_.image()) return;
+    offset_ = mp::clampOffset(offset_, zoom_, viewW(), viewH(), canvasRc_.right - canvasRc_.left, canvasRc_.bottom - canvasRc_.top);
 }
 
 bool MainWindow::scrollBy(float dx, float dy) {
@@ -1655,25 +1567,23 @@ void MainWindow::scrollKey(int vk) {
     float step = (canvasRc_.bottom - canvasRc_.top) / 4;
     bool down = vk == VK_DOWN;
     if (scrollBy(0, down ? -step : step)) return;
-    if (!settings_.scrollFlip) return;
+    if (!settings_.view.scrollFlip) return;
     if (down) goNext();
-    else { scrollToEnd_ = true; goPrev(); scrollToEnd_ = false; }
+    else this->step(-1, true); // 翻到上一張，開在底部（step 這個名字在這裡是區域變數）
 }
 
 void MainWindow::setZoom(float z, POINT anchor) {
     if (!doc_.image()) return;
-    z = std::clamp(z, 0.02f, 64.0f);
-    Pt ip = toImage(anchor);
-    zoom_ = z;
-    offset_.x = (anchor.x - canvasRc_.left) - ip.x * zoom_;
-    offset_.y = (anchor.y - canvasRc_.top) - ip.y * zoom_;
+    const Viewport v = zoomAbout(viewport(), z, {anchor.x - canvasRc_.left, anchor.y - canvasRc_.top});
+    zoom_ = v.zoom;
+    offset_ = v.offset;
     fit_ = false;
     cropFit_ = false;
     clampOffset();
     buildButtons();
     positionEdit();
     // 連續縮放時先用快的畫，停下來再算高品質。
-    if (settings_.highQuality) { hqBusy_ = true; SetTimer(hwnd_, kHqTimer, kHqDelayMs, nullptr); }
+    if (settings_.view.highQuality) { hqBusy_ = true; SetTimer(hwnd_, kHqTimer, kHqDelayMs, nullptr); }
     repaint();
 }
 
@@ -1682,13 +1592,11 @@ void MainWindow::zoomStep(int dir) {
     setZoom(zoom_ * f, canvasCenter());
 }
 
-Pt MainWindow::toImage(POINT c) const {
-    return {(c.x - canvasRc_.left - offset_.x) / zoom_, (c.y - canvasRc_.top - offset_.y) / zoom_};
-}
+Pt MainWindow::toImage(POINT c) const { return canvasToImage(viewport(), {c.x - canvasRc_.left, c.y - canvasRc_.top}); }
 
 POINT MainWindow::toClient(Pt p) const {
-    return {static_cast<LONG>(std::lround(canvasRc_.left + offset_.x + p.x * zoom_)),
-            static_cast<LONG>(std::lround(canvasRc_.top + offset_.y + p.y * zoom_))};
+    const Pt c = imageToCanvas(viewport(), p);
+    return {static_cast<LONG>(std::lround(canvasRc_.left + c.x)), static_cast<LONG>(std::lround(canvasRc_.top + c.y))};
 }
 
 D2D1_MATRIX_3X2_F MainWindow::viewMatrix() const {
@@ -1744,7 +1652,7 @@ void MainWindow::drawChrome() {
     std::wstring name = path_.empty() ? trs(L"No file open — drop an image here, or use File > Open") : displayName(path_);
     if (twoPage() && second_) {
         std::wstring a = displayName(path_), b = displayName(secondPath_);
-        name = settings_.rightToLeft ? b + L"   |   " + a : a + L"   |   " + b;
+        name = settings_.view.rightToLeft ? b + L"   |   " + a : a + L"   |   " + b;
     }
     renderer_.drawUiText(rt, name, nameRc_, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
     for (const auto& b : buttons_) drawButton(b);
@@ -1941,7 +1849,7 @@ void MainWindow::drawCanvas() {
     auto bitmapFor = [&](const ImagePtr& im) {
         const ImageBitmap* b = nullptr;
         int tw = 0, th = 0;
-        if (settings_.highQuality && !hqBusy_ && !adjusting_ &&
+        if (settings_.view.highQuality && !hqBusy_ && !adjusting_ &&
             hqTargetSize(im->width, im->height, zoom_, renderer_.rt()->GetMaximumBitmapSize(), tw, th))
             b = renderer_.scaledBitmap(im, tw, th, prefetch_.scaled(im, tw, th)); // 預先解碼時背景縮好的就直接用
         if (!b) b = renderer_.imageBitmap(im);
@@ -2274,9 +2182,31 @@ void MainWindow::onLButtonUp(POINT pt) {
         if (hitButton(pt) == id) onButton(id);
         return;
     }
+    endDrag(true);
+}
+
+void MainWindow::endDrag(bool apply) {
     if (drag_ == Drag::None) return;
-    ReleaseCapture();
-    finishDrag();
+    if (apply) {
+        finishDrag(); // 把 drag_ 設回 None
+    } else {
+        // 丟掉拖到一半的東西：物件回到拖之前的樣子（文件沒動過），裁切框回到拖之前，畫到一半的筆跡不留。
+        if (drag_ == Drag::Crop) cropBox_ = cropStart_;
+        drag_ = Drag::None;
+        liveItems_.clear();
+        drawPath_.clear();
+        repaint();
+    }
+    // 最後才放掉滑鼠：ReleaseCapture 會立刻送 WM_CAPTURECHANGED 進來，那時 drag_ 已經是 None。
+    if (GetCapture() == hwnd_) ReleaseCapture();
+}
+
+void MainWindow::endInteraction(bool commitText) {
+    endDrag(false);
+    endTextEdit(commitText);
+    cancelCrop();
+    if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
+    pickingWhite_ = false;
 }
 
 void MainWindow::finishDrag() {
@@ -2471,25 +2401,37 @@ void MainWindow::loadSettingsAndRegister() {
         loaded = loadSettings(settingsPath_, settings_);
     }
     settingsUnreadable_ = loaded == SettingsLoad::Unreadable;
+    settingsBase_ = settings_; // 這個視窗和檔案同步時的樣子：存檔時用它分辨哪些欄位是自己改的
     nav_.setPinnedNames(settings_.pinnedNames);
     doc_.setUndoLimit(settings_.undoLimit);
     doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
     settingsWritable_ = isPathWritable(settingsPath_);
-    viewMode_ = viewModeFromString(settings_.viewMode);
+    viewMode_ = settings_.view.viewMode;
     initLanguage(); // 要在登錄之前：右鍵選單的文字跟語系走
     // 模式清單：第一次執行（或舊版 ini）補內建的兩個。名字要翻譯，所以在 initLanguage 之後。
     if (ensureProfiles(settings_, tr(L"General mode"), tr(L"Comic mode"))) saveSettingsQuiet();
     // portable：exe 搬了位置就把登錄改成現在的路徑。
-    if (settings_.contextMenu && _wcsicmp(contextMenuExePath().c_str(), exePath_.c_str()) != 0) registerContextMenu(exePath_);
-    std::wstring prog = progIdExePath();
-    if (!prog.empty() && _wcsicmp(prog.c_str(), exePath_.c_str()) != 0) registerProgId(exePath_);
+    // 換了語言（選單文字不同）、新版多了副檔名，也要重新登錄。
+    const ShellRegOptions reg = shellRegOptions();
+    if (settings_.contextMenu && !contextMenuUpToDate(exePath_, reg)) registerContextMenu(exePath_, reg);
+    if (!progIdExePath(reg).empty() && !progIdUpToDate(exePath_, reg)) registerProgId(exePath_, reg);
 }
 
 void MainWindow::saveSettingsQuiet() {
     // 啟動時設定檔讀不到：手上是預設值，存了會把原本的設定（密碼列表、模式…）蓋掉，所以這次執行都不存。
     if (settingsUnreadable_) { settingsWritable_ = false; return; }
+    // 別的視窗可能也改過設定檔：只把這個視窗改過的欄位寫進去，其他的留檔案裡現在的值（mergeSettings）。
     // 寫不進去（唯讀位置）就算了，本次執行內的狀態還在。
-    settingsWritable_ = saveSettings(settingsPath_, settings_);
+    Settings written;
+    settingsWritable_ = saveSettingsMerged(settingsPath_, settingsBase_, settings_, written);
+    if (!settingsWritable_) return;
+    // 別的視窗記下的東西裡，這幾樣不影響這個視窗正在顯示的畫面，直接收下：新學到的密碼馬上能用，
+    // 問過的事不再問一次。其他欄位（檢視值、模式、置頂、暫存位置…）這個視窗繼續用自己的。
+    settings_.passwords = written.passwords;
+    settings_.askedDefault = written.askedDefault;
+    settings_.tipShown = written.tipShown;
+    settings_.skipVersion = written.skipVersion;
+    settingsBase_ = settings_;
 }
 
 // ---------------------------------------------------------------------------
@@ -2545,8 +2487,7 @@ void MainWindow::selectLanguage(const std::wstring& code) {
     if (!confirmDiscard()) return;
     // 重開自己並開回目前的檔案。壓縮檔用壓縮檔路徑：解出來的暫存檔在這個程式關閉時就刪了。
     std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
-    std::wstring args = reopen.empty() ? L"" : L"\"" + reopen + L"\"";
-    ShellExecuteW(nullptr, L"open", exePath_.c_str(), args.c_str(), nullptr, SW_SHOWNORMAL);
+    ShellExecuteW(nullptr, L"open", exePath_.c_str(), openArgs(reopen).c_str(), nullptr, SW_SHOWNORMAL);
     closePopup();
     closeColorAdjustPanel();
     doc_.markSaved(); // 已確認過，不再問
@@ -2566,7 +2507,7 @@ void MainWindow::askDefaultProgram(bool fromSettings) {
         saveSettingsQuiet();
         if (r != IDYES) return;
     }
-    registerProgId(exePath_);
+    registerProgId(exePath_, shellRegOptions());
     const wchar_t* guide = isWindows11()
         ? tr(L"Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n"
              L"“OK” opens the mpainter page under Settings > Apps > Default apps:\n"
@@ -2606,38 +2547,23 @@ void MainWindow::showSettings(int startPage) {
 }
 
 void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendingLang) {
-    if (s.contextMenu != settings_.contextMenu) {
-        if (s.contextMenu) registerContextMenu(exePath_);
-        else unregisterContextMenu();
+    pendingLang = s.language; // 語言最後才處理（要問要不要重新啟動）
+    // 面板交回整份設定：併進來，再照「哪些變了」套用。
+    const DialogChanges changed = mergeDialogSettings(settings_, s, exeDir());
+    if (changed.contextMenu) {
+        if (settings_.contextMenu) registerContextMenu(exePath_, shellRegOptions());
+        else unregisterContextMenu(shellRegOptions());
     }
-    bool pinnedChanged = s.pinnedNames != settings_.pinnedNames;
-    bool unzipChanged = _wcsicmp(resolveUnzipRoot(s.unzipDir, exeDir()).c_str(), resolveUnzipRoot(settings_.unzipDir, exeDir()).c_str()) != 0;
-    pendingLang = s.language;
-    // 只抄面板管的欄位；目前的檢視值不是面板改的
-    settings_.contextMenu = s.contextMenu;
-    settings_.askedDefault = s.askedDefault;
-    settings_.tipShown = s.tipShown;
-    settings_.unzipDir = s.unzipDir;
-    settings_.pinnedNames = s.pinnedNames;
-    settings_.passwords = s.passwords;
-    settings_.autoCheckUpdate = s.autoCheckUpdate;
-    settings_.undoLimit = s.undoLimit;
     doc_.setUndoLimit(settings_.undoLimit); // 改小時立刻丟掉最舊的步驟
-    settings_.undoMemoryMB = s.undoMemoryMB;
     doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
     undoWarned_ = false; // 上限改了：照新的上限重新判斷要不要提示
-    settings_.prefetchMB = s.prefetchMB;
     // 模式：換了模式、或正在用的那個內容被改了，就重新套用（目前的值 = 模式本體）
-    const Profile* np = findProfile(s, s.profileName);
-    const Profile* op = findProfile(settings_, settings_.profileName);
-    bool reapply = np && (!op || _wcsicmp(np->name.c_str(), op->name.c_str()) != 0 || !samePrefs(*np, *op));
-    settings_.profiles = s.profiles;
-    settings_.profileName = s.profileName;
     rebuildProfileMenu();
-    if (reapply) switchProfile(*np);
+    if (changed.reapplyProfile)
+        if (const Profile* p = findProfile(settings_, settings_.profileName)) switchProfile(Profile(*p)); // 複本：switchProfile 會動到 settings_
     nav_.setPinnedNames(settings_.pinnedNames);
-    if (pinnedChanged) applyPinnedNow();
-    if (unzipChanged) {
+    if (changed.pinnedNames) applyPinnedNow();
+    if (changed.unzipRoot) {
         // 正在看壓縮檔就等它關掉再搬（看到一半不搬）；沒在看就現在把舊的刪掉，下次開在新位置建。
         prefetch_.dropBook(); // 背景可能正把下一本解到舊位置：先停下來
         tempDirStale_ = true;
@@ -2657,32 +2583,18 @@ void MainWindow::applyPinnedNow() {
     } else {
         nav_.load(path_);
     }
-    if (twoPage()) { spreadsKey_.clear(); updateSpreads(); loadSecond(); fit_ = true; fitToView(); }
+    if (twoPage()) { updateSpreads(); loadSecond(); fit_ = true; fitToView(); }
     updateTitle();
     repaint();
 }
 
 bool MainWindow::onKeyDown(WPARAM vk) {
-    bool ctrl = ctrlDown(), shift = shiftDown();
-    if (ctrl) {
-        switch (vk) {
-        case 'Z': onCommand(shift ? IDM_REDO : IDM_UNDO); return true;
-        case 'Y': onCommand(IDM_REDO); return true;
-        case 'S': if (shift) exportAs(); else save(); return true;
-        case 'O': openDialog(); return true;
-        case 'R': if (!twoPage()) rotateImage(); return true;
-        case VK_OEM_PLUS: case VK_ADD: zoomStep(1); return true;
-        case VK_OEM_MINUS: case VK_SUBTRACT: zoomStep(-1); return true;
-        case '0': case VK_NUMPAD0: onCommand(IDM_ZOOM100); return true;
-        case '9': onCommand(IDM_ZOOMFIT); return true;
-        default: return false;
-        }
-    }
-    // 待命中的跳本：按了翻頁以外的鍵就取消
-    if (armedDir_ && vk != VK_LEFT && vk != VK_RIGHT && vk != VK_UP && vk != VK_DOWN && vk != VK_PRIOR && vk != VK_NEXT)
-        disarmJump();
-    switch (vk) {
-    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: {
+    const bool ctrl = ctrlDown(), shift = shiftDown();
+    // 滑鼠正拖著東西時不接受鍵盤：這時復原、刪除會讓拖曳手上那份物件清單和文件對不上。
+    if (drag_ != Drag::None) return true;
+    const bool arrow = vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN;
+    if (!ctrl && arrow) {
+        // 有選取物件：方向鍵微移（Shift 一次 10 像素）。沒有：← → 翻頁（照下面的指令表），↑ ↓ 捲動。
         if (const Annotation* sel = selectedItem()) {
             float step = shift ? 10.0f : 1.0f;
             Annotation a = *sel;
@@ -2690,23 +2602,25 @@ bool MainWindow::onKeyDown(WPARAM vk) {
             commitSelectedChange(a);
             return true;
         }
-        if (vk == VK_LEFT) goPrev();
-        else if (vk == VK_RIGHT) goNext();
-        else scrollKey(static_cast<int>(vk));
+        if (vk == VK_UP || vk == VK_DOWN) { scrollKey(static_cast<int>(vk)); return true; }
+    }
+    // 指令：按鍵對應與可用條件都在 core/Commands.cpp，和選單同一份。不能用的指令 onCommand 不會做，但按鍵算處理過了。
+    if (int command = commandForKey(static_cast<unsigned>(vk), ctrl, shift)) {
+        onCommand(command);
         return true;
     }
-    case VK_PRIOR: goPrev(); return true;
-    case VK_NEXT: goNext(); return true;
-    case VK_DELETE: case VK_BACK: deleteSelected(); return true;
+    if (ctrl) return false;
+    disarmJump(); // 待命中的跳本：按了翻頁以外的鍵就取消
+    switch (vk) {
     case VK_ESCAPE:
         if (cropping_) { cancelCrop(); return true; }
         if (pickingWhite_) { pickingWhite_ = false; return true; }
         if (selected_) { selected_ = 0; repaint(); return true; }
         if (freehandMode_) { freehandMode_ = false; buildButtons(); repaint(); return true; }
         return true;
-    case VK_SPACE: case VK_RETURN:
+    case VK_RETURN:
         if (const Annotation* sel = selectedItem()) {
-            if (sel->kind == Kind::Text && vk == VK_RETURN) { beginTextEdit(sel->id, false); return true; }
+            if (sel->kind == Kind::Text) { beginTextEdit(sel->id, false); return true; }
         }
         return false;
     default: return false;
@@ -2788,7 +2702,7 @@ void MainWindow::addText() {
     freehandMode_ = false;
     Pt c = toImage(canvasCenter());
     float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
-    Annotation a = makeText(c, std::min(cw, ch) / zoom_, stroke_, text_);
+    Annotation a = makeText(c, std::min(cw, ch) / zoom_, stroke_, text_, tr(L"Text"));
     a.id = doc_.nextId();
     a.rect.bottom = a.rect.top + renderer_.textHeight(a);
     auto items = doc_.items();
@@ -2829,9 +2743,7 @@ void MainWindow::applyTextStyle(const TextStyle& t) {
 void MainWindow::rotateImage() {
     auto img = doc_.image();
     if (!img) return; // 壓縮檔內也能轉：當成檢視動作，翻頁就重置
-    cancelCrop();
-    endTextEdit(true);
-    if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
+    endInteraction(true);
     DocState next;
     next.image = std::make_shared<Image>(rotateCCW90(*img));
     next.items = doc_.items();
@@ -2852,7 +2764,8 @@ void MainWindow::rotateImage() {
 void MainWindow::adjustSize() {
     auto img = doc_.image();
     if (!img || !editGuard()) return;
-    endTextEdit(true);
+    // 調整顏色的面板與裁切框都是照現在的尺寸算的：尺寸要變了，先收掉。
+    endInteraction(true);
     ResizeResult r;
     if (!showResizeDialog(hwnd_, img->width, img->height, img->dpiX, r)) return;
     DocState next;
@@ -3220,7 +3133,7 @@ void MainWindow::installUpdate(const ReleaseInfo& r) {
         manualDownloadFallback(tr(L"This release cannot be installed automatically."), r.pageUrl);
         return;
     }
-    if (!loadArchiveLibrary(app + L"7z.dll")) {
+    if (!ensureArchiveLibrary()) {
         manualDownloadFallback(tr(L"7z.dll is missing next to mpainter.exe, so the update cannot be unpacked."), r.pageUrl);
         return;
     }
@@ -3274,8 +3187,7 @@ void MainWindow::installUpdate(const ReleaseInfo& r) {
     }
     // 重開時開回目前這本：壓縮檔用壓縮檔路徑（解出來的暫存檔關閉時就刪了）。
     std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
-    relaunchArgs_ = L"--after-update " + std::to_wstring(GetCurrentProcessId());
-    if (!reopen.empty()) relaunchArgs_ += L" \"" + reopen + L"\"";
+    relaunchArgs_ = afterUpdateArgs(GetCurrentProcessId(), reopen);
     updating_ = true;
     PostMessageW(hwnd_, WM_CLOSE, 0, 0);
 }

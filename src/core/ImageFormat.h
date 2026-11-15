@@ -1,0 +1,56 @@
+#pragma once
+#include <cstddef>
+#include <string>
+#include <vector>
+
+namespace mp {
+
+// 支援的圖片格式。「支援哪些格式、每種格式能做什麼」只寫在 ImageFormat.cpp 的那張表，
+// 副檔名清單、存檔能力、檔頭辨識、檔案對話框的篩選都從表導出。加一種格式：加一個 enum、表裡加一列、
+// ImageIO.cpp 補解碼 / 編碼。
+enum class ImageFormat { Unknown, Bmp, Tiff, Jpeg, Png, WebP };
+
+struct ImageFormatInfo {
+    ImageFormat format;
+    const wchar_t* name;                    // 顯示名的英文翻譯 key，例如 L"PNG image"（app 用 tr 翻）
+    const wchar_t* shortName;               // 檔案對話框的篩選用，例如 L"PNG"
+    std::vector<const wchar_t*> extensions; // 小寫、含點；第一個是存檔時補上的預設副檔名
+    bool canSave;                           // 寫得出來
+    bool keepsTransparency;                 // 存檔時留得住透明
+};
+
+// 全部格式，固定順序（不含 Unknown）。
+const std::vector<ImageFormatInfo>& imageFormats();
+// 某個格式那一列；Unknown 回 nullptr。
+const ImageFormatInfo* imageFormatInfo(ImageFormat format);
+// 顯示名的英文翻譯 key；Unknown 是 L"Image"。
+const wchar_t* imageFormatName(ImageFormat format);
+
+// 副檔名（含點，不分大小寫）是哪種格式；不認得回 Unknown。
+ImageFormat imageFormatOfExtension(const std::wstring& ext);
+// 看檔案開頭的位元組認格式（16 bytes 就夠）；不認得回 Unknown。
+ImageFormat sniffImageFormat(const unsigned char* head, size_t size);
+// 讀檔頭認格式，不看副檔名。讀不到或不認得回 Unknown。
+ImageFormat detectImageFormat(const std::wstring& path);
+
+// 檔案對話框。
+// 一種格式的檔名樣式，例如 L"*.jpg;*.jpeg;*.jpe;*.jfif"。
+std::wstring imagePatterns(ImageFormat format);
+// 全部支援的圖片副檔名的樣式。
+std::wstring allImagePatterns();
+// 存檔對話框列出的格式與順序：寫得出來的格式都在，第一個（PNG）是預設。
+const std::vector<ImageFormat>& saveDialogFormats();
+// 存檔對話框的篩選字串：每種格式「名稱 (*.ext)\0樣式\0」，順序同 saveDialogFormats()。
+std::wstring saveDialogFilter();
+
+// 下面幾個是上面那張表的捷徑。
+// 副檔名是不是支援的圖片格式（不分大小寫，含點，例如 L".jpg"）。
+bool isSupportedExtension(const std::wstring& ext);
+// 全部支援的副檔名（小寫、含點）。
+const std::vector<std::wstring>& supportedExtensions();
+// 存檔用的副檔名是不是支援寫出的格式。
+bool canSaveExtension(const std::wstring& ext);
+// 這個副檔名存檔時留得住透明（PNG、TIFF、WebP）。JPEG、BMP 不行。
+bool extensionKeepsTransparency(const std::wstring& ext);
+
+} // namespace mp

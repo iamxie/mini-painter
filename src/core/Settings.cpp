@@ -2,18 +2,17 @@
 
 #include <windows.h>
 
+#include <algorithm>
+#include <functional>
 #include <vector>
+
+#include "core/TempDir.h"
+#include "core/TextFile.h"
+#include "core/TextUtil.h"
 
 namespace mp {
 
 namespace {
-
-std::wstring trim(const std::wstring& s) {
-    size_t a = s.find_first_not_of(L" \t\r\n");
-    if (a == std::wstring::npos) return L"";
-    size_t b = s.find_last_not_of(L" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
 
 bool parseBool(const std::wstring& v, bool def) {
     if (v == L"1" || v == L"true" || v == L"yes") return true;
@@ -21,93 +20,55 @@ bool parseBool(const std::wstring& v, bool def) {
     return def;
 }
 
-std::wstring utf8ToWide(const std::string& s) {
-    if (s.empty()) return L"";
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring out(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-}
-
-std::string wideToUtf8(const std::wstring& s) {
-    if (s.empty()) return "";
-    int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0, nullptr, nullptr);
-    std::string out(n, '\0');
-    WideCharToMultiByte(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n, nullptr, nullptr);
-    return out;
-}
-
-const wchar_t* const kViewModes[] = {L"fitwindow", L"fitwidth", L"fitheight", L"actual", L"twopage"};
-
 // saveSettings 取代原檔暫時失敗時：重試幾次、每次隔多久。
 constexpr int kSaveRetries = 50;
 constexpr DWORD kSaveRetryMs = 5;
+// saveSettingsMerged 等別的 mpainter 存完，最多等多久。等不到就照樣存（寧可晚一步蓋掉，也不要不存）。
+constexpr DWORD kMergeLockWaitMs = 2000;
 
-std::wstring normalizeViewMode(const std::wstring& v) {
-    for (auto* m : kViewModes) if (v == m) return v;
-    return L"fitwindow";
+// 檢視設定的 ini key -> 欄位。parseSettings 的頂層與 [profile] 區段共用。不是檢視設定的 key 回 false。
+bool setPrefKey(ViewPrefs& p, const std::wstring& key, const std::wstring& val) {
+    if (key == L"viewMode") {
+        p.viewMode = viewModeFromKey(val); // 不認得的退回 fitwindow
+        return true;
+    }
+    for (const ViewFlag& f : kViewFlags) {
+        if (key != f.key) continue;
+        p.*f.member = parseBool(val, p.*f.member);
+        return true;
+    }
+    return false;
 }
 
-// 模式欄位：ini key -> 欄位。parseSettings 的頂層與 [profile] 區段共用。
-bool setPrefKey(Profile& p, const std::wstring& key, const std::wstring& val) {
-    if (key == L"viewMode") p.viewMode = val;
-    else if (key == L"upscaleSmall") p.upscaleSmall = parseBool(val, p.upscaleSmall);
-    else if (key == L"highQuality") p.highQuality = parseBool(val, p.highQuality);
-    else if (key == L"scrollFlip") p.scrollFlip = parseBool(val, p.scrollFlip);
-    else if (key == L"autoNextBook") p.autoNextBook = parseBool(val, p.autoNextBook);
-    else if (key == L"rightToLeft") p.rightToLeft = parseBool(val, p.rightToLeft);
-    else if (key == L"firstPageAlone") p.firstPageAlone = parseBool(val, p.firstPageAlone);
-    else if (key == L"warnMetadataLoss") p.warnMetadataLoss = parseBool(val, p.warnMetadataLoss);
-    else return false;
-    return true;
-}
-
-std::wstring serializePrefs(const Profile& p) {
-    auto b = [](bool v) { return std::wstring(v ? L"1" : L"0"); };
-    std::wstring out;
-    out += L"viewMode=" + p.viewMode + L"\n";
-    out += L"upscaleSmall=" + b(p.upscaleSmall) + L"\n";
-    out += L"highQuality=" + b(p.highQuality) + L"\n";
-    out += L"scrollFlip=" + b(p.scrollFlip) + L"\n";
-    out += L"autoNextBook=" + b(p.autoNextBook) + L"\n";
-    out += L"rightToLeft=" + b(p.rightToLeft) + L"\n";
-    out += L"firstPageAlone=" + b(p.firstPageAlone) + L"\n";
-    out += L"warnMetadataLoss=" + b(p.warnMetadataLoss) + L"\n";
+std::wstring serializePrefs(const ViewPrefs& p) {
+    std::wstring out = L"viewMode=" + std::wstring(viewModeKey(p.viewMode)) + L"\n";
+    for (const ViewFlag& f : kViewFlags) out += std::wstring(f.key) + L"=" + (p.*f.member ? L"1" : L"0") + L"\n";
     return out;
 }
 
+bool sameProfiles(const std::vector<Profile>& a, const std::vector<Profile>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].name != b[i].name || a[i].prefs != b[i].prefs) return false;
+    return true;
+}
+
+bool contains(const std::vector<std::wstring>& v, const std::wstring& s) { return std::find(v.begin(), v.end(), s) != v.end(); }
+
 } // namespace
 
-bool samePrefs(const Profile& a, const Profile& b) {
-    return a.viewMode == b.viewMode && a.upscaleSmall == b.upscaleSmall && a.highQuality == b.highQuality &&
-           a.scrollFlip == b.scrollFlip && a.autoNextBook == b.autoNextBook && a.rightToLeft == b.rightToLeft &&
-           a.firstPageAlone == b.firstPageAlone && a.warnMetadataLoss == b.warnMetadataLoss;
+bool ViewPrefs::operator==(const ViewPrefs& o) const {
+    if (viewMode != o.viewMode) return false;
+    for (const ViewFlag& f : kViewFlags)
+        if (this->*f.member != o.*f.member) return false;
+    return true;
 }
 
-Profile profileFromCurrent(const Settings& s) {
-    Profile p;
-    p.name = s.profileName;
-    p.viewMode = s.viewMode;
-    p.upscaleSmall = s.upscaleSmall;
-    p.highQuality = s.highQuality;
-    p.scrollFlip = s.scrollFlip;
-    p.autoNextBook = s.autoNextBook;
-    p.rightToLeft = s.rightToLeft;
-    p.firstPageAlone = s.firstPageAlone;
-    p.warnMetadataLoss = s.warnMetadataLoss;
-    return p;
-}
+Profile profileFromCurrent(const Settings& s) { return Profile{s.profileName, s.view}; }
 
 void applyProfile(Settings& s, const Profile& p) {
     s.profileName = p.name;
-    s.viewMode = normalizeViewMode(p.viewMode);
-    s.upscaleSmall = p.upscaleSmall;
-    s.highQuality = p.highQuality;
-    s.scrollFlip = p.scrollFlip;
-    s.autoNextBook = p.autoNextBook;
-    s.rightToLeft = p.rightToLeft;
-    s.firstPageAlone = p.firstPageAlone;
-    s.warnMetadataLoss = p.warnMetadataLoss;
+    s.view = p.prefs;
 }
 
 const Profile* findProfile(const Settings& s, const std::wstring& name) {
@@ -122,23 +83,27 @@ Profile* findProfile(Settings& s, const std::wstring& name) {
 
 bool profileModified(const Settings& s) {
     const Profile* p = findProfile(s, s.profileName);
-    return !p || !samePrefs(*p, profileFromCurrent(s));
+    return !p || p->prefs != s.view;
 }
 
 int prefetchMBFromText(const std::wstring& text, int fallback) {
     return clampedIntFromText(text, fallback, kPrefetchMinMB, kPrefetchMaxMB);
 }
 
+int intSettingFromText(const IntSetting& field, const std::wstring& text, int fallback) {
+    return clampedIntFromText(text, fallback, field.min, field.max);
+}
+
 std::vector<Profile> defaultProfiles(const std::wstring& generalName, const std::wstring& comicName) {
     Profile general;
     general.name = generalName;
-    general.viewMode = L"actual";
+    general.prefs.viewMode = ViewMode::Actual;
     Profile comic;
     comic.name = comicName;
-    comic.viewMode = L"twopage";
-    comic.highQuality = true;
-    comic.autoNextBook = true;
-    comic.warnMetadataLoss = false;
+    comic.prefs.viewMode = ViewMode::TwoPage;
+    comic.prefs.highQuality = true;
+    comic.prefs.autoNextBook = true;
+    comic.prefs.warnMetadataLoss = false;
     return {general, comic};
 }
 
@@ -156,7 +121,6 @@ bool ensureProfiles(Settings& s, const std::wstring& generalName, const std::wst
 
 Settings parseSettings(const std::wstring& text) {
     Settings s;
-    Profile cur; // 頂層的八個欄位先收在這裡，最後套進 s（和 [profile] 區段共用解析）
     bool inProfile = false, skipSection = false;
     size_t pos = 0;
     while (pos <= text.size()) {
@@ -181,12 +145,19 @@ Settings parseSettings(const std::wstring& text) {
         if (inProfile) {
             Profile& p = s.profiles.back();
             if (key == L"name") p.name = val;
-            else setPrefKey(p, key, val);
+            else setPrefKey(p.prefs, key, val);
             continue;
         }
         // 密碼前後的空白是密碼的一部分：從沒 trim 過的那行取值（第一個 = 的位置相同，前面只可能少了空白）。
         if (key == L"password") val = raw.substr(raw.find(L'=') + 1);
-        if (setPrefKey(cur, key, val)) continue;
+        if (setPrefKey(s.view, key, val)) continue;
+        bool isInt = false;
+        for (const IntSetting& f : kIntSettings) {
+            if (key != f.key) continue;
+            s.*f.member = intSettingFromText(f, val, s.*f.member);
+            isInt = true;
+        }
+        if (isInt) continue;
         if (key == L"askedDefault") s.askedDefault = parseBool(val, s.askedDefault);
         else if (key == L"tipShown") { try { s.tipShown = std::stoi(val); } catch (...) {} }
         else if (key == L"contextMenu") s.contextMenu = parseBool(val, s.contextMenu);
@@ -195,9 +166,6 @@ Settings parseSettings(const std::wstring& text) {
         else if (key == L"unzipDir") s.unzipDir = val;
         else if (key == L"autoCheckUpdate") s.autoCheckUpdate = parseBool(val, s.autoCheckUpdate);
         else if (key == L"skipVersion") s.skipVersion = val;
-        else if (key == L"undoLimit") s.undoLimit = undoLimitFromText(val, s.undoLimit);
-        else if (key == L"undoMemoryMB") s.undoMemoryMB = undoMemoryFromText(val, s.undoMemoryMB);
-        else if (key == L"prefetchMB") s.prefetchMB = prefetchMBFromText(val, s.prefetchMB);
         else if (key == L"updateUrl") s.updateUrl = val;
         else if (key == L"pinnedNames") {
             s.pinnedNames.clear();
@@ -218,9 +186,7 @@ Settings parseSettings(const std::wstring& text) {
             }
         }
     }
-    cur.name = s.profileName;
-    applyProfile(s, cur); // 順便把不認得的 viewMode 退回 fitwindow
-    // 模式：沒名字的丟掉、名字重複的留第一個、viewMode 正規化。
+    // 模式：沒名字的丟掉、名字重複的留第一個。
     std::vector<Profile> kept;
     for (auto& p : s.profiles) {
         p.name = trim(p.name);
@@ -228,7 +194,6 @@ Settings parseSettings(const std::wstring& text) {
         bool dup = false;
         for (const auto& k : kept) if (_wcsicmp(k.name.c_str(), p.name.c_str()) == 0) dup = true;
         if (dup) continue;
-        p.viewMode = normalizeViewMode(p.viewMode);
         kept.push_back(p);
     }
     s.profiles = std::move(kept);
@@ -243,13 +208,11 @@ std::wstring serializeSettings(const Settings& s) {
     out += L"contextMenu=" + std::wstring(s.contextMenu ? L"1" : L"0") + L"\n";
     out += L"language=" + s.language + L"\n";
     out += L"profile=" + s.profileName + L"\n";
-    out += serializePrefs(profileFromCurrent(s));
+    out += serializePrefs(s.view);
     out += L"unzipDir=" + s.unzipDir + L"\n";
     out += L"autoCheckUpdate=" + std::wstring(s.autoCheckUpdate ? L"1" : L"0") + L"\n";
     out += L"skipVersion=" + s.skipVersion + L"\n";
-    out += L"undoLimit=" + std::to_wstring(s.undoLimit) + L"\n";
-    out += L"undoMemoryMB=" + std::to_wstring(s.undoMemoryMB) + L"\n";
-    out += L"prefetchMB=" + std::to_wstring(s.prefetchMB) + L"\n";
+    for (const IntSetting& f : kIntSettings) out += std::wstring(f.key) + L"=" + std::to_wstring(s.*f.member) + L"\n";
     if (!s.updateUrl.empty()) out += L"updateUrl=" + s.updateUrl + L"\n";
     std::wstring pinned;
     for (const auto& n : s.pinnedNames) pinned += (pinned.empty() ? L"" : L"|") + n;
@@ -261,35 +224,84 @@ std::wstring serializeSettings(const Settings& s) {
     for (const auto& p : s.profiles) {
         out += L"\n[profile]\n";
         out += L"name=" + p.name + L"\n";
-        out += serializePrefs(p);
+        out += serializePrefs(p.prefs);
+    }
+    return out;
+}
+
+DialogChanges mergeDialogSettings(Settings& current, const Settings& fromDialog, const std::wstring& exeDir) {
+    DialogChanges c;
+    c.contextMenu = fromDialog.contextMenu != current.contextMenu;
+    c.pinnedNames = fromDialog.pinnedNames != current.pinnedNames;
+    c.unzipRoot = _wcsicmp(resolveUnzipRoot(fromDialog.unzipDir, exeDir).c_str(), resolveUnzipRoot(current.unzipDir, exeDir).c_str()) != 0;
+    c.undoLimits = fromDialog.undoLimit != current.undoLimit || fromDialog.undoMemoryMB != current.undoMemoryMB;
+    c.prefetch = fromDialog.prefetchMB != current.prefetchMB;
+    c.profiles = !sameProfiles(fromDialog.profiles, current.profiles) || fromDialog.profileName != current.profileName;
+    c.language = _wcsicmp(fromDialog.language.c_str(), current.language.c_str()) != 0;
+    // 換了模式、或正在用的那個內容被改了，就要重新套用（目前的值 = 模式本體）。
+    const Profile* np = findProfile(fromDialog, fromDialog.profileName);
+    const Profile* op = findProfile(current, current.profileName);
+    c.reapplyProfile = np && (!op || _wcsicmp(np->name.c_str(), op->name.c_str()) != 0 || np->prefs != op->prefs);
+
+    // 整份照抄，再把面板不管的兩樣放回去。
+    const std::wstring language = current.language;
+    const ViewPrefs view = current.view;
+    current = fromDialog;
+    current.language = language;
+    current.view = view;
+    return c;
+}
+
+Settings mergeSettings(const Settings& base, const Settings& mine, const Settings& disk) {
+    Settings out = disk;
+    // 一般欄位：這個視窗改過（mine 和 base 不同）就用 mine。
+    auto pick = [&](auto Settings::*member) {
+        if (mine.*member != base.*member) out.*member = mine.*member;
+    };
+    pick(&Settings::askedDefault);
+    pick(&Settings::tipShown);
+    pick(&Settings::contextMenu);
+    pick(&Settings::language);
+    pick(&Settings::autoCheckUpdate);
+    pick(&Settings::skipVersion);
+    pick(&Settings::updateUrl);
+    pick(&Settings::unzipDir);
+    pick(&Settings::pinnedNames);
+    pick(&Settings::profileName);
+    for (const IntSetting& f : kIntSettings) pick(f.member);
+    // 目前的檢視值：模式與每個開關各自算。
+    if (mine.view.viewMode != base.view.viewMode) out.view.viewMode = mine.view.viewMode;
+    for (const ViewFlag& f : kViewFlags)
+        if (mine.view.*f.member != base.view.*f.member) out.view.*f.member = mine.view.*f.member;
+    // 模式清單：整份。
+    if (!sameProfiles(mine.profiles, base.profiles)) out.profiles = mine.profiles;
+    // 視窗位置：五個數字一組。
+    if (mine.winX != base.winX || mine.winY != base.winY || mine.winW != base.winW || mine.winH != base.winH ||
+        mine.winMax != base.winMax) {
+        out.winX = mine.winX; out.winY = mine.winY; out.winW = mine.winW; out.winH = mine.winH; out.winMax = mine.winMax;
+    }
+    // 密碼：逐筆。disk 的每一筆都留，除了這個視窗刪掉的；這個視窗加的接在後面。
+    out.passwords.clear();
+    for (const auto& pw : disk.passwords) {
+        const bool removedByMe = contains(base.passwords, pw) && !contains(mine.passwords, pw);
+        if (!removedByMe && !contains(out.passwords, pw)) out.passwords.push_back(pw);
+    }
+    for (const auto& pw : mine.passwords) {
+        const bool addedByMe = !contains(base.passwords, pw);
+        if (addedByMe && !contains(out.passwords, pw)) out.passwords.push_back(pw);
     }
     return out;
 }
 
 SettingsLoad loadSettings(const std::wstring& path, Settings& out) {
     out = Settings{};
-    // 分享 DELETE：別的 mpainter 這時存檔（暫存檔取代原檔）不會被我們擋住。
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) {
-        DWORD e = GetLastError();
-        return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? SettingsLoad::Missing : SettingsLoad::Unreadable;
+    std::wstring text;
+    switch (readUtf8File(path, text)) {
+    case FileRead::Missing: return SettingsLoad::Missing;
+    case FileRead::Unreadable: return SettingsLoad::Unreadable; // 含讀到一半失敗：半份不能當成設定用
+    case FileRead::Ok: break;
     }
-    std::string bytes;
-    char buf[4096];
-    DWORD got = 0;
-    bool ok = true;
-    for (;;) {
-        if (!ReadFile(h, buf, sizeof(buf), &got, nullptr)) { ok = false; break; }
-        if (got == 0) break;
-        bytes.append(buf, got);
-    }
-    CloseHandle(h);
-    if (!ok) return SettingsLoad::Unreadable; // 讀到一半失敗：半份不能當成設定用
-    if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF && static_cast<unsigned char>(bytes[1]) == 0xBB &&
-        static_cast<unsigned char>(bytes[2]) == 0xBF)
-        bytes.erase(0, 3);
-    out = parseSettings(utf8ToWide(bytes));
+    out = parseSettings(text);
     return SettingsLoad::Loaded;
 }
 
@@ -313,6 +325,28 @@ bool saveSettings(const std::wstring& path, const Settings& s) {
     }
     DeleteFileW(tmp.c_str());
     return false;
+}
+
+bool saveSettingsMerged(const std::wstring& path, const Settings& base, const Settings& mine, Settings& written) {
+    // 「讀 → 合併 → 寫」要一口氣做完：兩個視窗同時做的話，後寫的會蓋掉先寫的。用路徑當名字的 mutex 排隊。
+    wchar_t full[MAX_PATH * 2];
+    DWORD n = GetFullPathNameW(path.c_str(), MAX_PATH * 2, full, nullptr);
+    const std::wstring key = lowerCopy(n > 0 && n < MAX_PATH * 2 ? std::wstring(full, n) : path);
+    const std::wstring name = L"Local\\mpainter-ini-" + std::to_wstring(std::hash<std::wstring>{}(key));
+    HANDLE mutex = CreateMutexW(nullptr, FALSE, name.c_str());
+    const DWORD waited = mutex ? WaitForSingleObject(mutex, kMergeLockWaitMs) : WAIT_FAILED;
+    const bool locked = waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED;
+
+    bool ok = false;
+    Settings disk;
+    SettingsLoad loaded = loadSettings(path, disk);
+    if (loaded != SettingsLoad::Unreadable) { // 讀不到時不寫：不知道裡面有什麼，寫了可能蓋掉別人的
+        written = loaded == SettingsLoad::Loaded ? mergeSettings(base, mine, disk) : mine;
+        ok = saveSettings(path, written);
+    }
+    if (locked) ReleaseMutex(mutex);
+    if (mutex) CloseHandle(mutex);
+    return ok;
 }
 
 bool isPathWritable(const std::wstring& path) {

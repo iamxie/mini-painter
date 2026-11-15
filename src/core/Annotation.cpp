@@ -1,6 +1,5 @@
 #include "core/Annotation.h"
 
-#include "core/Lang.h"
 
 #include <algorithm>
 #include <cmath>
@@ -56,7 +55,7 @@ Annotation makeShape(Kind kind, Pt c, float size, const StrokeStyle& style) {
     return a;
 }
 
-Annotation makeText(Pt c, float size, const StrokeStyle& style, const TextStyle& textStyle) {
+Annotation makeText(Pt c, float size, const StrokeStyle& style, const TextStyle& textStyle, const std::wstring& text) {
     Annotation a;
     a.kind = Kind::Text;
     a.stroke = style;
@@ -64,7 +63,7 @@ Annotation makeText(Pt c, float size, const StrokeStyle& style, const TextStyle&
     a.text = textStyle;
     float halfW = std::max(40.0f, size * 0.2f);
     a.rect = {c.x - halfW, c.y - textStyle.size, c.x + halfW, c.y + textStyle.size};
-    a.textValue = tr(L"Text");
+    a.textValue = text;
     return a;
 }
 

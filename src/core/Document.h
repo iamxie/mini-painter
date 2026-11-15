@@ -5,6 +5,7 @@
 
 #include "core/Annotation.h"
 #include "core/Image.h"
+#include "core/UndoLimits.h"
 
 namespace mp {
 
@@ -14,21 +15,6 @@ struct DocState {
     std::vector<Annotation> items;
     uint64_t serial = 0; // 每個狀態唯一，用來判斷有沒有未存的變更
 };
-
-// undo 最多留幾步：預設值與設定面板允許的範圍。
-constexpr int kUndoLimitDefault = 99, kUndoLimitMin = 1, kUndoLimitMax = 999;
-// 把設定值夾進 [kUndoLimitMin, kUndoLimitMax]。
-int clampUndoLimit(int n);
-// 使用者輸入或 ini 裡的文字 → 上限。不是數字（含空字串）回 fallback，數字夾進範圍。
-int undoLimitFromText(const std::wstring& text, int fallback);
-
-// undo / redo 歷史裡的底圖最多佔多少記憶體（MB = MiB）：預設值與允許的範圍。
-constexpr int kUndoMemoryDefaultMB = 512, kUndoMemoryMinMB = 16, kUndoMemoryMaxMB = 65536;
-int clampUndoMemoryMB(int n);
-int undoMemoryFromText(const std::wstring& text, int fallback);
-
-// 文字 → [lo, hi] 的整數（設定面板的數字欄位與 ini 共用）。不是數字回 fallback；位數多到 int 裝不下時，正的當成 hi、負的當成 lo。
-int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi);
 
 // 換到別張圖之前要問什麼：有沒存的修改 → 問存檔；存過但還有 undo / redo → 提醒復原紀錄會清空；都沒有 → 不問。
 enum class LeavePrompt { None, AskSave, WarnHistory };

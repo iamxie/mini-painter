@@ -12,18 +12,6 @@ inline float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); 
 
 inline uint8_t toByte(float v) { return static_cast<uint8_t>(clamp01(v) * 255.0f + 0.5f); }
 
-// 跟 Image.cpp 的 unpremultiply 同一個公式，逐像素用。
-inline unsigned unpremul(unsigned c, unsigned a) {
-    if (a == 255 || a == 0) return c;
-    return std::min(255u, (c * 255u + a / 2) / a);
-}
-
-// 跟 Image.cpp 的 premultiply 同一個公式。
-inline uint8_t premul(unsigned c, unsigned a) {
-    if (a == 255) return static_cast<uint8_t>(c);
-    return static_cast<uint8_t>((c * a + 127) / 255);
-}
-
 inline float luma601(float r, float g, float b) { return 0.299f * r + 0.587f * g + 0.114f * b; }
 
 // 逐點部分的 LUT：白平衡增益 → 曝光 → 色階（黑白點 + gamma）→ 對比。輸出夾在 0..1。
@@ -121,9 +109,9 @@ Image applyColorAdjust(const Image& src, const ColorAdjustParams& p) {
         uint8_t* lp = doClarity ? lumaPlane.data() + static_cast<size_t>(y) * w : nullptr;
         for (int x = 0; x < w; ++x, s += 4, d += 4) {
             const unsigned a = s[3];
-            float b = lutB[unpremul(s[0], a)];
-            float g = lutG[unpremul(s[1], a)];
-            float r = lutR[unpremul(s[2], a)];
+            float b = lutB[unpremultiplyChannel(s[0], a)];
+            float g = lutG[unpremultiplyChannel(s[1], a)];
+            float r = lutR[unpremultiplyChannel(s[2], a)];
 
             // 陰影 / 亮部：以亮度加權的遮罩。陰影遮罩 (1-L)^2，亮部遮罩 L^2。
             float L = luma601(r, g, b);
@@ -160,9 +148,9 @@ Image applyColorAdjust(const Image& src, const ColorAdjustParams& p) {
                 d[2] = R;
                 lp[x] = static_cast<uint8_t>((299u * R + 587u * G + 114u * B + 500u) / 1000u);
             } else {
-                d[0] = premul(B, a);
-                d[1] = premul(G, a);
-                d[2] = premul(R, a);
+                d[0] = premultiplyChannel(B, a);
+                d[1] = premultiplyChannel(G, a);
+                d[2] = premultiplyChannel(R, a);
             }
         }
     }
@@ -184,7 +172,7 @@ Image applyColorAdjust(const Image& src, const ColorAdjustParams& p) {
             for (int c = 0; c < 3; ++c) {
                 float v = static_cast<float>(d[c]) + delta;
                 v = v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v);
-                d[c] = premul(static_cast<unsigned>(v + 0.5f), a);
+                d[c] = premultiplyChannel(static_cast<unsigned>(v + 0.5f), a);
             }
         }
     }
@@ -197,7 +185,7 @@ std::array<uint32_t, 256> luminanceHistogram(const Image& img) {
         const uint8_t* s = img.row(y);
         for (int x = 0; x < img.width; ++x, s += 4) {
             const unsigned a = s[3];
-            const unsigned b = unpremul(s[0], a), g = unpremul(s[1], a), r = unpremul(s[2], a);
+            const unsigned b = unpremultiplyChannel(s[0], a), g = unpremultiplyChannel(s[1], a), r = unpremultiplyChannel(s[2], a);
             ++hist[(299u * r + 587u * g + 114u * b + 500u) / 1000u];
         }
     }
@@ -251,9 +239,9 @@ void setWhiteBalanceFrom(ColorAdjustParams& p, const Image& img, int x, int y) {
             const uint8_t* s = img.px(xx, yy);
             const unsigned a = s[3];
             if (a == 0) continue; // 全透明像素沒有顏色資訊
-            sb += unpremul(s[0], a);
-            sg += unpremul(s[1], a);
-            sr += unpremul(s[2], a);
+            sb += unpremultiplyChannel(s[0], a);
+            sg += unpremultiplyChannel(s[1], a);
+            sr += unpremultiplyChannel(s[2], a);
             ++n;
         }
     }

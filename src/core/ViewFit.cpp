@@ -3,7 +3,44 @@
 #include <algorithm>
 #include <cmath>
 
+#include "core/Lang.h"
+
 namespace mp {
+
+namespace {
+struct ViewModeInfo {
+    ViewMode mode;
+    const wchar_t* key;
+    const wchar_t* name;
+};
+// 順序同 enum。
+const ViewModeInfo kViewModes[] = {
+    {ViewMode::FitWindow, L"fitwindow", trKey(L"Fit to Window")},
+    {ViewMode::FitWidth, L"fitwidth", trKey(L"Fit to Width")},
+    {ViewMode::FitHeight, L"fitheight", trKey(L"Fit to Height")},
+    {ViewMode::Actual, L"actual", trKey(L"Actual Size")},
+    {ViewMode::TwoPage, L"twopage", trKey(L"Two Pages Side by Side")},
+};
+static_assert(sizeof(kViewModes) / sizeof(kViewModes[0]) == kViewModeCount, "every ViewMode needs a row");
+} // namespace
+
+const wchar_t* viewModeKey(ViewMode mode) {
+    for (const auto& m : kViewModes)
+        if (m.mode == mode) return m.key;
+    return kViewModes[0].key;
+}
+
+ViewMode viewModeFromKey(const std::wstring& key) {
+    for (const auto& m : kViewModes)
+        if (key == m.key) return m.mode;
+    return ViewMode::FitWindow;
+}
+
+const wchar_t* viewModeName(ViewMode mode) {
+    for (const auto& m : kViewModes)
+        if (m.mode == mode) return m.name;
+    return kViewModes[0].name;
+}
 
 float fitZoom(ViewMode mode, float canvasW, float canvasH, float viewW, float viewH, bool upscaleSmall) {
     float z;

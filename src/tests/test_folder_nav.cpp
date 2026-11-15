@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "core/FolderNav.h"
+#include "test_util.h"
 
 using namespace mp;
 
@@ -21,8 +22,9 @@ TEST_CASE("isArchiveExtension / archiveExtensions / comicExtensions") {
     CHECK(isArchiveExtension(L".cbr"));
     CHECK_FALSE(isArchiveExtension(L".jpg"));
     CHECK_FALSE(isArchiveExtension(L".tar"));
-    CHECK(archiveExtensions().size() == 6);
-    CHECK(comicExtensions().size() == 3);
+    for (auto* e : {L".zip", L".7z", L".rar", L".cbz", L".cb7", L".cbr"}) CHECK(isArchiveExtension(e));
+    for (const auto& e : archiveExtensions()) CHECK(isArchiveExtension(e));
+    CHECK(comicExtensions().size() < archiveExtensions().size()); // 一般的 zip / 7z / rar 不算漫畫專用
     for (const auto& e : comicExtensions()) CHECK(isArchiveExtension(e));
     for (const auto& e : archiveExtensions()) CHECK_FALSE(isSupportedExtension(e));
 }
@@ -61,10 +63,7 @@ TEST_CASE("FolderNav 檔案不在清單時 index 為 -1") {
 }
 
 TEST_CASE("listImageFiles 只列支援的格式並依檔案總管排序") {
-    wchar_t tmp[MAX_PATH];
-    GetTempPathW(MAX_PATH, tmp);
-    std::wstring dir = std::wstring(tmp) + L"mp_nav_test";
-    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring dir = mp::test::freshDir(L"nav_test");
     auto touch = [&](const wchar_t* name) {
         HANDLE h = CreateFileW((dir + L"\\" + name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
         CloseHandle(h);
@@ -87,21 +86,6 @@ TEST_CASE("listImageFiles 只列支援的格式並依檔案總管排序") {
     RemoveDirectoryW(dir.c_str());
 }
 
-TEST_CASE("supportedExtensions 與 isDirectoryPath") {
-    const auto& exts = supportedExtensions();
-    CHECK(exts.size() == 10);
-    for (const auto& e : exts) CHECK(isSupportedExtension(e));
-    wchar_t tmp[MAX_PATH];
-    GetTempPathW(MAX_PATH, tmp);
-    CHECK(isDirectoryPath(tmp));
-    CHECK_FALSE(isDirectoryPath(std::wstring(tmp) + L"mp_no_such_dir_xyz"));
-    std::wstring f = std::wstring(tmp) + L"mp_isdir_file.tmp";
-    HANDLE h = CreateFileW(f.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    CloseHandle(h);
-    CHECK_FALSE(isDirectoryPath(f));
-    DeleteFileW(f.c_str());
-}
-
 TEST_CASE("movePinnedFirst：依清單順序置頂、不分大小寫、其餘維持原序") {
     std::vector<std::wstring> v = {L"C:\\a\\1.png", L"C:\\a\\Cover.jpg", L"C:\\b\\1.png", L"C:\\b\\cover.png",
                                    L"C:\\cover.jpg"};
@@ -120,10 +104,7 @@ TEST_CASE("movePinnedFirst：依清單順序置頂、不分大小寫、其餘維
 }
 
 TEST_CASE("FolderNav::load 套置頂檔名") {
-    wchar_t tmp[MAX_PATH];
-    GetTempPathW(MAX_PATH, tmp);
-    std::wstring dir = std::wstring(tmp) + L"mp_nav_pin";
-    CreateDirectoryW(dir.c_str(), nullptr);
+    std::wstring dir = mp::test::freshDir(L"nav_pin");
     auto touch = [&](const wchar_t* name) {
         HANDLE h = CreateFileW((dir + L"\\" + name).c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
         CloseHandle(h);

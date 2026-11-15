@@ -34,11 +34,14 @@ enum class ArchiveStatus {
     Failed,        // 其他錯誤（一張都解不出來），看 error
 };
 
+// 一個壓縮檔裡的圖片解開後總共最多多大（預設值；錯誤訊息裡的上限也用這個數字）。
+constexpr uint64_t kArchiveMaxTotalBytes = 8ull << 30;
+
 struct ExtractOptions {
     std::wstring password;
     // 解壓進度（done / total 都是 bytes）。回 false 取消。可以為空。
     std::function<bool(uint64_t done, uint64_t total)> progress;
-    uint64_t maxTotalBytes = 8ull << 30; // 擋 zip bomb
+    uint64_t maxTotalBytes = kArchiveMaxTotalBytes; // 擋 zip bomb
 };
 
 struct ArchiveResult {
@@ -68,9 +71,6 @@ bool extractAll(const std::wstring& archivePath, const std::wstring& destDir, st
 // 只驗密碼，不解到磁碟：開檔後把一個加密項目解到記憶體（solid 用第一個，否則用最小的）。
 // 回 Ok（密碼對，或這個檔根本沒加密）、WrongPassword、NeedPassword（沒給密碼但有加密）、NotArchive、NoLibrary、Failed。
 ArchiveStatus testPassword(const std::wstring& archivePath, const std::wstring& password);
-
-// 列出 dir 底下（遞迴）所有支援格式的圖片，依完整路徑自然排序。
-std::vector<std::wstring> listImageFilesRecursive(const std::wstring& dir);
 
 // 看檔頭判斷圖片格式，回傳副檔名（含點、小寫：.png .jpg .webp .bmp .tif）。不是支援的圖片或讀不到檔回空字串。
 std::wstring sniffImageExtension(const std::wstring& path);

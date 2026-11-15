@@ -17,6 +17,7 @@
 #include <bit7z/bitformat.hpp>
 
 #include "core/FolderNav.h"
+#include "core/TextUtil.h"
 #include "core/TempDir.h"
 
 namespace mp {
@@ -25,34 +26,6 @@ namespace {
 
 std::unique_ptr<bit7z::Bit7zLibrary> g_lib;
 std::mutex g_libMutex;
-
-std::wstring utf8ToWide(const std::string& s) {
-    if (s.empty()) return L"";
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring out(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-}
-
-std::wstring joinPath(const std::wstring& a, const std::wstring& b) {
-    if (a.empty()) return b;
-    if (a.back() == L'\\' || a.back() == L'/') return a + b;
-    return a + L"\\" + b;
-}
-
-void listRecursive(const std::wstring& dir, std::vector<std::wstring>& out) {
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileExW(joinPath(dir, L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
-                                FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        std::wstring p = joinPath(dir, fd.cFileName);
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) listRecursive(p, out);
-        else if (isSupportedExtension(extensionOf(fd.cFileName))) out.push_back(p);
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
-}
 
 // 沒有副檔名的項目只在這麼大以內才解出來看檔頭，免得把一個幾 GB 的不明檔也解了。
 constexpr uint64_t kNoExtMaxBytes = 64ull << 20;
@@ -119,28 +92,9 @@ bool isArchiveEntrySkipped(const std::wstring& relPath) {
     return false;
 }
 
-std::vector<std::wstring> listImageFilesRecursive(const std::wstring& dir) {
-    std::vector<std::wstring> out;
-    listRecursive(dir, out);
-    sortLogical(out);
-    return out;
-}
-
 std::wstring sniffImageExtension(const std::wstring& path) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return L"";
-    unsigned char b[16] = {};
-    DWORD got = 0;
-    bool ok = ReadFile(h, b, sizeof(b), &got, nullptr);
-    CloseHandle(h);
-    if (!ok) return L"";
-    if (got >= 8 && std::memcmp(b, "\x89PNG\r\n\x1a\n", 8) == 0) return L".png";
-    if (got >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return L".jpg";
-    if (got >= 12 && std::memcmp(b, "RIFF", 4) == 0 && std::memcmp(b + 8, "WEBP", 4) == 0) return L".webp";
-    if (got >= 4 && (std::memcmp(b, "II*\0", 4) == 0 || std::memcmp(b, "MM\0*", 4) == 0)) return L".tif";
-    if (got >= 2 && b[0] == 'B' && b[1] == 'M') return L".bmp";
-    return L"";
+    const ImageFormatInfo* f = imageFormatInfo(detectImageFormat(path));
+    return f ? f->extensions.front() : L"";
 }
 
 bool extractAll(const std::wstring& archivePath, const std::wstring& destDir, std::wstring& error) {

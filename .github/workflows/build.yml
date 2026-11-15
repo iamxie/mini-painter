@@ -1,6 +1,6 @@
 # 建置、跑測試、打包；推 v* 標籤時自動開 GitHub Release 並掛上發佈包與 7-Zip 原始碼包。
-# 和 scripts/vm-build.cmd 做的事相同：MSVC + Ninja + vcpkg manifest（x64-windows-static，/MT），
-# 7z.dll 照 scripts/7zip.lock 下載官方安裝檔抽出並核對 hash。
+# 建置參數在 CMakePresets.json 的 release preset，和 scripts/vm-build.cmd 用同一個：MSVC + Ninja + vcpkg manifest
+# （x64-windows-static，/MT）。7z.dll 照 scripts/7zip.lock 下載官方安裝檔抽出並核對 hash。
 name: build
 
 on:
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # 開 release 要寫權限；其他事件用不到
+  contents: read   # 只有下面的 release job 要寫權限
 
 env:
   VCPKG_COMMIT: a4f7741c53c97354fc43222fea17955c657dd549   # 與 vcpkg.json 的 builtin-baseline 相同
@@ -20,6 +20,9 @@ env:
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 60   # vcpkg 沒有快取時約 20 分鐘；測試卡住時不要等到預設的 6 小時
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,21 +73,19 @@ jobs:
         with:
           arch: x64
 
+      # configure 階段會檢查 vcpkg.json 的 version-string 等於 project(VERSION)。
+      # VCPKG_ROOT 要在這一步指定：MSVC 環境會把它設成 Visual Studio 內附的 vcpkg。
       - name: Configure
-        shell: pwsh
-        run: >
-          cmake -S . -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE=${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake
-          -DVCPKG_TARGET_TRIPLET=x64-windows-static
-          -DMP_7Z_DLL=${{ github.workspace }}/7zip/7z.dll
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+          MP_7Z_DLL: ${{ github.workspace }}/7zip/7z.dll
+        run: cmake --preset release
 
       - name: Build
-        run: cmake --build build
+        run: cmake --build --preset release
 
       - name: Test
-        shell: pwsh
-        run: build\mp_tests.exe
+        run: ctest --preset release
 
       - name: Language tables cover every string
         shell: pwsh
@@ -96,8 +97,6 @@ jobs:
         run: |
           $m = Select-String -Path CMakeLists.txt -Pattern 'project\(mpainter VERSION ([0-9.]+)'
           $ver = $m.Matches[0].Groups[1].Value
-          $vv = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'version-string'
-          if ($vv -ne $ver) { throw "vcpkg.json version-string $vv does not match project(VERSION $ver) in CMakeLists.txt" }
           if ("${{ github.ref_type }}" -eq "tag") {
             $tag = "${{ github.ref_name }}"
             if ($tag -ne "v$ver") { throw "tag $tag does not match project(VERSION $ver) in CMakeLists.txt" }
@@ -128,13 +127,30 @@ jobs:
             dist/*.zip.sha256
             dist/*.7z
 
-      # 推 v0.6.0 這類標籤時：開 release，掛發佈包 zip、它的 .sha256（自動更新用）與 7-Zip 原始碼包（LGPL §4：原始碼與二進位同一處）。
+  # 推 v0.6.0 這類標籤時：開 release，掛發佈包 zip、它的 .sha256（自動更新用）與 7-Zip 原始碼包（LGPL §4：原始碼與二進位同一處）。
+  release:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@v4
+        with:
+          name: mini-painter-${{ needs.build.outputs.version }}-win64
+          path: dist
+
       - name: Release
-        if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          $ver = "${{ steps.ver.outputs.version }}"
-          gh release create "${{ github.ref_name }}" "dist\mini-painter-$ver-win64.zip" "dist\mini-painter-$ver-win64.zip.sha256" "$env:SEVENZIP_SRC" `
+          $ver = "${{ needs.build.outputs.version }}"
+          $zip = "dist\mini-painter-$ver-win64.zip"
+          $src = @(Get-ChildItem dist\*.7z)
+          if (-not (Test-Path $zip) -or -not (Test-Path "$zip.sha256") -or $src.Count -ne 1) { Get-ChildItem dist; throw "package files are missing" }
+          gh release create "${{ github.ref_name }}" $zip "$zip.sha256" $src[0].FullName `
             --title "mini-painter $ver" --generate-notes

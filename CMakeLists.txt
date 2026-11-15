@@ -1,11 +1,18 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 0.9.5 LANGUAGES CXX)
+project(mpainter VERSION 0.9.6 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-add_compile_options(/utf-8 /W4 /wd4100 /wd4458 /EHsc)
+add_compile_options(/utf-8 /W4 /WX /wd4100 /wd4458 /EHsc)
 add_compile_definitions(UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+# 版本號寫在兩處（這裡的 project(VERSION) 與 vcpkg.json 的 version-string），不一致就在 configure 階段停下來。
+file(READ "${CMAKE_SOURCE_DIR}/vcpkg.json" MP_VCPKG_JSON)
+string(JSON MP_VCPKG_VERSION GET "${MP_VCPKG_JSON}" "version-string")
+if(NOT MP_VCPKG_VERSION STREQUAL PROJECT_VERSION)
+    message(FATAL_ERROR "vcpkg.json version-string (${MP_VCPKG_VERSION}) does not match project(VERSION ${PROJECT_VERSION}) in CMakeLists.txt")
+endif()
 
 find_package(WebP CONFIG REQUIRED)
 find_package(Catch2 CONFIG REQUIRED)
@@ -15,6 +22,11 @@ find_package(bit7z CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 # 官方 7z.dll 的路徑。設了就在建置後複製到 exe 與測試程式旁；沒設時程式不支援壓縮檔、測試會失敗。
 set(MP_7Z_DLL "" CACHE FILEPATH "官方 7z.dll（7-zip.org）的路徑，建置後複製到輸出目錄")
+if(NOT MP_7Z_DLL)
+    message(WARNING "MP_7Z_DLL is not set: mpainter cannot open archives and the archive tests in mp_tests will fail. Pass -DMP_7Z_DLL=<path to the official 7z.dll>.")
+elseif(NOT EXISTS "${MP_7Z_DLL}")
+    message(FATAL_ERROR "MP_7Z_DLL does not exist: ${MP_7Z_DLL}")
+endif()
 function(mp_copy_7z target)
     if(MP_7Z_DLL)
         add_custom_command(TARGET ${target} POST_BUILD
@@ -22,8 +34,14 @@ function(mp_copy_7z target)
     endif()
 endfunction()
 
-# 純邏輯與影像處理，不碰視窗。測試連這個（另外編進 Renderer.cpp 測點陣圖快取）。
+# 純邏輯與影像處理，不碰視窗。
 add_library(mp_core STATIC
+    src/core/TextUtil.cpp
+    src/core/PathUtil.cpp
+    src/core/TextFile.cpp
+    src/core/SysInfo.cpp
+    src/core/IoError.cpp
+    src/core/ImageFormat.cpp
     src/core/Image.cpp
     src/core/ImageOps.cpp
     src/core/ImageIO.cpp
@@ -43,9 +61,20 @@ add_library(mp_core STATIC
     src/core/Crop.cpp
     src/core/ViewFit.cpp
     src/core/Prefetch.cpp
+    src/core/Commands.cpp
+    src/core/Viewport.cpp
+    src/core/Paging.cpp
+    src/core/Launch.cpp
 )
 target_include_directories(mp_core PUBLIC src)
-target_link_libraries(mp_core PUBLIC WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z nlohmann_json::nlohmann_json windowscodecs ole32 shlwapi propsys version advapi32 winhttp bcrypt)
+# 都是實作細節：core 的標頭不露出這些函式庫的型別。
+target_link_libraries(mp_core PRIVATE WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z nlohmann_json::nlohmann_json windowscodecs ole32 shlwapi propsys version advapi32 winhttp bcrypt shell32)
+
+# Direct2D / DirectWrite 包裝。主程式與測試共用同一份。
+add_library(mp_render STATIC
+    src/render/Renderer.cpp
+)
+target_link_libraries(mp_render PUBLIC mp_core PRIVATE d2d1 dwrite)
 
 option(MP_BUILD_APP "建置主程式（關掉時只建 core 和測試）" ON)
 if(MP_BUILD_APP)
@@ -57,22 +86,30 @@ add_executable(mpainter WIN32
     src/app/Popups.cpp
     src/app/InfoPanel.cpp
     src/app/Dialogs.cpp
-    src/render/Renderer.cpp
+    src/app/SettingsDialog.cpp
+    src/app/UiText.cpp
     src/app/app.rc
 )
 target_include_directories(mpainter PRIVATE "${CMAKE_BINARY_DIR}/generated")
-target_link_libraries(mpainter PRIVATE mp_core d2d1 dwrite comdlg32 comctl32 shell32 gdi32 user32 uxtheme)
+target_link_libraries(mpainter PRIVATE mp_core mp_render d2d1 dwrite comdlg32 comctl32 shell32 gdi32 user32 uxtheme)
 # manifest 由 app.rc 提供，關掉連結器自動產生的那份，否則會重複。
 target_link_options(mpainter PRIVATE /MANIFEST:NO)
 mp_copy_7z(mpainter)
 endif()
 
 add_executable(mp_tests
+    src/tests/test_util.cpp
     src/tests/test_geometry.cpp
     src/tests/test_annotation.cpp
     src/tests/test_document.cpp
     src/tests/test_image_ops.cpp
     src/tests/test_image_io.cpp
+    src/tests/test_image_format.cpp
+    src/tests/test_metadata.cpp
+    src/tests/test_text_path.cpp
+    # app 層裡不碰視窗的部分（代碼與翻譯 key 變成顯示用的句子）也編進來測。
+    src/tests/test_ui_text.cpp
+    src/app/UiText.cpp
     src/tests/test_folder_nav.cpp
     src/tests/test_color_adjust.cpp
     src/tests/test_settings.cpp
@@ -87,14 +124,25 @@ add_executable(mp_tests
     src/tests/test_crop.cpp
     src/tests/test_view_fit.cpp
     src/tests/test_prefetch.cpp
+    src/tests/test_commands.cpp
+    src/tests/test_viewport.cpp
+    src/tests/test_paging.cpp
     # Renderer 的點陣圖快取（畫在記憶體裡的 render target）。src/app 仍然不測。
     src/tests/test_renderer.cpp
-    src/render/Renderer.cpp
 )
-target_link_libraries(mp_tests PRIVATE mp_core Catch2::Catch2WithMain ws2_32 d2d1 dwrite)
-# 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。
+# bit7z：測試自己用它現場產 zip / 7z 當 fixture。
+target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Catch2WithMain ws2_32 d2d1 dwrite shell32)
+# 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。建置後複製到測試程式旁的 fixtures\，
+# 測試先找那裡；找不到（例如只搬了 exe）才用原始碼樹的路徑。
 target_compile_definitions(mp_tests PRIVATE "MP_TEST_FIXTURES=L\"${CMAKE_SOURCE_DIR}/src/tests/fixtures\"")
+# 隨程式發佈的語系檔：測試檢查每一行的佔位符。
+target_compile_definitions(mp_tests PRIVATE "MP_SOURCE_LANG_DIR=L\"${CMAKE_SOURCE_DIR}/src/lang\"")
+file(GLOB MP_FIXTURE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.rar")
+add_custom_command(TARGET mp_tests POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:mp_tests>/fixtures"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MP_FIXTURE_FILES} "$<TARGET_FILE_DIR:mp_tests>/fixtures")
 mp_copy_7z(mp_tests)
 
+# ctest --preset release 跑這個。隨機順序：測試之間有順序相依時會露出來（Catch2 會印出 seed，可以重現）。
 enable_testing()
-add_test(NAME mp_tests COMMAND mp_tests)
+add_test(NAME mp_tests COMMAND mp_tests --order rand)

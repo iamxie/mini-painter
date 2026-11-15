@@ -1,9 +1,18 @@
 #pragma once
+#include <string>
 
 namespace mp {
 
-// 檢視模式（看漫畫）。ini 裡的字串見 MainWindow::viewModeFromString。
+// 檢視模式（看漫畫）。每個模式的 ini 名稱與顯示名只寫在 ViewFit.cpp 的那張表。
 enum class ViewMode { FitWindow, FitWidth, FitHeight, Actual, TwoPage };
+constexpr int kViewModeCount = 5;
+
+// ini 裡的名字：fitwindow / fitwidth / fitheight / actual / twopage。
+const wchar_t* viewModeKey(ViewMode mode);
+// ini 的名字 → 模式。不認得的（含空字串）回 FitWindow。
+ViewMode viewModeFromKey(const std::wstring& key);
+// 顯示名（英文翻譯 key），例如 L"Fit to Window"。設定面板的下拉選單用。
+const wchar_t* viewModeName(ViewMode mode);
 
 // 高品質縮放（Lanczos3）的點陣圖最多幾個像素；放大到超過就畫原圖，記憶體和時間都不值得。
 constexpr long long kHqMaxPixels = 40'000'000LL;

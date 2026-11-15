@@ -5,76 +5,42 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
-#include <bit7z/bit7zlibrary.hpp>
-#include <bit7z/bitarchivewriter.hpp>
-#include <bit7z/bitformat.hpp>
 
 #include "core/Archive.h"
 #include "core/FolderNav.h"
 #include "core/ImageIO.h"
 #include "core/Prefetch.h"
 #include "core/TempDir.h"
+#include "test_archive_util.h"
+#include "test_util.h"
 
 using namespace mp;
 
 namespace {
 
-std::wstring testRoot(const wchar_t* name) {
-    wchar_t dir[MAX_PATH];
-    GetTempPathW(MAX_PATH, dir);
-    std::wstring root = std::wstring(dir) + L"mp_test_prefetch_" + name;
-    removeDirectoryRecursive(root);
-    REQUIRE(createDirectories(root));
-    return root;
-}
+using mp::test::dllPath;
+using mp::test::exists;
+using mp::test::readBytes;
+using mp::test::writePng;
 
-void writePng(const std::wstring& path, int w, int h) {
-    createDirectories(path.substr(0, path.find_last_of(L"\\/")));
-    Image img(w, h);
-    for (auto& b : img.pixels) b = 255;
-    REQUIRE(saveImage(img, path, nullptr));
-}
-
-std::string readBytes(const std::wstring& path) {
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    REQUIRE(f != INVALID_HANDLE_VALUE);
-    std::string bytes;
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(f, buf, sizeof(buf), &got, nullptr) && got > 0) bytes.append(buf, got);
-    CloseHandle(f);
-    return bytes;
-}
-
-bool exists(const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
-
-std::wstring dllPath() {
-    wchar_t exe[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring p = exe;
-    return p.substr(0, p.find_last_of(L"\\/") + 1) + L"7z.dll";
-}
+std::wstring testRoot(const wchar_t* name) { return mp::test::freshDir((std::wstring(L"prefetch_") + name).c_str()); }
 
 // zip：name → 內容（PNG bytes）。password 非空時加密內容。
 void makeZip(const std::wstring& out, const std::vector<std::pair<std::string, std::string>>& entries,
              const std::string& password = "") {
-    REQUIRE(loadArchiveLibrary(dllPath()));
-    static bit7z::Bit7zLibrary lib(bit7z::to_tstring(dllPath()));
-    bit7z::BitArchiveWriter w(lib, bit7z::BitFormat::Zip);
-    if (!password.empty()) w.setPassword(password);
-    std::vector<bit7z::buffer_t> buffers;
-    buffers.reserve(entries.size());
-    for (const auto& [name, content] : entries) {
-        buffers.emplace_back(content.begin(), content.end());
-        w.addFile(buffers.back(), name);
-    }
-    w.compressTo(bit7z::to_tstring(out));
+    mp::test::requireArchiveLibrary();
+    std::vector<mp::test::ArchiveEntry> list;
+    for (const auto& [name, content] : entries) list.push_back({name, content});
+    mp::test::MakeArchiveOptions mo;
+    mo.password = password;
+    mp::test::makeArchive(out, bit7z::BitFormat::Zip, list, mo);
 }
 
 // 會計數、可以卡住的解碼器。
@@ -190,11 +156,17 @@ TEST_CASE("Prefetch：上限依優先順序，放不下的那一屏起都不留�
     CHECK(pf.take(p2));
     CHECK(pf.take(p3));
     CHECK_FALSE(pf.take(p4));
-    // 上限改小：優先順序低的先丟（這裡只剩第一屏也放不下，整屏丟）
+    // 上限改小：優先順序低的先丟（這裡只剩第一屏也放不下，整屏丟）。
+    // 先把解碼器卡住：setWanted 之後背景會馬上重解，不卡住的話下面那一行有時看到的是重解後的量。
+    c.gate.close();
     pf.setWanted({p1}, {{p2, p3}, {p4}}, std::nullopt, {}, 50000);
     CHECK(pf.heldBytes() == 0);
+    c.gate.release();
     pf.waitIdle();
-    CHECK(pf.heldBytes() <= 50000);
+    // 背景重新解：第一頁放得下就留著，第二頁看檔頭就知道放不下、這一輪停手。留下的是半屏（reflection.md N-04）。
+    CHECK(pf.heldBytes() == 40000);
+    CHECK(pf.take(p2));
+    CHECK_FALSE(pf.take(p3));
     // 單張就比上限大：看檔頭就停手
     Counting c2;
     Prefetcher pf2(c2.decoder());
@@ -217,15 +189,14 @@ TEST_CASE("Prefetch：背景正在解的那一頁，take 等它解完，不會�
     Prefetcher pf(c.decoder());
     pf.setWanted({}, {{a}}, std::nullopt, {}, kBig);
     c.gate.waitEntered(1);
-    std::thread opener([&] {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        c.gate.release();
-    });
-    auto r = pf.take(a);
-    opener.join();
+    // 背景卡在解 a 的時候，另一條執行緒來拿：解碼器沒放行之前 take 不能回來。
+    auto taking = std::async(std::launch::async, [&] { return pf.take(a); });
+    CHECK(taking.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout);
+    c.gate.release();
+    auto r = taking.get();
     REQUIRE(r);
     CHECK(r->image);
-    CHECK(c.count == 1);
+    CHECK(c.count == 1); // take 自己再解一次的話會是 2
 }
 
 TEST_CASE("Prefetch：解碼後檔案被改過（例如存檔），take 當作沒有") {
@@ -453,6 +424,36 @@ TEST_CASE("Prefetch 換本：等待時取消，回 Cancelled，之後不再準�
     CHECK(plan->extracted.status == ArchiveStatus::Cancelled);
     CHECK_FALSE(plan->usable());
     c.gate.release();
+    pf.waitIdle();
+    CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr));
+}
+
+TEST_CASE("Prefetch 換本：解壓到一半取消，回 Cancelled，解到一半的資料夾刪掉") {
+    std::wstring root = testRoot(L"bookcancelmid");
+    std::wstring shelf = root + L"\\shelf", tmp = root + L"\\tmp";
+    writePng(shelf + L"\\A\\1.png", 40, 60);
+    // 張數多到解壓一定比 takeBook 問一次進度（約 50 ms）久。
+    std::string png = mp::test::pngBytes(2, 2);
+    std::vector<std::pair<std::string, std::string>> entries;
+    for (int i = 0; i < 4000; ++i) entries.push_back({std::to_string(i) + ".png", png});
+    makeZip(shelf + L"\\B.zip", entries);
+    REQUIRE(createDirectories(tmp));
+    Prefetcher pf;
+    BookRequest req;
+    req.fromBook = shelf + L"\\A";
+    req.archiveRoot = tmp;
+    pf.setWanted({}, {}, req, {}, kBig);
+    bool sawPartial = false;
+    auto plan = pf.takeBook(shelf + L"\\B.zip", [&](uint64_t done, uint64_t) {
+        if (done == 0) return true; // 還沒開始解
+        sawPartial = exists(tmp + L"\\pre1");
+        return false;
+    });
+    REQUIRE(plan);
+    // 這裡不是 Cancelled 表示取消之前就解完了，沒走到要測的那條路：把張數加大。
+    REQUIRE(plan->extracted.status == ArchiveStatus::Cancelled);
+    CHECK(sawPartial);
+    CHECK_FALSE(plan->usable());
     pf.waitIdle();
     CHECK_FALSE(exists(tmp + L"\\pre1"));
     CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr));

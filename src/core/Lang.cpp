@@ -3,17 +3,15 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cwctype>
+
+#include "core/PathUtil.h"
+#include "core/TextFile.h"
+#include "core/TextUtil.h"
 
 namespace mp {
 
 namespace {
-
-std::wstring trim(const std::wstring& s) {
-    size_t a = s.find_first_not_of(L" \t\r\n");
-    if (a == std::wstring::npos) return L"";
-    size_t b = s.find_last_not_of(L" \t\r\n");
-    return s.substr(a, b - a + 1);
-}
 
 std::wstring unescape(const std::wstring& s) {
     std::wstring out;
@@ -41,14 +39,6 @@ size_t findSeparator(const std::wstring& line) {
     return std::wstring::npos;
 }
 
-std::wstring utf8ToWide(const std::string& s) {
-    if (s.empty()) return L"";
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring out(n, L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-}
-
 std::wstring lower(std::wstring s) {
     for (auto& c : s) c = static_cast<wchar_t>(towlower(c));
     return s;
@@ -62,6 +52,37 @@ std::wstring langPart(const std::wstring& code) {
 LangTable g_active;
 
 } // namespace
+
+bool formatSpecs(const std::wstring& s, std::wstring& specs) {
+    specs.clear();
+    auto add = [&](const std::wstring& token) {
+        if (!specs.empty()) specs += L',';
+        specs += token;
+    };
+    for (size_t i = 0; i < s.size(); ++i) {
+        if (s[i] != L'%') continue;
+        if (++i >= s.size()) return false;
+        if (s[i] == L'%') continue;
+        while (i < s.size() && wcschr(L"-+ #0", s[i])) ++i; // 旗標
+        if (i < s.size() && s[i] == L'*') { add(L"*"); ++i; }
+        else while (i < s.size() && iswdigit(s[i])) ++i;     // 寬度
+        if (i < s.size() && s[i] == L'.') {
+            ++i;
+            if (i < s.size() && s[i] == L'*') { add(L"*"); ++i; }
+            else while (i < s.size() && iswdigit(s[i])) ++i; // 精度
+        }
+        std::wstring token;
+        while (i < s.size() && wcschr(L"hlLjztwI", s[i])) {   // 長度修飾（含 MSVC 的 I、I32、I64、w）
+            token += s[i];
+            if (s[i++] == L'I')
+                while (i < s.size() && iswdigit(s[i])) token += s[i++];
+        }
+        if (i >= s.size() || !wcschr(L"diuoxXeEfFgGaAcCsSp", s[i])) return false; // 含 %n：一律不收
+        token += s[i];
+        add(token);
+    }
+    return true;
+}
 
 LangTable parseLangText(const std::wstring& text) {
     LangTable t;
@@ -78,43 +99,37 @@ LangTable parseLangText(const std::wstring& text) {
         if (key.empty()) continue;
         if (key == L"_code") t.code = val;
         else if (key == L"_name") t.name = val;
-        else t.map[key] = val;
+        else {
+            std::wstring want, got;
+            if (formatSpecs(key, want) && (!formatSpecs(val, got) || got != want)) {
+                t.rejected.push_back(key);
+                continue;
+            }
+            t.map[key] = val;
+        }
     }
     return t;
 }
 
 bool loadLangFile(const std::wstring& path, LangTable& out) {
     out = LangTable{};
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    std::string bytes;
-    char buf[8192];
-    DWORD got = 0;
-    while (ReadFile(h, buf, sizeof(buf), &got, nullptr) && got > 0) bytes.append(buf, got);
-    CloseHandle(h);
-    if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF && static_cast<unsigned char>(bytes[1]) == 0xBB &&
-        static_cast<unsigned char>(bytes[2]) == 0xBF)
-        bytes.erase(0, 3);
-    out = parseLangText(utf8ToWide(bytes));
+    std::wstring text;
+    if (readUtf8File(path, text) != FileRead::Ok) return false;
+    out = parseLangText(text);
     return true;
 }
 
 std::vector<LangTable> loadLangDir(const std::wstring& dir) {
     std::vector<std::wstring> names;
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW((dir + L"\\*.txt").c_str(), &fd);
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) names.push_back(fd.cFileName);
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        if (!e.directory) names.push_back(e.name);
+        return true;
+    }, L"*.txt");
     std::sort(names.begin(), names.end(), [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
     std::vector<LangTable> out;
     for (const auto& n : names) {
         LangTable t;
-        if (loadLangFile(dir + L"\\" + n, t) && !t.code.empty()) out.push_back(std::move(t));
+        if (loadLangFile(joinPath(dir, n), t) && !t.code.empty()) out.push_back(std::move(t));
     }
     return out;
 }

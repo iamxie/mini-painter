@@ -201,7 +201,6 @@ JPEG image=JPEG 影像
 PNG image=PNG 影像
 BMP image=BMP 影像
 TIFF image=TIFF 影像
-GIF image=GIF 影像
 WebP image=WebP 影像
 JFIF version=JFIF 版本
 Density unit=密度單位
@@ -290,7 +289,7 @@ Cannot unpack: %s=無法解壓縮：%s
 Leave empty to use the “temp” folder next to mpainter.exe (the system temp folder if that cannot be created). Unpacked files (decrypted) stay there while viewing and are deleted on exit.=留空就用 mpainter.exe 旁邊的 temp 資料夾（建不了時改用系統的暫存資料夾）。瀏覽期間解出來的檔案（已解密）放在那裡，關閉程式時刪除。
 Not enough free disk space in the temp folder to unpack this archive.=暫存資料夾所在的磁碟空間不足，無法解開這個壓縮檔。
 Password=密碼
-The images in this archive are too large to unpack (limit 8 GB).=這個壓縮檔裡的圖片解開後太大（上限 8 GB）。
+The images in this archive are too large to unpack (limit %s).=這個壓縮檔裡的圖片解開後太大（上限 %s）。
 This archive has no supported images=這個壓縮檔裡沒有支援的圖片
 This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it.=這張圖片在壓縮檔裡，唯讀。\n\n要編輯請先解壓縮。
 Unpack to:=解壓縮到：
@@ -404,3 +403,7 @@ Updated to mpainter %s.=已更新到 mpainter %s。
 # --- v0.9.5 ---
 Could not draw the annotations onto the image=無法把標註畫到圖上
 Could not read mpainter.ini. Default settings are used this time, and settings will not be saved.=讀不到 mpainter.ini。這次先用預設設定，而且不會存回設定檔。
+
+# --- v0.9.6 ---
+Saved, but some of the original metadata could not be written to the file.=已儲存，但原檔的部分 metadata 沒有寫進檔案。
+The image is too large: not enough memory=圖片太大：記憶體不足

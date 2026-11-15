@@ -4,45 +4,59 @@
 #include <vector>
 
 #include "core/Image.h"
+#include "core/ImageFormat.h"
+#include "core/IoError.h"
 #include "core/Metadata.h"
 
 namespace mp {
 
 struct LoadResult {
-    ImagePtr image;      // 失敗時為 nullptr
+    ImagePtr image;  // 失敗時為 nullptr
     ImageInfo info;
-    std::wstring error;  // 失敗原因
+    IoError error;   // 失敗原因
 };
 
-// 讀檔。BMP、TIFF、JPEG、PNG 走 WIC，WebP 走 libwebp。
+// 讀檔。格式看檔案內容，不看副檔名：WebP 走 libwebp，其他走 WIC（BMP、TIFF、JPEG、PNG）。
 // EXIF orientation 會套用到像素上（info.orientation 仍記錄原值）。
+// 不丟例外：圖太大、記憶體配不出來時回 OutOfMemory。
 LoadResult loadImage(const std::wstring& path);
 
-// 只讀尺寸，不解碼像素（兩頁並排要知道每頁寬高）。EXIF orientation 會轉過來（6 / 8 時寬高對調）。
-// 讀不到回傳 false。
+// 只讀尺寸，不解碼像素（兩頁並排要知道每頁寬高）。EXIF orientation 會轉過來（5～8 時寬高對調），
+// 和 loadImage 給的圖同一個方向。讀不到回傳 false。
 bool readImageSize(const std::wstring& path, int& width, int& height);
 
 struct SaveOptions {
     // 要照抄 metadata 的來源檔（通常是這張圖原本的檔）。空字串 = 不保留。
     // 全部照抄，只改與像素不符的：Orientation 一律 1、尺寸變了改 PixelX/YDimension、EXIF 縮圖重新產生。
+    // 跨格式時帶得過去的範圍見 metadataCarried。
     std::wstring metadataSource;
 };
 
-// 存檔。格式依副檔名決定。先寫到暫存檔再取代原檔。JPEG 品質固定 0.9。
-// 存不了透明的格式（見 extensionKeepsTransparency）先疊在白底上。
-bool saveImage(const Image& img, const std::wstring& path, std::wstring* error, const SaveOptions& opt = {});
+struct SaveResult {
+    IoError error;
+    // 檔案存好了（像素正確），但來源裡照 metadataCarried 該帶過去的 metadata 有一部分沒寫進去。
+    bool metadataDropped = false;
 
-// 另存成 targetExt 時，來源有而目標格式裝不下的區塊名（例如 L"Exif"、L"IPTC"、L"ICC"）。
-// 同格式回傳空。info 是來源檔讀出來的資訊。
-std::vector<std::wstring> metadataLossOnSave(const ImageInfo& info, const std::wstring& sourceExt, const std::wstring& targetExt);
+    bool ok() const { return error.ok(); }
+    explicit operator bool() const { return ok(); }
+};
+
+// 存檔。格式依副檔名決定。先寫到暫存檔再取代原檔，失敗不動原檔。JPEG 品質固定 0.9，WebP 有損、品質 90。
+// 存不了透明的格式（見 extensionKeepsTransparency）先疊在白底上。不丟例外。
+SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptions& opt = {});
+
+// source 格式的檔存成 target 格式時，section 這種區塊帶不帶得過去。同格式全部帶。
+// 存檔（saveImage）與事前的警告（metadataLossOnSave）都看這一個函式。
+bool metadataCarried(ImageFormat source, ImageFormat target, MetaSectionId section);
+// ICC profile 帶不帶得過去（BMP 不行，其他都行）。
+bool iccCarried(ImageFormat source, ImageFormat target);
+
+// 另存成 target 格式時，來源有而帶不過去的區塊名（英文翻譯 key，例如 L"Exif"、L"IPTC"、L"ICC"）。
+// TIFF / Exif / GPS / Interoperability 這一家合併成一項 L"Exif"。同格式回傳空。info 是來源檔讀出來的資訊。
+std::vector<std::wstring> metadataLossOnSave(const ImageInfo& info, ImageFormat target);
 
 // 手動修補 EXIF（TIFF 結構的位元組）：Orientation 改 1、sizeChanged 時改 Exif 的 PixelXDimension / PixelYDimension、
 // 切掉 IFD1（內嵌縮圖）。給 WebP 路徑用；結構不合法時原樣不動。公開是為了測試。
 void patchExifTiff(std::vector<uint8_t>& tiff, bool sizeChanged, int newW, int newH);
-
-// 存檔用的副檔名是不是支援寫出的格式。
-bool canSaveExtension(const std::wstring& ext);
-// 這個副檔名存檔時留得住透明（PNG、TIFF、WebP）。JPEG、BMP 不行。
-bool extensionKeepsTransparency(const std::wstring& ext);
 
 } // namespace mp

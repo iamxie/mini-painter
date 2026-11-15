@@ -8,6 +8,13 @@ namespace mp {
 // 一本書 = 直接底下有圖片的資料夾（子資料夾、裡面的壓縮檔都不算它的一部分），或一個壓縮檔（整包攤平算一本）。
 // 書架 = 這本書所在那一層裡所有的書，依檔案總管的自然排序。只找同一層，不往上爬、不往下鑽。
 
+// 要開的路徑是什麼。Archive：副檔名是壓縮檔，或不是圖片副檔名但檔頭是壓縮檔。Folder：存在的資料夾。
+// 其他（含不存在的路徑）都當成 Image，讓讀圖那一步去報錯。
+enum class PathKind { Image, Folder, Archive };
+PathKind classifyPath(const std::wstring& path);
+// 開一個資料夾時先開哪一個：裡面的第一張圖（自然排序）；沒有散圖就是第一本書（子資料夾或壓縮檔）；都沒有回空字串。
+std::wstring firstInFolder(const std::wstring& dir);
+
 // dir 直接底下（不遞迴）有沒有支援格式的圖片。
 bool hasImageFiles(const std::wstring& dir);
 

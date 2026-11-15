@@ -1,6 +1,4 @@
 #pragma once
-#include <windows.h>
-
 #include <cstdint>
 #include <string>
 
@@ -33,12 +31,12 @@ public:
     // 建資料夾並鎖住。失敗回傳 false（root 不可寫）。
     bool create(const std::wstring& root);
     void release();
-    bool valid() const { return lock_ != INVALID_HANDLE_VALUE; }
+    bool valid() const { return lock_ != nullptr; }
     const std::wstring& path() const { return path_; }
 
 private:
     std::wstring path_;
-    HANDLE lock_ = INVALID_HANDLE_VALUE;
+    void* lock_ = nullptr; // lock 檔的 HANDLE；nullptr = 沒有（標頭不 include <windows.h>）
 };
 
 // 資料夾名稱是不是 InstanceTempDir::create 建的格式：<pid 十進位>-<8 位十六進位>。

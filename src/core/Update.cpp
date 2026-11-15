@@ -10,25 +10,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include "core/AppInfo.h"
+#include "core/PathUtil.h"
+#include "core/TextUtil.h"
+
 namespace mp {
 
 const wchar_t* const kDefaultUpdateUrl = L"https://api.github.com/repos/iamxie/mini-painter/releases/latest";
 
 namespace {
-
-std::wstring utf8ToWide(const std::string& s) {
-    if (s.empty()) return L"";
-    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
-    std::wstring out(static_cast<size_t>(n), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
-    return out;
-}
-
-std::wstring joinPath(const std::wstring& a, const std::wstring& b) {
-    if (a.empty()) return b;
-    if (a.back() == L'\\' || a.back() == L'/') return a + b;
-    return a + L"\\" + b;
-}
 
 bool fileExists(const std::wstring& p) {
     DWORD a = GetFileAttributesW(p.c_str());
@@ -291,16 +281,12 @@ std::vector<unsigned long> otherProcessesOfImage(const std::wstring& exePath, un
 namespace {
 
 void listFiles(const std::wstring& root, const std::wstring& rel, std::vector<std::wstring>& out) {
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileW(joinPath(joinPath(root, rel), L"*").c_str(), &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        std::wstring r = rel.empty() ? fd.cFileName : rel + L"\\" + fd.cFileName;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) listFiles(root, r, out);
+    forEachDirEntry(joinPath(root, rel), [&](const DirEntry& e) {
+        std::wstring r = rel.empty() ? e.name : rel + L"\\" + e.name;
+        if (e.directory) listFiles(root, r, out);
         else out.push_back(r);
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+        return true;
+    });
 }
 
 void rollback(std::vector<InstallStep>& steps) {
@@ -321,7 +307,7 @@ std::vector<InstallStep> planInstall(const std::wstring& stagingDir, const std::
     for (const auto& r : rels) {
         InstallStep s;
         s.src = joinPath(stagingDir, r);
-        s.dst = joinPath(appDir, _wcsicmp(r.c_str(), L"mpainter.exe") == 0 ? exeName : r);
+        s.dst = joinPath(appDir, _wcsicmp(r.c_str(), kPackageExeName) == 0 ? exeName : r);
         steps.push_back(s);
     }
     return steps;
@@ -366,21 +352,18 @@ bool applyInstall(std::vector<InstallStep>& steps, std::wstring& error) {
 int removeOldFiles(const std::wstring& dir) {
     int failed = 0;
     for (const std::wstring& d : {dir, joinPath(dir, L"lang")}) {
-        WIN32_FIND_DATAW fd;
-        HANDLE h = FindFirstFileW(joinPath(d, L"*.old*").c_str(), &fd);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        do {
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-            std::wstring name = fd.cFileName;
+        forEachDirEntry(d, [&](const DirEntry& e) {
+            if (e.directory) return true;
+            const std::wstring& name = e.name;
             size_t pos = name.rfind(L".old");
-            if (pos == std::wstring::npos || pos == 0) continue;
+            if (pos == std::wstring::npos || pos == 0) return true;
             bool digits = true;
             for (size_t i = pos + 4; i < name.size(); ++i) digits = digits && iswdigit(name[i]);
-            if (!digits) continue;
-            if (!fileExists(joinPath(d, name.substr(0, pos)))) continue; // 不是換掉的舊檔，不碰
+            if (!digits) return true;
+            if (!fileExists(joinPath(d, name.substr(0, pos)))) return true; // 不是換掉的舊檔，不碰
             if (!DeleteFileW(joinPath(d, name).c_str())) ++failed;
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
+            return true;
+        }, L"*.old*");
     }
     return failed;
 }

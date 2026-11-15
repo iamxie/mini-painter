@@ -48,6 +48,14 @@ struct DrawCtx {
     std::map<uint32_t, MosaicEntry>* mosaicCache = nullptr;
 };
 
+// 霧線沒有真正的模糊，用三層漸淡的描邊模擬：由外到內，每層的不透明度（乘在線條顏色的 alpha 上）與線寬倍數。
+// 實際繪製（Renderer）與線型選單的預覽（Popups）都用這一張表。
+struct FuzzyLayer {
+    float alpha;
+    float widthScale;
+};
+constexpr FuzzyLayer kFuzzyLayers[] = {{0.12f, 3.0f}, {0.25f, 2.0f}, {0.8f, 1.0f}};
+
 class Renderer {
 public:
     bool init();

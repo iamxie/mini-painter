@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "app/UiText.h"
 #include "core/Lang.h"
 #include "render/Renderer.h"
 
@@ -69,8 +70,8 @@ void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const I
     if (st.tab == 0) {
         std::vector<Row> rows;
         rows.push_back({tr(L"File name"), data.fileName});
-        rows.push_back({tr(L"Kind"), data.info.formatName});
-        rows.push_back({tr(L"File size"), formatFileSize(data.fileSize)});
+        rows.push_back({tr(L"Kind"), tr(imageFormatName(data.info.format))});
+        rows.push_back({tr(L"File size"), fileSizeText(data.fileSize)});
         rows.push_back({tr(L"Date created"), data.created});
         rows.push_back({tr(L"Date modified"), data.modified});
         sections.push_back({tr(L"General"), rows});
@@ -79,12 +80,12 @@ void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const I
         rows.push_back({tr(L"Image size"), buf});
         swprintf(buf, 128, tr(L"%.0f × %.0f pixels/inch"), data.dpiX, data.dpiY);
         rows.push_back({tr(L"Image DPI"), buf});
-        rows.push_back({tr(L"Color model"), data.info.colorModel});
+        rows.push_back({tr(L"Color model"), tr(colorModelName(data.info.colorModel))});
         rows.push_back({tr(L"Color profile"), data.info.colorProfile.empty() ? tr(L"(not embedded)") : data.info.colorProfile});
         sections.push_back({tr(L"Image"), rows});
     } else {
         std::vector<Row> rows;
-        rows.push_back({tr(L"Color model"), data.info.colorModel});
+        rows.push_back({tr(L"Color model"), tr(colorModelName(data.info.colorModel))});
         rows.push_back({tr(L"Depth"), std::to_wstring(data.info.bitsPerPixel) + L" " + tr(L"bits")});
         rows.push_back({tr(L"Orientation"), std::to_wstring(data.info.orientation)});
         rows.push_back({tr(L"Pixel height"), std::to_wstring(data.height)});
@@ -93,8 +94,8 @@ void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const I
         sections.push_back({tr(L"General"), rows});
         for (const auto& s : data.info.sections) {
             std::vector<Row> rs;
-            for (const auto& kv : s.items) rs.push_back({kv.first, kv.second});
-            sections.push_back({s.name, rs});
+            for (const auto& item : s.items) rs.push_back({metaLabelText(item), metaValueText(item.value)});
+            sections.push_back({tr(metaSectionName(s.id)), rs});
         }
     }
 

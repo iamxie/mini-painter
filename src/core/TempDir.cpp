@@ -1,17 +1,15 @@
 #include "core/TempDir.h"
 
+#include <windows.h>
+
 #include <random>
 #include <vector>
+
+#include "core/PathUtil.h"
 
 namespace mp {
 
 namespace {
-
-std::wstring joinPath(const std::wstring& a, const std::wstring& b) {
-    if (a.empty()) return b;
-    if (a.back() == L'\\' || a.back() == L'/') return a + b;
-    return a + L"\\" + b;
-}
 
 // 開 lock 檔：share 一律 0，所以同一時間只有一個 handle 開得起來。
 HANDLE openLock(const std::wstring& dir, DWORD disposition, DWORD flags) {
@@ -40,18 +38,12 @@ std::wstring resolveUnzipRoot(const std::wstring& setting, const std::wstring& e
 }
 
 uint64_t directorySize(const std::wstring& dir) {
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileExW(joinPath(dir, L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr,
-                                FIND_FIRST_EX_LARGE_FETCH);
-    if (h == INVALID_HANDLE_VALUE) return 0;
     uint64_t total = 0;
-    do {
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) total += directorySize(joinPath(dir, fd.cFileName));
-        else total += (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        if (e.reparsePoint) return true;
+        total += e.directory ? directorySize(joinPath(dir, e.name)) : e.size;
+        return true;
+    });
     return total;
 }
 
@@ -71,23 +63,15 @@ bool removeDirectoryRecursive(const std::wstring& dir) {
     DWORD attr = GetFileAttributesW(dir.c_str());
     if (attr == INVALID_FILE_ATTRIBUTES) return true;
     if (!(attr & FILE_ATTRIBUTE_DIRECTORY)) return false;
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileExW(joinPath(dir, L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
     bool ok = true;
-    if (h != INVALID_HANDLE_VALUE) {
-        do {
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-            std::wstring p = joinPath(dir, fd.cFileName);
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
-            if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && !(fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
-                ok = removeDirectoryRecursive(p) && ok;
-            else if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
-                ok = RemoveDirectoryW(p.c_str()) && ok; // 連結點只拆連結，不進去刪
-            else
-                ok = DeleteFileW(p.c_str()) && ok;
-        } while (FindNextFileW(h, &fd));
-        FindClose(h);
-    }
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        std::wstring p = joinPath(dir, e.name);
+        if (e.readOnly) SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+        if (e.directory && !e.reparsePoint) ok = removeDirectoryRecursive(p) && ok;
+        else if (e.directory) ok = RemoveDirectoryW(p.c_str()) && ok; // 連結點只拆連結，不進去刪
+        else ok = DeleteFileW(p.c_str()) && ok;
+        return true;
+    });
     SetFileAttributesW(dir.c_str(), FILE_ATTRIBUTE_NORMAL);
     return RemoveDirectoryW(dir.c_str()) && ok;
 }
@@ -114,9 +98,9 @@ bool InstanceTempDir::create(const std::wstring& root) {
 }
 
 void InstanceTempDir::release() {
-    if (lock_ == INVALID_HANDLE_VALUE) return;
+    if (!lock_) return;
     CloseHandle(lock_); // DELETE_ON_CLOSE：lock 檔隨之消失
-    lock_ = INVALID_HANDLE_VALUE;
+    lock_ = nullptr;
     removeDirectoryRecursive(path_);
     path_.clear();
 }
@@ -134,16 +118,11 @@ bool isInstanceTempDirName(const std::wstring& name) {
 }
 
 int sweepStaleTempDirs(const std::wstring& root) {
-    WIN32_FIND_DATAW fd;
-    HANDLE h = FindFirstFileExW(joinPath(root, L"*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
-    if (h == INVALID_HANDLE_VALUE) return 0;
     std::vector<std::wstring> stale;
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
+    forEachDirEntry(root, [&](const DirEntry& e) {
         // root 是使用者可以改的設定，可能指到本來就有東西的資料夾：只認自己建的名稱，其他的不碰。
-        if (!isInstanceTempDirName(fd.cFileName)) continue;
-        std::wstring dir = joinPath(root, fd.cFileName);
+        if (!e.directory || !isInstanceTempDirName(e.name)) return true;
+        std::wstring dir = joinPath(root, e.name);
         HANDLE lock = openLock(dir, OPEN_EXISTING, 0);
         if (lock != INVALID_HANDLE_VALUE) {
             CloseHandle(lock); // 開得起來 = 沒人持有
@@ -152,8 +131,8 @@ int sweepStaleTempDirs(const std::wstring& root) {
             stale.push_back(dir); // 沒有 lock 檔（主人當掉後系統刪了它）
         }
         // ERROR_SHARING_VIOLATION：另一個 mpainter 還在用，跳過。其他錯誤（沒權限…）看不出狀況，也跳過。
-    } while (FindNextFileW(h, &fd));
-    FindClose(h);
+        return true;
+    });
     int removed = 0;
     for (const auto& d : stale)
         if (removeDirectoryRecursive(d)) ++removed;

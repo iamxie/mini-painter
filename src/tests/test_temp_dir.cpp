@@ -3,23 +3,15 @@
 #include <windows.h>
 
 #include "core/TempDir.h"
+#include "test_util.h"
 
 using namespace mp;
 
 namespace {
-std::wstring testRoot(const wchar_t* name) {
-    wchar_t dir[MAX_PATH];
-    GetTempPathW(MAX_PATH, dir);
-    return std::wstring(dir) + L"mp_test_unzip_" + name;
-}
-void writeFile(const std::wstring& path, const char* text) {
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    REQUIRE(h != INVALID_HANDLE_VALUE);
-    DWORD w = 0;
-    WriteFile(h, text, static_cast<DWORD>(strlen(text)), &w, nullptr);
-    CloseHandle(h);
-}
-bool exists(const std::wstring& path) { return GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; }
+using mp::test::exists;
+// 這個檔的測試自己決定資料夾何時建立，所以只拿路徑。
+std::wstring testRoot(const wchar_t* name) { return mp::test::tempPath((std::wstring(L"unzip_") + name).c_str()); }
+void writeFile(const std::wstring& path, const char* text) { mp::test::writeBytes(path, text); }
 } // namespace
 
 TEST_CASE("defaultUnzipRoot / fallbackUnzipRoot / resolveUnzipRoot") {

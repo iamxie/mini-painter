@@ -12,56 +12,26 @@
 #include <thread>
 #include <vector>
 
-#include <bit7z/bit7zlibrary.hpp>
-#include <bit7z/bitarchivewriter.hpp>
-#include <bit7z/bitformat.hpp>
 
 #include "core/Archive.h"
 #include "core/TempDir.h"
 #include "core/Update.h"
+#include "test_archive_util.h"
+#include "test_util.h"
 
 using namespace mp;
 
 namespace {
 
-std::wstring exeDirOfTests() {
-    wchar_t exe[MAX_PATH];
-    GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    std::wstring p = exe;
-    return p.substr(0, p.find_last_of(L"\\/") + 1);
-}
+using mp::test::exists;
+using mp::test::writeBytes;
 
-std::wstring testRoot(const wchar_t* name) {
-    wchar_t dir[MAX_PATH];
-    GetTempPathW(MAX_PATH, dir);
-    std::wstring root = std::wstring(dir) + L"mp_test_update_" + name;
-    removeDirectoryRecursive(root);
-    REQUIRE(createDirectories(root));
-    return root;
-}
+std::wstring exeDirOfTests() { return mp::test::exeDir(); }
 
-std::string readBytes(const std::wstring& path) {
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
-    if (f == INVALID_HANDLE_VALUE) return "<missing>";
-    std::string bytes;
-    char buf[4096];
-    DWORD got = 0;
-    while (ReadFile(f, buf, sizeof(buf), &got, nullptr) && got > 0) bytes.append(buf, got);
-    CloseHandle(f);
-    return bytes;
-}
+std::wstring testRoot(const wchar_t* name) { return mp::test::freshDir((std::wstring(L"update_") + name).c_str()); }
 
-void writeBytes(const std::wstring& path, const std::string& bytes) {
-    size_t slash = path.find_last_of(L"\\/");
-    REQUIRE(createDirectories(path.substr(0, slash)));
-    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
-    REQUIRE(f != INVALID_HANDLE_VALUE);
-    DWORD w = 0;
-    WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &w, nullptr);
-    CloseHandle(f);
-}
-
-bool exists(const std::wstring& p) { return GetFileAttributesW(p.c_str()) != INVALID_FILE_ATTRIBUTES; }
+// 讀不到回 "<missing>"，讓「檔案不該存在」和「內容不對」在失敗訊息裡分得出來。
+std::string readBytes(const std::wstring& path) { return exists(path) ? mp::test::readBytes(path) : "<missing>"; }
 
 // 迷你 HTTP 伺服器：127.0.0.1 的隨機 port，路徑 → 整段原始回應。每個連線回一次就關。
 class TestServer {
@@ -413,17 +383,12 @@ TEST_CASE("applyInstall：已載入的 DLL 能改名換掉（執行中的 exe �
 }
 
 TEST_CASE("extractAll：照資料夾結構整包解開（給發佈包用）") {
-    REQUIRE(loadArchiveLibrary(exeDirOfTests() + L"7z.dll"));
+    mp::test::requireArchiveLibrary();
     std::wstring root = testRoot(L"extractall");
     std::wstring zip = root + L"\\pkg.zip";
     {
-        static bit7z::Bit7zLibrary lib(bit7z::to_tstring(exeDirOfTests() + L"7z.dll"));
-        bit7z::BitArchiveWriter w(lib, bit7z::BitFormat::Zip);
-        std::vector<bit7z::buffer_t> bufs = {{'e', 'x', 'e'}, {'z', 'h'}, {'r'}};
-        w.addFile(bufs[0], "mpainter.exe");
-        w.addFile(bufs[1], "lang/zh-TW.txt");
-        w.addFile(bufs[2], "readme.txt");
-        w.compressTo(bit7z::to_tstring(zip));
+        mp::test::makeArchive(zip, bit7z::BitFormat::Zip,
+                              {{"mpainter.exe", "exe"}, {"lang/zh-TW.txt", "zh"}, {"readme.txt", "r"}});
     }
     std::wstring err;
     REQUIRE(extractAll(zip, root + L"\\out", err));

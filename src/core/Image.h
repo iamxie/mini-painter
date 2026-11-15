@@ -32,4 +32,9 @@ using ImagePtr = std::shared_ptr<const Image>;
 void premultiply(Image& img);
 void unpremultiply(Image& img);
 
+// 有沒有 alpha 不是 255 的像素（premultiplied 或 straight 都適用）。
+bool hasTransparency(const Image& img);
+// premultiplied 的圖疊在白底上（原地）：透明處變白，半透明處和白色混合，結果全部不透明。
+void compositeOnWhite(Image& img);
+
 } // namespace mp

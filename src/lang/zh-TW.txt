@@ -31,6 +31,8 @@ Follow System=跟隨系統
 This folder has no supported images=這個資料夾沒有支援的圖片
 Cannot open: %s=無法開啟：%s
 “%s” has unsaved changes. Save them?=「%s」有未儲存的變更。要儲存嗎？
+Either way, the undo history of this image is cleared.=不論存不存，這張圖的復原紀錄都會清空。
+Moving to another image clears the undo history of this one, so these changes can no longer be undone. Continue?=換到別張圖後，這張圖的復原紀錄會清空，之後不能再復原。要繼續嗎？
 Save failed: %s=儲存失敗：%s
 Image files=圖片檔
 All files=所有檔案
@@ -90,6 +92,7 @@ Shift Pairing by One Page=錯開一頁
 Up/Down at the end of a page turns the page=捲到底再按 ↓ 翻下一頁、捲到頂再按 ↑ 翻上一頁
 Warn before saving to a format that drops metadata (Exif, ICC…)=輸出成裝不下 metadata（Exif、ICC…）的格式時先提醒
 Saving as %s will drop this metadata:\n%s\n\nThe pixels are kept. Continue?=輸出成 %s 會丟失這些資料：\n%s\n\n像素不受影響。要繼續嗎？
+This image has transparent areas. %s cannot keep transparency, so they will become white. Continue?=這張圖有透明的地方。%s 存不了透明，透明的地方會變成白色。要繼續嗎？
 Don't ask again=不再提醒
 
 # --- 關於 ---

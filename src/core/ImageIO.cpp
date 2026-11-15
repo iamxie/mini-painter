@@ -815,15 +815,6 @@ bool isWebPFile(const std::wstring& path) {
     return got == 12 && memcmp(hdr, "RIFF", 4) == 0 && memcmp(hdr + 8, "WEBP", 4) == 0;
 }
 
-bool hasTransparency(const Image& img) {
-    for (int y = 0; y < img.height; ++y) {
-        const uint8_t* p = img.row(y) + 3;
-        for (int x = 0; x < img.width; ++x, p += 4)
-            if (*p != 255) return true;
-    }
-    return false;
-}
-
 bool writeFileBytes(const std::wstring& path, const uint8_t* data, size_t size) {
     HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) return false;
@@ -1071,12 +1062,18 @@ bool canSaveExtension(const std::wstring& ext) {
            ext == L".bmp" || ext == L".dib" || ext == L".tif" || ext == L".tiff" || ext == L".webp";
 }
 
+bool extensionKeepsTransparency(const std::wstring& ext) {
+    return ext == L".png" || ext == L".tif" || ext == L".tiff" || ext == L".webp";
+}
+
 bool saveImage(const Image& img, const std::wstring& path, std::wstring* error, const SaveOptions& opt) {
     ComInit com;
     std::wstring ext = extensionOf(path);
     if (!canSaveExtension(ext)) { if (error) { wchar_t b[128]; swprintf(b, 128, tr(L"Saving this format is not supported: %s"), ext.c_str()); *error = b; } return false; }
 
     Image straight = img;
+    // JPEG 存不了 alpha；WIC 寫的 BMP 沒有 alpha mask，讀回當成不透明。直接丟掉 alpha 時透明處會變黑，所以先鋪白底。
+    if (!extensionKeepsTransparency(ext)) compositeOnWhite(straight);
     unpremultiply(straight);
     const bool alpha = hasTransparency(straight);
     std::wstring tmp = path + L".mp-saving.tmp";

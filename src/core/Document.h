@@ -30,6 +30,9 @@ int undoMemoryFromText(const std::wstring& text, int fallback);
 // 文字 → [lo, hi] 的整數（設定面板的數字欄位與 ini 共用）。不是數字回 fallback；位數多到 int 裝不下時，正的當成 hi、負的當成 lo。
 int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi);
 
+// 換到別張圖之前要問什麼：有沒存的修改 → 問存檔；存過但還有 undo / redo → 提醒復原紀錄會清空；都沒有 → 不問。
+enum class LeavePrompt { None, AskSave, WarnHistory };
+
 // 文件 = 目前狀態 + undo / redo 堆疊。每個完成的編輯動作呼叫 commit 一次。
 class Document {
 public:
@@ -72,6 +75,10 @@ public:
 
     bool dirty() const { return cur_.serial != savedSerial_; }
     void markSaved() { savedSerial_ = cur_.serial; }
+    LeavePrompt leavePrompt() const {
+        if (dirty()) return LeavePrompt::AskSave;
+        return canUndo() || canRedo() ? LeavePrompt::WarnHistory : LeavePrompt::None;
+    }
 
     // 配給新物件的 id。
     uint32_t nextId() { return ++lastId_; }

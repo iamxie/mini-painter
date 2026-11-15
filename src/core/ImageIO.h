@@ -29,6 +29,7 @@ struct SaveOptions {
 };
 
 // 存檔。格式依副檔名決定。先寫到暫存檔再取代原檔。JPEG 品質固定 0.9。
+// 存不了透明的格式（見 extensionKeepsTransparency）先疊在白底上。
 bool saveImage(const Image& img, const std::wstring& path, std::wstring* error, const SaveOptions& opt = {});
 
 // 另存成 targetExt 時，來源有而目標格式裝不下的區塊名（例如 L"Exif"、L"IPTC"、L"ICC"）。
@@ -41,5 +42,7 @@ void patchExifTiff(std::vector<uint8_t>& tiff, bool sizeChanged, int newW, int n
 
 // 存檔用的副檔名是不是支援寫出的格式。
 bool canSaveExtension(const std::wstring& ext);
+// 這個副檔名存檔時留得住透明（PNG、TIFF、WebP）。JPEG、BMP 不行。
+bool extensionKeepsTransparency(const std::wstring& ext);
 
 } // namespace mp

@@ -225,3 +225,25 @@ TEST_CASE("mosaicBlocks 每格取平均，區域夾到圖內") {
     CHECK(mosaicBlocks(img, 5, 5, 5, 9, 4).empty());
     CHECK(mosaicBlocks(img, 0, 0, 8, 8, 0).empty());
 }
+
+TEST_CASE("hasTransparency 與 compositeOnWhite（premultiplied 疊在白底上）") {
+    Image img(3, 1);
+    set(img, 0, 0, 0, 0, 0, 0);       // 全透明
+    set(img, 1, 0, 0, 0, 128, 128);   // 半透明紅
+    set(img, 2, 0, 255, 0, 0, 255);   // 不透明藍
+    CHECK(hasTransparency(img));
+    compositeOnWhite(img);
+    CHECK_FALSE(hasTransparency(img));
+    auto is = [&](int x, int b, int g, int r) {
+        const uint8_t* p = img.px(x, 0);
+        return p[0] == b && p[1] == g && p[2] == r && p[3] == 255;
+    };
+    CHECK(is(0, 255, 255, 255));
+    CHECK(is(1, 127, 127, 255));
+    CHECK(is(2, 255, 0, 0));
+
+    Image opaque(2, 2);
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 2; ++x) set(opaque, x, y, 1, 2, 3);
+    CHECK_FALSE(hasTransparency(opaque));
+}

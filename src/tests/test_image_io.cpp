@@ -82,6 +82,60 @@ TEST_CASE("BMP 與 TIFF 存檔再讀回") {
     }
 }
 
+// 紅色三區，各 16 px 寬（對齊 JPEG 的 16×16 MCU，色度取樣不會混到隔壁區）：全透明 / alpha 128 / 不透明。premultiplied。
+static Image threeZoneRed() {
+    Image img(48, 16);
+    for (int y = 0; y < img.height; ++y)
+        for (int x = 0; x < img.width; ++x) {
+            uint8_t a = x < 16 ? 0 : x < 32 ? 128 : 255;
+            uint8_t* p = img.px(x, y);
+            p[0] = 0;
+            p[1] = 0;
+            p[2] = a; // 紅 255 乘上 alpha
+            p[3] = a;
+        }
+    return img;
+}
+
+static bool closeTo(const uint8_t* p, int b, int g, int r, int tol) {
+    return std::abs(p[0] - b) <= tol && std::abs(p[1] - g) <= tol && std::abs(p[2] - r) <= tol && p[3] == 255;
+}
+
+TEST_CASE("透明圖存成 JPEG / BMP：鋪白底，半透明處和白色混合") {
+    Image img = threeZoneRed();
+    for (auto* name : {L"t.jpg", L"t.bmp"}) {
+        bool jpeg = std::wstring(name) == L"t.jpg";
+        int tol = jpeg ? 6 : 0;
+        auto path = tempPath(name);
+        REQUIRE(saveImage(img, path, nullptr));
+        auto r = loadImage(path);
+        REQUIRE(r.image);
+        CHECK(r.info.bitsPerPixel == 24);
+        CHECK(closeTo(r.image->px(8, 8), 255, 255, 255, tol));  // 透明 → 白
+        CHECK(closeTo(r.image->px(24, 8), 127, 127, 255, tol)); // 半透明紅 + 白
+        CHECK(closeTo(r.image->px(40, 8), 0, 0, 255, tol));     // 不透明紅不變
+        DeleteFileW(path.c_str());
+    }
+}
+
+TEST_CASE("透明圖存成 PNG / TIFF：透明照留") {
+    Image img = threeZoneRed();
+    for (auto* name : {L"t.png", L"t.tif"}) {
+        auto path = tempPath(name);
+        REQUIRE(saveImage(img, path, nullptr));
+        auto r = loadImage(path);
+        REQUIRE(r.image);
+        CHECK(r.info.bitsPerPixel == 32);
+        CHECK(maxDiff(*r.image, img) <= 1);
+        DeleteFileW(path.c_str());
+    }
+}
+
+TEST_CASE("extensionKeepsTransparency") {
+    for (auto* e : {L".png", L".tif", L".tiff", L".webp"}) CHECK(extensionKeepsTransparency(e));
+    for (auto* e : {L".jpg", L".jpeg", L".jpe", L".jfif", L".bmp", L".dib"}) CHECK_FALSE(extensionKeepsTransparency(e));
+}
+
 TEST_CASE("WebP 存檔再讀回（含 alpha）") {
     Image img = testImage(true);
     auto path = tempPath(L"a.webp");

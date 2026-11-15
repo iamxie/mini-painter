@@ -213,9 +213,9 @@ BEGIN
     LTEXT           "Installing closes mpainter and opens it again. You will be asked to save unsaved changes first. Undo history is cleared, and an archive reopens at its first page.", -1, 50, 48, 262, 28
     LTEXT           "Release notes:", -1, 50, 80, 262, 10
     EDITTEXT        IDC_UPD_NOTES, 50, 92, 262, 84, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL
-    PUSHBUTTON      "Skip This Version", IDC_UPD_SKIP, 50, 186, 84, 16
-    PUSHBUTTON      "Remind Me Later", IDC_UPD_LATER, 150, 186, 76, 16
-    DEFPUSHBUTTON   "Install Update", IDC_UPD_INSTALL, 232, 186, 80, 16
+    PUSHBUTTON      "Skip This Version", IDC_UPD_SKIP, 10, 186, 100, 16
+    PUSHBUTTON      "Remind Me Later", IDC_UPD_LATER, 116, 186, 80, 16
+    DEFPUSHBUTTON   "Install Update", IDC_UPD_INSTALL, 202, 186, 110, 16
 END
 
 // 檔案總管「內容 > 詳細資料」看到的版本資訊。版本號來自 CMake 產生的 version.h。

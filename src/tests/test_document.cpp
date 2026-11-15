@@ -43,6 +43,32 @@ TEST_CASE("Document：存檔後仍可 undo，undo 回去又變 dirty") {
     CHECK_FALSE(d.dirty());
 }
 
+TEST_CASE("Document：leavePrompt 換圖前要問什麼") {
+    Document empty;
+    CHECK(empty.leavePrompt() == LeavePrompt::None);
+
+    Document d;
+    d.reset(img(4, 4));
+    CHECK(d.leavePrompt() == LeavePrompt::None); // 剛開的圖：沒修改、沒紀錄
+
+    d.commitItems({makeShape(Kind::Rect, {2, 2}, 4, StrokeStyle{})});
+    CHECK(d.leavePrompt() == LeavePrompt::AskSave); // 沒存的修改
+
+    d.markSaved();
+    CHECK(d.leavePrompt() == LeavePrompt::WarnHistory); // 存過了，但還能 undo
+
+    d.undo();
+    CHECK(d.leavePrompt() == LeavePrompt::AskSave); // undo 到存檔前：又是沒存的修改
+
+    d.markSaved();
+    CHECK_FALSE(d.canUndo());
+    CHECK(d.canRedo());
+    CHECK(d.leavePrompt() == LeavePrompt::WarnHistory); // 只剩 redo 也算紀錄
+
+    d.reset(img(4, 4));
+    CHECK(d.leavePrompt() == LeavePrompt::None); // 換圖後清空
+}
+
 TEST_CASE("Document：新的 commit 清掉 redo") {
     Document d;
     d.reset(img(4, 4));

@@ -382,7 +382,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_DROPFILES: {
         HDROP drop = reinterpret_cast<HDROP>(wp);
         wchar_t buf[MAX_PATH];
-        if (DragQueryFileW(drop, 0, buf, MAX_PATH) && confirmDiscard()) openPath(buf);
+        if (DragQueryFileW(drop, 0, buf, MAX_PATH) && confirmLeaveImage()) openPath(buf);
         DragFinish(drop);
         return 0;
     }
@@ -607,10 +607,17 @@ void MainWindow::rebuildProfileMenu() {
 }
 
 void MainWindow::switchProfile(const Profile& p) {
+    Settings before = settings_;
     applyProfile(settings_, p);
     spreadsKey_.clear(); // 兩頁並排的選項可能變了，配對重算
     disarmJump();
-    setViewMode(viewModeFromString(settings_.viewMode)); // 會存 ini、重算配對、重新符合、更新標題、重畫
+    if (!setViewMode(viewModeFromString(settings_.viewMode))) { // 會存 ini、重算配對、重新符合、更新標題、重畫
+        // 套用後要換掉正在改的圖，使用者取消：檢視值回到套用前
+        settings_ = before;
+        spreadsKey_.clear();
+        if (twoPage()) updateSpreads();
+        updateTitle();
+    }
 }
 
 void MainWindow::saveCurrentToProfile() {
@@ -733,19 +740,29 @@ void MainWindow::onCommand(int id) {
         repaint();
         break;
     case IDM_FIRSTALONE:
-    case IDM_SHIFTONE:
-        if (id == IDM_FIRSTALONE) { settings_.firstPageAlone = !settings_.firstPageAlone; saveSettingsQuiet(); updateTitle(); }
-        else shiftOne_ = !shiftOne_;
+    case IDM_SHIFTONE: {
+        bool& flag = id == IDM_FIRSTALONE ? settings_.firstPageAlone : shiftOne_;
+        flag = !flag;
         if (twoPage()) {
-            // 配對變了：重算，目前這頁可能變成某屏的第二頁，重開到那屏的第一頁。
+            // 配對變了：重算，目前這頁可能變成某屏的第二頁，重開到那屏的第一頁（換圖前先問，取消就不改）。
             spreadsKey_.clear();
             updateSpreads();
+            if (!confirmSpreadMove()) {
+                flag = !flag;
+                spreadsKey_.clear();
+                updateSpreads();
+                break;
+            }
+        }
+        if (id == IDM_FIRSTALONE) { saveSettingsQuiet(); updateTitle(); }
+        if (twoPage()) {
             int cur = currentSpread();
             if (cur >= 0 && spreads_[static_cast<size_t>(cur)].first != nav_.index()) openPath(nav_.at(spreads_[static_cast<size_t>(cur)].first));
             else { loadSecond(); fit_ = true; fitToView(); updateTitle(); repaint(); }
         }
         schedulePrefetch();
         break;
+    }
     case IDM_PREV: goPrev(); break;
     case IDM_NEXT: goNext(); break;
     case IDM_AUTONEXT:
@@ -1104,15 +1121,30 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
     return openPath(openLast ? r.files.back() : r.files.front());
 }
 
-bool MainWindow::confirmDiscard() {
+bool MainWindow::confirmDiscard(bool leavingImage) {
     endTextEdit(true);
     if (!doc_.image() || !doc_.dirty() || readOnly()) return true;
     wchar_t text[MAX_PATH + 128];
     swprintf(text, MAX_PATH + 128, tr(L"“%s” has unsaved changes. Save them?"), fileNameOf(path_).c_str());
-    int r = MessageBoxW(hwnd_, text, kAppName, MB_YESNOCANCEL | MB_ICONQUESTION);
+    std::wstring msg = text;
+    if (leavingImage) msg += std::wstring(L"\n\n") + tr(L"Either way, the undo history of this image is cleared.");
+    int r = MessageBoxW(hwnd_, msg.c_str(), kAppName, MB_YESNOCANCEL | MB_ICONQUESTION);
     if (r == IDCANCEL) return false;
     if (r == IDYES) return save();
     return true;
+}
+
+// 壓縮檔內唯讀：旋轉當成看圖動作，換圖不問。
+bool MainWindow::confirmLeaveImage() {
+    endTextEdit(true);
+    if (!doc_.image() || readOnly()) return true;
+    switch (doc_.leavePrompt()) {
+    case LeavePrompt::AskSave: return confirmDiscard(true);
+    case LeavePrompt::WarnHistory:
+        return askOk(hwnd_, tr(L"Moving to another image clears the undo history of this one, so these changes can no longer be undone. Continue?"),
+                     TD_WARNING_ICON, true);
+    default: return true;
+    }
 }
 
 bool MainWindow::save() {
@@ -1170,14 +1202,20 @@ bool MainWindow::pickSavePath(std::wstring& out, bool exporting) {
         static const wchar_t* exts[] = {L".png", L".jpg", L".bmp", L".tif", L".webp"};
         newPath += exts[std::clamp<int>(static_cast<int>(ofn.nFilterIndex) - 1, 0, 4)];
     }
+    std::wstring extUpper = extensionOf(newPath).substr(1);
+    for (auto& ch : extUpper) ch = static_cast<wchar_t>(towupper(ch));
+    // 透明圖存成 JPEG / BMP：存檔時會鋪白底，先說。只看底圖，標註剛好蓋住所有透明處時也會問。
+    if (!extensionKeepsTransparency(extensionOf(newPath)) && hasTransparency(*doc_.image())) {
+        if (!askOk(hwnd_, fmt1(L"This image has transparent areas. %s cannot keep transparency, so they will become white. Continue?", extUpper),
+                   TD_WARNING_ICON, true))
+            return false;
+    }
     // 跨格式：目標裝不下的 metadata 區塊先列出來問。
     if (settings_.warnMetadataLoss) {
         auto lost = metadataLossOnSave(infoData_.info, extensionOf(loadedFrom_), extensionOf(newPath));
         if (!lost.empty()) {
             std::wstring list;
             for (size_t i = 0; i < lost.size(); ++i) list += (i ? L", " : L"") + lost[i];
-            std::wstring extUpper = extensionOf(newPath).substr(1);
-            for (auto& ch : extUpper) ch = static_cast<wchar_t>(towupper(ch));
             wchar_t body[512];
             swprintf(body, 512, tr(L"Saving as %s will drop this metadata:\n%s\n\nThe pixels are kept. Continue?"), extUpper.c_str(), list.c_str());
             TASKDIALOGCONFIG td{sizeof(td)};
@@ -1225,7 +1263,7 @@ bool MainWindow::exportAs() {
 }
 
 void MainWindow::openDialog() {
-    if (!confirmDiscard()) return;
+    if (!confirmLeaveImage()) return;
     wchar_t buf[MAX_PATH] = L"";
     OPENFILENAMEW ofn{sizeof(ofn)};
     ofn.hwndOwner = hwnd_;
@@ -1264,7 +1302,7 @@ void MainWindow::step(int dir) {
         if (dir > 0 ? nav_.hasNext() : nav_.hasPrev()) target = nav_.index() + dir;
     }
     if (target < 0) { bookEdge(dir); return; }
-    if (!confirmDiscard()) return;
+    if (!confirmLeaveImage()) return;
     lastDir_ = dir;
     openPath(nav_.at(target));
 }
@@ -1280,7 +1318,7 @@ void MainWindow::bookEdge(int dir) {
     if (armedDir_ == dir && !armedTarget_.empty()) {
         std::wstring target = armedTarget_;
         disarmJump();
-        if (confirmDiscard()) openBook(target, dir);
+        if (confirmLeaveImage()) openBook(target, dir);
         return;
     }
     disarmJump();
@@ -1415,6 +1453,12 @@ void MainWindow::updateSpreads() {
 
 int MainWindow::currentSpread() const { return spreadIndexOf(spreads_, nav_.index()); }
 
+bool MainWindow::confirmSpreadMove() {
+    int cur = currentSpread();
+    if (cur < 0 || spreads_[static_cast<size_t>(cur)].first == nav_.index()) return true;
+    return confirmLeaveImage();
+}
+
 void MainWindow::loadSecond() {
     int cur = currentSpread();
     std::wstring path = cur >= 0 ? nav_.at(spreads_[static_cast<size_t>(cur)].second) : L"";
@@ -1510,7 +1554,12 @@ const wchar_t* MainWindow::viewModeToString(ViewMode m) {
     }
 }
 
-void MainWindow::setViewMode(ViewMode m) {
+bool MainWindow::setViewMode(ViewMode m) {
+    if (m == ViewMode::TwoPage && doc_.image()) {
+        // 目前這頁會變成某屏的第二頁時，要改開那屏的第一頁：先照換圖的規則問。
+        updateSpreads();
+        if (!confirmSpreadMove()) return false;
+    }
     bool wasTwo = viewMode_ == ViewMode::TwoPage;
     viewMode_ = m;
     settings_.viewMode = viewModeToString(m);
@@ -1530,7 +1579,7 @@ void MainWindow::setViewMode(ViewMode m) {
         if (doc_.image()) {
             updateSpreads();
             int cur = currentSpread();
-            if (cur >= 0 && spreads_[static_cast<size_t>(cur)].first != nav_.index()) { openPath(nav_.at(spreads_[static_cast<size_t>(cur)].first)); return; }
+            if (cur >= 0 && spreads_[static_cast<size_t>(cur)].first != nav_.index()) { openPath(nav_.at(spreads_[static_cast<size_t>(cur)].first)); return true; }
             loadSecond();
         }
     } else if (wasTwo) {
@@ -1543,6 +1592,7 @@ void MainWindow::setViewMode(ViewMode m) {
     updateTitle();
     repaint();
     schedulePrefetch();
+    return true;
 }
 
 // 依檢視模式算 zoom。符合類模式預設不放大小圖，開了「小圖放大」才放大；1:1 永遠不放大。

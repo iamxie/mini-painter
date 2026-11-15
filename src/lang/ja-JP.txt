@@ -50,6 +50,8 @@ Follow System=システムに従う
 This folder has no supported images=このフォルダーには対応する画像がありません
 Cannot open: %s=開けません：%s
 “%s” has unsaved changes. Save them?=「%s」には保存されていない変更があります。保存しますか？
+Either way, the undo history of this image is cleared.=保存してもしなくても、この画像の元に戻す履歴は消えます。
+Moving to another image clears the undo history of this one, so these changes can no longer be undone. Continue?=別の画像に移ると、この画像の元に戻す履歴は消え、これらの変更は元に戻せなくなります。続けますか？
 Save failed: %s=保存に失敗しました：%s
 Image files=画像ファイル
 All files=すべてのファイル
@@ -109,6 +111,7 @@ Shift Pairing by One Page=ページの組を 1 ページずらす
 Up/Down at the end of a page turns the page=ページの端で ↑↓ を押すとページをめくる
 Warn before saving to a format that drops metadata (Exif, ICC…)=メタデータ（Exif、ICC…）を保持できない形式で保存する前に警告する
 Saving as %s will drop this metadata:\n%s\n\nThe pixels are kept. Continue?=%s で保存すると次のメタデータが失われます：\n%s\n\n画像のピクセルは保持されます。続けますか？
+This image has transparent areas. %s cannot keep transparency, so they will become white. Continue?=この画像には透明な部分があります。%s は透明を保存できないため、透明な部分は白になります。続けますか？
 Don't ask again=今後は確認しない
 
 # --- バージョン情報 / About ---

@@ -30,7 +30,9 @@ Usage
   file, optionally in another format; the file you are editing stays the original. There
   is no "Save As". Saving keeps the original EXIF, XMP and ICC (Orientation becomes 1
   because the pixels are already upright). Exporting to a format that cannot hold that
-  data (PNG, BMP, ...) asks first.
+  data (PNG, BMP, ...) asks first. JPEG and BMP cannot keep transparency: exporting an image
+  with transparent areas to them asks first, and those areas become white (semi-transparent
+  pixels are blended with white).
 - Up / Down scroll. The View menu picks a view mode: fit to window, fit to width (webtoons),
   fit to height, actual size, two pages side by side (comics: wide images get a screen of
   their own; right-to-left, first page alone and shift-by-one are switches). The mode is
@@ -65,7 +67,9 @@ Modes (settings sets)
   24-megapixel photo keeps about 5 such steps. Steps that only add markup do not count against
   the limit. When the history is almost full (one more step may drop the earliest one), a note
   appears once in the middle of the window. The undo history of an image is dropped when you
-  move to another image.
+  move to another image, so mpainter asks first: whether to save unsaved changes, or, after
+  saving, whether to drop the history (Cancel stays on the image). Rotating inside an
+  archive does not ask.
 - While you read, the next page (the next pair in two-page view) is decoded in the background and
   the page you just left is kept, so turning pages either way does not wait. With "Continue to
   the next folder or archive at the end" on, the next book is prepared when you reach the last

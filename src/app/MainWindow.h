@@ -73,7 +73,9 @@ private:
     // 預先解碼：告訴背景目前這屏、翻頁方向的下一屏、上一屏，到一本的盡頭時加上換本預備。翻頁、改檢視設定、畫布大小變了時呼叫。
     void schedulePrefetch();
     std::wstring prefetchArchiveRoot(); // 換本預開壓縮檔要解到哪（必要時先載 7z.dll、建暫存資料夾）；不能預開回空字串
-    bool confirmDiscard();
+    bool confirmDiscard(bool leavingImage = false); // leavingImage：換圖時多說一句復原紀錄會清空
+    // 換到別張圖之前（翻頁、跳本、拖檔、開啟、兩頁並排換到別頁）：沒存的修改問存檔，存過但還有復原紀錄就提醒會清空。
+    bool confirmLeaveImage();
     bool save();
     bool saveAs();   // 換檔名存，之後編輯的就是新檔（只給 save() 遇到不能原地存的格式時用）
     bool exportAs(); // 輸出成另一個檔，目前編輯的還是原檔；壓縮檔內也能用
@@ -145,7 +147,7 @@ private:
     using ViewMode = mp::ViewMode;
     static ViewMode viewModeFromString(const std::wstring& s);
     static const wchar_t* viewModeToString(ViewMode m);
-    void setViewMode(ViewMode m);
+    bool setViewMode(ViewMode m); // 切到兩頁並排要換掉正在改的圖、使用者取消時回 false，什麼都不改
     bool scrollBy(float dx, float dy); // 回傳有沒有真的動
     void scrollKey(int vk);            // 上下鍵：捲動，必要時翻頁
 
@@ -153,6 +155,7 @@ private:
     bool twoPage() const { return viewMode_ == ViewMode::TwoPage && doc_.image() != nullptr; }
     void updateSpreads();          // 依資料夾清單與每頁寬高算配對（結果快取）
     int currentSpread() const;     // 目前這頁所在的屏，-1 表示不在清單
+    bool confirmSpreadMove();      // spreads_ 算好後：目前這頁不是那屏的第一頁就要換圖，照 confirmLeaveImage 問
     void loadSecond();             // 載入同一屏的另一頁
     float viewW() const;           // 虛擬畫面（圖片座標）的寬高：單頁就是圖片，兩頁是並排後的
     float viewH() const;

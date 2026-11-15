@@ -1173,6 +1173,10 @@ bool MainWindow::writeFlattened(const std::wstring& target) {
         MessageBoxW(hwnd_, fmt1(L"Save failed: %s", err).c_str(), kAppName, MB_ICONERROR);
         return false;
     }
+    // 寬高可能變了（旋轉、裁切、調整尺寸）：兩頁並排的配對要照存好的檔重算。
+    for (auto it = wideCache_.begin(); it != wideCache_.end();)
+        it = _wcsicmp(it->first.c_str(), target.c_str()) == 0 ? wideCache_.erase(it) : std::next(it);
+    spreadsKey_.clear();
     return true;
 }
 

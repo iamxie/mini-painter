@@ -373,6 +373,7 @@ A language change takes effect after mpainter restarts; it asks when this window
 
 # --- 元に戻せる回数の上限 ---
 Undo steps to keep:=元に戻せる回数：
+Undo history is almost full: one more edit may make the earliest step impossible to undo. You can change the limits in Edit > Settings > General.=元に戻す履歴がいっぱいになりそうです。あと 1 回編集すると、最初の操作を元に戻せなくなることがあります。上限は「編集 > 設定 > 一般」で変更できます。
 Memory limit (MB):=メモリ上限（MB）：
 Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.=回転・トリミング・サイズ調整・色調整は 1 回ごとに画像全体のコピーを保持します。コピーがメモリ上限を超えると古い手順から破棄されます（直前の 1 回は必ず残ります）。
 
@@ -387,6 +388,7 @@ Check for Updates…=アップデートを確認…
 Software Update=ソフトウェア・アップデート
 A new version of mpainter is available!=mpainter の新しいバージョンがあります！
 mpainter %s is available (you have %s). Would you like to install it now?=mpainter %s が利用できます（現在は %s）。今すぐインストールしますか？
+Installing closes mpainter and opens it again. You will be asked to save unsaved changes first. Undo history is cleared, and an archive reopens at its first page.=インストールすると mpainter はいったん終了して再起動します。保存していない変更は先に保存するか確認します。元に戻す履歴は消え、アーカイブは最初のページから開き直します。
 Release notes:=リリースノート：
 (No release notes.)=（リリースノートはありません。）
 Skip This Version=このバージョンをスキップ

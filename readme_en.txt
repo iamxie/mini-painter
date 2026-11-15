@@ -63,7 +63,9 @@ Modes (settings sets)
   per step. When those copies add up to more than the memory limit (512 MB by default, on the
   same page), the oldest steps are dropped; the latest step is always kept. With the defaults a
   24-megapixel photo keeps about 5 such steps. Steps that only add markup do not count against
-  the limit. The undo history of an image is dropped when you move to another image.
+  the limit. When the history is almost full (one more step may drop the earliest one), a note
+  appears once in the middle of the window. The undo history of an image is dropped when you
+  move to another image.
 - While you read, the next page (the next pair in two-page view) is decoded in the background and
   the page you just left is kept, so turning pages either way does not wait. With "Continue to
   the next folder or archive at the end" on, the next book is prepared when you reach the last

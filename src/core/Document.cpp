@@ -59,6 +59,20 @@ size_t Document::historyBytes() const {
     return bytes;
 }
 
+bool Document::nextCommitMayDropUndo() const {
+    if (undo_.empty()) return false;
+    if (undo_.size() >= static_cast<size_t>(undoLimit_)) return true;
+    // commit 後：目前這張進 undo、redo 清空、新的那張不算。
+    std::set<const Image*> seen;
+    size_t bytes = 0;
+    auto add = [&](const ImagePtr& p) {
+        if (p && seen.insert(p.get()).second) bytes += p->pixels.size();
+    };
+    for (const auto& st : undo_) add(st.image);
+    add(cur_.image);
+    return bytes > static_cast<size_t>(undoMemoryMB_) * 1024 * 1024;
+}
+
 void Document::trimUndo() {
     size_t limit = static_cast<size_t>(undoLimit_);
     if (undo_.size() > limit) undo_.erase(undo_.begin(), undo_.end() - static_cast<std::ptrdiff_t>(limit));

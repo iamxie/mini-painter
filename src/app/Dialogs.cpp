@@ -367,6 +367,14 @@ void drawHistogram(ColorPanel& p, const DRAWITEMSTRUCT* dis) {
     DeleteObject(frame);
 }
 
+// 滾輪不調滑桿，交給對話框（有捲軸備案時捲動對話框）。Windows 把滾輪送到游標下的控制項，
+// 捲動對話框時滑桿一移到游標下就會被改到。
+LRESULT CALLBACK sliderNoWheelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR) {
+    if (msg == WM_MOUSEWHEEL) return SendMessageW(GetParent(h), msg, wp, lp);
+    if (msg == WM_NCDESTROY) RemoveWindowSubclass(h, sliderNoWheelProc, 1);
+    return DefSubclassProc(h, msg, wp, lp);
+}
+
 INT_PTR CALLBACK colorProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     ColorPanel* p = g_panel;
     switch (msg) {
@@ -378,6 +386,7 @@ INT_PTR CALLBACK colorProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         for (const auto& s : kSliders) {
             SendDlgItemMessageW(dlg, s.id, TBM_SETRANGE, FALSE, MAKELPARAM(0, kSliderMax));
             SendDlgItemMessageW(dlg, s.id, TBM_SETPAGESIZE, 0, 50);
+            SetWindowSubclass(GetDlgItem(dlg, s.id), sliderNoWheelProc, 1, 0);
         }
         p->hist = luminanceHistogram(p->host->baseImage());
         slidersFromParams(*p);

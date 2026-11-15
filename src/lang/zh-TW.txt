@@ -354,6 +354,7 @@ A language change takes effect after mpainter restarts; it asks when this window
 
 # --- undo 上限 ---
 Undo steps to keep:=保留的復原步數：
+Undo history is almost full: one more edit may make the earliest step impossible to undo. You can change the limits in Edit > Settings > General.=復原紀錄快滿了：再做一次編輯，最早的一步可能就無法復原。上限可以在「編輯 > 設定 > 一般」調整。
 Memory limit (MB):=記憶體上限（MB）：
 Rotate, crop, resize and color steps each keep a full copy of the image. When the copies go over the memory limit, the oldest steps are dropped; the latest step is always kept.=旋轉、裁切、調整尺寸、調整顏色每一步都會留一份整張圖。這些圖超過記憶體上限時，從最舊的步驟丟起；最近一步一定留著。
 
@@ -368,6 +369,7 @@ Check for Updates…=檢查更新…
 Software Update=軟體更新
 A new version of mpainter is available!=mpainter 有新版本了！
 mpainter %s is available (you have %s). Would you like to install it now?=mpainter %s 已推出（你目前用的是 %s）。要現在安裝嗎？
+Installing closes mpainter and opens it again. You will be asked to save unsaved changes first. Undo history is cleared, and an archive reopens at its first page.=安裝時 mpainter 會關閉再重新開啟。沒儲存的變更會先問你要不要儲存；復原紀錄會清空，看壓縮檔時會回到第一頁。
 Release notes:=更新說明：
 (No release notes.)=（沒有更新說明。）
 Skip This Version=略過這個版本

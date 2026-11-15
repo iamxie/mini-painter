@@ -87,15 +87,17 @@ private:
     bool openBook(const std::wstring& book, int dir); // 開書架上的一本：dir > 0 從第一頁、< 0 從最後一頁
     std::wstring currentBook() const;   // 目前這本書：壓縮檔路徑，或圖片所在的資料夾
     void disarmJump();                  // 取消待命中的跳本（換方向、按別的鍵、逾時、開了別的檔）
-    void showToast(const std::wstring& text, bool sticky); // 畫布中央的提示；sticky 的留到 hideToast，否則 2 秒淡掉
+    // 畫布中央的提示；sticky 的留到 hideToast，否則 ms 毫秒後淡掉（0 = 預設 2 秒）
+    void showToast(const std::wstring& text, bool sticky, UINT ms = 0);
     void hideToast();
     void drawToast();
-    void updateTitle();
+    void updateTitle();                 // 每次編輯後都會呼叫，順便 checkUndoRoom
+    void checkUndoRoom();               // 復原紀錄快滿（下一步可能丟最早的一步）時提示一次
 
     // 壓縮檔：整包解到暫存資料夾後當資料夾看，唯讀。
     // failMsg 為 nullptr：失敗時把錯誤顯示在畫布上（取代目前的圖）。給了 failMsg：失敗時目前的圖與狀態都不動，
-    // 錯誤訊息寫進 *failMsg（使用者取消時是空字串），給跳本用。
-    bool openArchive(const std::wstring& path, std::wstring* failMsg = nullptr);
+    // 錯誤訊息寫進 *failMsg（使用者取消時是空字串），給跳本用。openLast：開最後一頁（往回跳本），否則開第一頁。
+    bool openArchive(const std::wstring& path, std::wstring* failMsg = nullptr, bool openLast = false);
     void closeArchive();                         // 刪這個壓縮檔的暫存、清狀態
     bool insideArchive(const std::wstring& path) const; // path 是不是目前壓縮檔解出來的檔
     bool readOnly() const { return !archivePath_.empty(); }
@@ -255,6 +257,7 @@ private:
 
     // 文件
     Document doc_;
+    bool undoWarned_ = false; // 這張圖已經提示過復原紀錄快滿；undo 到底（含換圖）或改設定後重來
     FolderNav nav_;
     std::wstring path_;
     std::wstring loadedFrom_; // 這張圖的 metadata 來源：原本開的檔；存檔成功後就是存的那個檔

@@ -30,6 +30,7 @@ constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer 
 constexpr UINT WM_MP_UPDATE_FOUND = WM_APP + 4; // lParam = new 出來的 ReleaseInfo*，收到的人 delete
 constexpr wchar_t kReleasesPage[] = L"https://github.com/iamxie/mini-painter/releases";
 constexpr UINT kToastMs = 2000, kArmMs = 3000;
+constexpr UINT kUndoToastMs = 6000; // 復原紀錄快滿的提示比較長，多留一點時間
 constexpr UINT kHqDelayMs = 200;
 constexpr UINT kPrefetchDelayMs = 300; // 拖曳改視窗大小時，停下來才重排預先縮圖
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
@@ -946,7 +947,7 @@ bool MainWindow::editGuard() {
     return false;
 }
 
-bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg) {
+bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bool openLast) {
     // 從檔案總管直接開加密檔時主視窗還沒顯示；先顯示，密碼與進度對話框才拿得到焦點。
     showMainWindow(SW_SHOW);
     // 目前這本（可能也是壓縮檔）要等新的解成功才關：跳本失敗時留在原本那本。
@@ -1047,7 +1048,7 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg) {
     archiveDir_ = dest;
     archiveFiles_ = r.files;
     archiveNames_ = r.names;
-    return openPath(r.files.front());
+    return openPath(openLast ? r.files.back() : r.files.front());
 }
 
 bool MainWindow::confirmDiscard() {
@@ -1266,12 +1267,13 @@ bool MainWindow::openBook(const std::wstring& book, int dir) {
         if (!ok) showToast(fmt2(L"Could not open %s: %s", fileNameOf(book), loadError_), false);
     } else {
         std::wstring err;
-        ok = openArchive(book, &err);
-        if (!ok) {
+        // 往回跳直接開最後一頁（換本預備解好的是最後一屏），不先開第一頁。
+        ok = openArchive(book, &err, dir < 0);
+        // 壓縮檔開了、只是那一頁解不開時，已經在新的這本（錯誤畫在畫布上），不是「取消」。
+        if (!ok && archivePath_ != book) {
             showToast(err.empty() ? fmt1(L"Cancelled. Still in %s", from) : fmt2(L"Could not open %s: %s", fileNameOf(book), err), false);
             return false;
         }
-        if (dir < 0 && !archiveFiles_.empty()) ok = openPath(archiveFiles_.back());
     }
     if (ok) showToast(dir > 0 ? fmt1(L"Now in %s", fileNameOf(book)) : fmt1(L"Back in %s", fileNameOf(book)), false);
     return ok;
@@ -1292,12 +1294,19 @@ void MainWindow::disarmJump() {
     if (toastSticky_) hideToast();
 }
 
-void MainWindow::showToast(const std::wstring& text, bool sticky) {
+void MainWindow::showToast(const std::wstring& text, bool sticky, UINT ms) {
     toast_ = text;
     toastSticky_ = sticky;
     KillTimer(hwnd_, kToastTimer);
-    if (!sticky) SetTimer(hwnd_, kToastTimer, kToastMs, nullptr);
+    if (!sticky) SetTimer(hwnd_, kToastTimer, ms ? ms : kToastMs, nullptr);
     repaint();
+}
+
+void MainWindow::checkUndoRoom() {
+    if (!doc_.canUndo()) { undoWarned_ = false; return; } // 新開的圖、或 undo 到底：之後滿了再提示
+    if (undoWarned_ || !doc_.nextCommitMayDropUndo()) return;
+    undoWarned_ = true;
+    showToast(tr(L"Undo history is almost full: one more edit may make the earliest step impossible to undo. You can change the limits in Edit > Settings > General."), false, kUndoToastMs);
 }
 
 void MainWindow::hideToast() {
@@ -1415,6 +1424,7 @@ void MainWindow::updateTitle() {
     if (!settings_.profileName.empty()) t += settings_.profileName + (profileModified(settings_) ? L"* - " : L" - ");
     t += kAppName;
     SetWindowTextW(hwnd_, t.c_str());
+    checkUndoRoom();
 }
 
 // ---------------------------------------------------------------------------
@@ -2487,6 +2497,7 @@ void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendin
     doc_.setUndoLimit(settings_.undoLimit); // 改小時立刻丟掉最舊的步驟
     settings_.undoMemoryMB = s.undoMemoryMB;
     doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
+    undoWarned_ = false; // 上限改了：照新的上限重新判斷要不要提示
     settings_.prefetchMB = s.prefetchMB;
     // 模式：換了模式、或正在用的那個內容被改了，就重新套用（目前的值 = 模式本體）
     const Profile* np = findProfile(s, s.profileName);

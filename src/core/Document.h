@@ -48,6 +48,9 @@ public:
     int undoMemoryLimitMB() const { return undoMemoryMB_; }
     // undo / redo 裡的底圖位元組：同一張只算一次，目前顯示的那張不算（只改標註的步驟共用底圖，不佔）。
     size_t historyBytes() const;
+    // 下一次 commit 可能丟掉最早的 undo 步驟：步數已滿，或下一步換一張和目前一樣大的底圖後歷史會超過記憶體上限。
+    // 只改標註的步驟不佔記憶體，所以是「可能」。undo 是空的時不會丟（最近一步一定留）。
+    bool nextCommitMayDropUndo() const;
 
     const DocState& state() const { return cur_; }
     ImagePtr image() const { return cur_.image; }

@@ -268,6 +268,68 @@ TEST_CASE("Document：undo / redo 來回不丟東西") {
     CHECK(d.undoCount() == 16);
 }
 
+// ---- 快滿的提示：下一步會不會丟掉最早的一步 ----
+
+TEST_CASE("nextCommitMayDropUndo：步數上限，滿了才是 true，undo 後解除") {
+    Document d;
+    d.setUndoLimit(3);
+    d.reset(img(1, 1));
+    CHECK_FALSE(d.nextCommitMayDropUndo());
+    d.commitItems({});
+    d.commitItems({});
+    CHECK_FALSE(d.nextCommitMayDropUndo()); // 兩步，再一步還放得下
+    d.commitItems({});
+    CHECK(d.nextCommitMayDropUndo()); // 三步：再做一步就丟最早的
+    d.commitItems({});
+    CHECK(d.undoCount() == 3);
+    CHECK(d.nextCommitMayDropUndo());
+    d.undo();
+    CHECK_FALSE(d.nextCommitMayDropUndo());
+    d.redo();
+    CHECK(d.nextCommitMayDropUndo());
+}
+
+TEST_CASE("nextCommitMayDropUndo：記憶體上限，在丟之前的那一步就是 true") {
+    Document d;
+    d.setUndoMemoryLimitMB(16);
+    d.reset(mib());
+    for (int i = 0; i < 15; ++i) d.commitImage(mib());
+    CHECK_FALSE(d.nextCommitMayDropUndo()); // 歷史 15 MiB，下一步後 16 MiB，不超過
+    CHECK(d.undoCount() == 15);
+    d.commitImage(mib());
+    CHECK(d.undoCount() == 16); // 這一步還沒丟
+    CHECK(d.nextCommitMayDropUndo()); // 下一步就會丟
+    d.commitImage(mib());
+    CHECK(d.undoCount() == 16); // 真的丟了一步
+}
+
+TEST_CASE("nextCommitMayDropUndo：redo 裡的圖不算（commit 會清掉 redo）") {
+    Document d;
+    d.setUndoMemoryLimitMB(16);
+    d.reset(mib());
+    for (int i = 0; i < 16; ++i) d.commitImage(mib());
+    CHECK(d.nextCommitMayDropUndo());
+    d.undo();
+    CHECK_FALSE(d.nextCommitMayDropUndo());
+}
+
+TEST_CASE("nextCommitMayDropUndo：單張就超過上限，第一步後就是 true") {
+    Document d;
+    d.setUndoMemoryLimitMB(16);
+    d.reset(mib(20));
+    CHECK_FALSE(d.nextCommitMayDropUndo()); // undo 是空的
+    d.commitImage(mib(20));
+    CHECK(d.nextCommitMayDropUndo());
+}
+
+TEST_CASE("nextCommitMayDropUndo：只改標註、底圖小時不提示") {
+    Document d;
+    d.setUndoMemoryLimitMB(16);
+    d.reset(mib());
+    for (int i = 0; i < 50; ++i) d.commitItems({});
+    CHECK_FALSE(d.nextCommitMayDropUndo()); // 50 步共用一張 1 MiB 的底圖
+}
+
 TEST_CASE("Document：步數上限與記憶體上限同時生效，取先到的") {
     Document d;
     d.setUndoLimit(5);

@@ -210,8 +210,9 @@ BEGIN
     CONTROL         "", IDC_UPD_ICON, "STATIC", SS_ICON | SS_REALSIZEIMAGE, 10, 10, 32, 32
     LTEXT           "A new version of mpainter is available!", IDC_UPD_TITLE, 50, 10, 262, 12
     LTEXT           "", IDC_UPD_TEXT, 50, 26, 262, 20
-    LTEXT           "Release notes:", -1, 50, 52, 262, 10
-    EDITTEXT        IDC_UPD_NOTES, 50, 64, 262, 112, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL
+    LTEXT           "Installing closes mpainter and opens it again. You will be asked to save unsaved changes first. Undo history is cleared, and an archive reopens at its first page.", -1, 50, 48, 262, 28
+    LTEXT           "Release notes:", -1, 50, 80, 262, 10
+    EDITTEXT        IDC_UPD_NOTES, 50, 92, 262, 84, ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL
     PUSHBUTTON      "Skip This Version", IDC_UPD_SKIP, 50, 186, 84, 16
     PUSHBUTTON      "Remind Me Later", IDC_UPD_LATER, 150, 186, 76, 16
     DEFPUSHBUTTON   "Install Update", IDC_UPD_INSTALL, 232, 186, 80, 16

@@ -121,6 +121,9 @@ Updates
   files you added yourself are left alone. Files that ship in the package (including 7z.dll,
   lang\ja-JP.txt and the readmes) are replaced; if you edited one of them, save it under another
   name first.
+- If several windows of the same mpainter.exe are open, it first tells you the others will be
+  closed. Each window with unsaved edits asks whether to save; Cancel in any of them stops the
+  update. Afterwards only the window you installed from opens again.
 - If mpainter cannot write to its own folder (e.g. it lives in Program Files) or 7z.dll is missing,
   it cannot update itself; it tells you why and offers to open the download page.
 - To stop the automatic check, untick "Check for updates when mpainter starts" in Edit > Settings >

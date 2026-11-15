@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <bcrypt.h>
+#include <tlhelp32.h>
 #include <winhttp.h>
 
 #include <cctype>
@@ -265,6 +266,26 @@ bool isDirWritable(const std::wstring& dir) {
     bool ok = MoveFileExW(tmp, renamed.c_str(), 0) != 0;
     DeleteFileW(ok ? renamed.c_str() : tmp);
     return ok;
+}
+
+std::vector<unsigned long> otherProcessesOfImage(const std::wstring& exePath, unsigned long selfPid) {
+    std::vector<unsigned long> out;
+    std::wstring exeName = exePath.substr(exePath.find_last_of(L"\\/") + 1);
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return out;
+    PROCESSENTRY32W pe{sizeof(pe)};
+    for (BOOL more = Process32FirstW(snap, &pe); more; more = Process32NextW(snap, &pe)) {
+        if (pe.th32ProcessID == selfPid || _wcsicmp(pe.szExeFile, exeName.c_str()) != 0) continue;
+        HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+        if (!h) continue;
+        wchar_t path[MAX_PATH * 2];
+        DWORD len = MAX_PATH * 2;
+        if (QueryFullProcessImageNameW(h, 0, path, &len) && _wcsicmp(path, exePath.c_str()) == 0)
+            out.push_back(pe.th32ProcessID);
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return out;
 }
 
 namespace {

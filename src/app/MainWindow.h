@@ -125,7 +125,8 @@ private:
     void offerPendingUpdate();                     // 有空檔（沒有對話框、選單、拖曳、文字編輯）才跳新版本對話框，否則稍後再試
     void checkForUpdatesNow();                     // 「關於」的檢查更新按鈕
     void offerUpdate(const ReleaseInfo& r);        // 新版本對話框 → 略過 / 稍後 / 安裝
-    void installUpdate(const ReleaseInfo& r);      // 存檔確認 → 下載核對解開 → 換檔 → 關閉並重啟
+    void installUpdate(const ReleaseInfo& r);      // 其他視窗會被關的提示 → 存檔確認 → 下載核對解開 → 關掉其他 mpainter → 換檔 → 關閉並重啟
+    bool closeOtherInstances();                    // 請同一個 exe 的其他 mpainter 關閉並等它們結束；有一個不關回 false
     void manualDownloadFallback(const std::wstring& reason, const std::wstring& pageUrl); // 不能自動更新時打開下載頁
 
     // 語言：讀內建與 lang/ 的語系，依設定或系統語系選一個啟用；選單切換後問是否重啟

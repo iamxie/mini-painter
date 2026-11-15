@@ -1271,6 +1271,33 @@ void runUnpackWithProgress(HWND owner, const std::wstring& archivePath,
     if (!runWithProgress(owner, st)) work(nullptr);
 }
 
+bool closeWindowsWithProgress(HWND owner, UINT closeMsg, const std::vector<HWND>& windows,
+                              const std::vector<HANDLE>& processes) {
+    ProgressState st;
+    st.caption = tr(L"Software Update");
+    st.text = tr(L"Closing the other mpainter windows…");
+    bool allClosed = false;
+    st.work = [&](ProgressState& s) {
+        for (HWND w : windows) {
+            if (s.cancel.load()) return;
+            // 對方可能在問要不要存檔，給使用者足夠的時間回答。
+            DWORD_PTR agreed = 0;
+            // wParam 帶自己的 pid：對方按取消時讓這邊能跳到前面顯示「更新已取消」。
+            LRESULT sent = SendMessageTimeoutW(w, closeMsg, GetCurrentProcessId(), 0, SMTO_ABORTIFHUNG, 10 * 60 * 1000, &agreed);
+            if ((!sent || !agreed) && IsWindow(w)) return; // 使用者在那邊按了取消，或沒回應
+        }
+        // 等行程真的結束（存設定、刪暫存資料夾）。
+        const DWORD n = static_cast<DWORD>(processes.size());
+        for (int waited = 0; waited < 30000; waited += 100) {
+            if (s.cancel.load()) return;
+            DWORD r = n ? WaitForMultipleObjects(n, processes.data(), TRUE, 100) : WAIT_OBJECT_0;
+            if (r < WAIT_OBJECT_0 + n || n == 0) { allClosed = true; return; }
+        }
+    };
+    if (!runWithProgress(owner, st)) st.work(st);
+    return allClosed;
+}
+
 int tryPasswordsWithProgress(HWND owner, const std::wstring& archivePath, const std::vector<std::wstring>& passwords,
                              bool& cancelled) {
     cancelled = false;

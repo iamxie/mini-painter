@@ -1,5 +1,7 @@
 #include "core/ImageOps.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -179,24 +181,27 @@ std::vector<Taps> makeTaps(int n, int m) {
     return out;
 }
 
-// 把 [0, rows) 切給幾條執行緒跑 fn(y0, y1)。
-template <class Fn>
-void parallelRows(int rows, Fn fn) {
+} // namespace
+
+void parallelRows(int rows, const std::function<void(int, int)>& fn) {
     unsigned hw = std::thread::hardware_concurrency();
     int threads = static_cast<int>(std::clamp<unsigned>(hw ? hw : 2, 1, 16));
     if (rows < 64) threads = 1;
     if (threads == 1) { fn(0, rows); return; }
+    // 新執行緒預設是一般優先順序，不會繼承呼叫端的；照抄過去。
+    int priority = GetThreadPriority(GetCurrentThread());
     std::vector<std::thread> pool;
     int chunk = (rows + threads - 1) / threads;
     for (int t = 0; t < threads; ++t) {
         int y0 = t * chunk, y1 = std::min(rows, y0 + chunk);
         if (y0 >= y1) break;
-        pool.emplace_back([=] { fn(y0, y1); });
+        pool.emplace_back([=, &fn] {
+            if (priority != THREAD_PRIORITY_ERROR_RETURN) SetThreadPriority(GetCurrentThread(), priority);
+            fn(y0, y1);
+        });
     }
     for (auto& th : pool) th.join();
 }
-
-} // namespace
 
 Image resample(const Image& src, int newW, int newH) {
     newW = std::max(1, newW);

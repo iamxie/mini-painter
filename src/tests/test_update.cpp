@@ -4,7 +4,9 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cwctype>
 #include <map>
 #include <string>
 #include <thread>
@@ -276,6 +278,37 @@ TEST_CASE("isDirWritable：temp 可寫、不存在的資料夾不行，試寫不
         FindClose(h);
     }
     CHECK(n == 0);
+}
+
+// 給下一個測試當「同一個 exe 的另一個行程」：只有用 [sleeper] 指名才會跑。
+TEST_CASE("sleeper：睡一陣子就結束", "[.sleeper]") {
+    Sleep(15000);
+}
+
+TEST_CASE("otherProcessesOfImage：找得到同一個 exe 的其他行程，不含自己，不分大小寫") {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const DWORD self = GetCurrentProcessId();
+    auto has = [](const std::vector<unsigned long>& v, DWORD pid) { return std::find(v.begin(), v.end(), pid) != v.end(); };
+    CHECK_FALSE(has(otherProcessesOfImage(exe, self), self));
+
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" \"[sleeper]\"";
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    REQUIRE(CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi));
+    std::wstring upper = exe;
+    for (auto& c : upper) c = static_cast<wchar_t>(towupper(c));
+    auto found = otherProcessesOfImage(exe, self);
+    auto foundUpper = otherProcessesOfImage(upper, self);
+    auto elsewhere = otherProcessesOfImage(L"C:\\no-such-dir\\" + std::wstring(exe).substr(std::wstring(exe).find_last_of(L'\\') + 1), self);
+    TerminateProcess(pi.hProcess, 0);
+    WaitForSingleObject(pi.hProcess, 5000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    CHECK(has(found, pi.dwProcessId));
+    CHECK_FALSE(has(found, self));
+    CHECK(has(foundUpper, pi.dwProcessId));
+    CHECK(elsewhere.empty()); // 同檔名、不同資料夾不算
 }
 
 TEST_CASE("planInstall / applyInstall / removeOldFiles：換掉發佈包的檔，exe 對應改過的名字，使用者的檔不動") {

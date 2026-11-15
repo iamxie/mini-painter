@@ -50,6 +50,9 @@ bool httpDownload(const std::wstring& url, const std::wstring& path,
 // 資料夾能不能建檔、改名、刪檔（試建一個暫存檔再刪）。
 bool isDirWritable(const std::wstring& dir);
 
+// 正在跑同一個 exe（完整路徑相同，不分大小寫）的其他行程，不含 selfPid。更新前要先把它們關掉。
+std::vector<unsigned long> otherProcessesOfImage(const std::wstring& exePath, unsigned long selfPid);
+
 // 安裝：stagingDir 是發佈包解開的地方，appDir 是 exe 所在資料夾。
 // 發佈包裡的 mpainter.exe 對應到 exeName（使用者可能把 exe 改了名）；其他照相對路徑放。
 struct InstallStep {

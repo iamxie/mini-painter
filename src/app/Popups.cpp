@@ -21,6 +21,16 @@ ULONGLONG g_lastClose = 0;
 HWND g_popup = nullptr;
 bool g_modalChild = false; // 開著系統對話框時不要因失去焦點而關閉
 
+// 從彈出選單開選色對話框。開著時把選單藏起來：選單是最上層視窗會蓋住對話框；
+// 而且選單還能點，再按一次會疊出第二個對話框，選單被刪掉後回到外層就當機。
+bool pickColorFromPopup(HWND popup, HWND owner, Color& inout) {
+    g_modalChild = true; // 先設：藏起來時選單會失去焦點
+    ShowWindow(popup, SW_HIDE);
+    bool ok = chooseColorDialog(owner, inout);
+    g_modalChild = false;
+    return ok;
+}
+
 // 一個可點的格子。
 struct Cell {
     D2D1_RECT_F rect;
@@ -316,9 +326,7 @@ struct ColorPopup : PopupBase {
     void click(const Cell& c) override {
         if (c.group == 1) {
             Color pick = cur.none() ? Color::rgb(255, 0, 0) : cur;
-            g_modalChild = true;
-            bool ok = chooseColorDialog(owner, pick);
-            g_modalChild = false;
+            bool ok = pickColorFromPopup(hwnd, owner, pick);
             if (ok) { cur = pick; onChange(cur); }
             if (IsWindow(hwnd)) DestroyWindow(hwnd);
             return;
@@ -465,10 +473,9 @@ struct FormatPopup : PopupBase {
             return true;
         case ID_COLOR: {
             Color c = cur.color;
-            g_modalChild = true;
-            bool ok = chooseColorDialog(owner, c);
-            g_modalChild = false;
+            bool ok = pickColorFromPopup(hwnd, owner, c);
             if (ok) { cur.color = c; onChange(cur); }
+            ShowWindow(hwnd, SW_SHOW);
             SetFocus(hwnd);
             return true;
         }

@@ -29,6 +29,45 @@ constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer 
                    kUpdateTimer = 7, kPrefetchTimer = 8;
 constexpr UINT WM_MP_UPDATE_FOUND = WM_APP + 4; // lParam = new 出來的 ReleaseInfo*，收到的人 delete
 constexpr wchar_t kReleasesPage[] = L"https://github.com/iamxie/mini-painter/releases";
+
+// 自動更新：請同一個 exe 的其他 mpainter 關閉（跨行程，用註冊的訊息）。回 1 = 會關，0 = 使用者在存檔詢問按了取消。
+UINT closeForUpdateMessage() {
+    static const UINT msg = RegisterWindowMessageW(L"mpainter.CloseForUpdate");
+    return msg;
+}
+
+// 這些行程的主視窗。
+std::vector<HWND> mainWindowsOf(const std::vector<unsigned long>& pids) {
+    struct Ctx { const std::vector<unsigned long>* pids; std::vector<HWND> out; } ctx{&pids, {}};
+    EnumWindows([](HWND h, LPARAM lp) -> BOOL {
+        auto* c = reinterpret_cast<Ctx*>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(h, &pid);
+        wchar_t cls[64];
+        if (std::find(c->pids->begin(), c->pids->end(), pid) != c->pids->end() && GetClassNameW(h, cls, 64) &&
+            wcscmp(cls, kClassName) == 0)
+            c->out.push_back(h);
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.out;
+}
+
+// 確認按鈕一律叫「好」，所以不用 MessageBox 的 MB_OKCANCEL / MB_OK。
+bool askOk(HWND owner, const std::wstring& text, PCWSTR icon, bool withCancel) {
+    TASKDIALOG_BUTTON ok{IDOK, tr(L"OK")};
+    TASKDIALOGCONFIG td{sizeof(td)};
+    td.hwndParent = owner;
+    td.dwFlags = TDF_POSITION_RELATIVE_TO_WINDOW | (withCancel ? TDF_ALLOW_DIALOG_CANCELLATION : 0);
+    td.dwCommonButtons = withCancel ? TDCBF_CANCEL_BUTTON : 0;
+    td.cButtons = 1;
+    td.pButtons = &ok;
+    td.pszWindowTitle = kAppName;
+    td.pszMainIcon = icon;
+    td.pszContent = text.c_str();
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&td, &pressed, nullptr, nullptr))) return false;
+    return pressed == IDOK;
+}
 constexpr UINT kToastMs = 2000, kArmMs = 3000;
 constexpr UINT kUndoToastMs = 6000; // 復原紀錄快滿的提示比較長，多留一點時間
 constexpr UINT kHqDelayMs = 200;
@@ -202,6 +241,20 @@ LRESULT CALLBACK MainWindow::editProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 }
 
 LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == closeForUpdateMessage()) {
+        // 另一個 mpainter 要裝更新。有沒存的修改先問（拉到前面讓使用者看得到），按取消就回 0，那邊會取消更新。
+        if (doc_.image() && doc_.dirty() && !readOnly()) {
+            if (IsIconic(hwnd_)) ShowWindow(hwnd_, SW_RESTORE);
+            SetForegroundWindow(hwnd_);
+        }
+        if (!confirmDiscard()) {
+            AllowSetForegroundWindow(static_cast<DWORD>(wp)); // wParam = 要更新的那個行程，讓它能跳到前面說「已取消」
+            return 0;
+        }
+        updating_ = true; // WM_CLOSE 不再問
+        PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+        return 1;
+    }
     switch (msg) {
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -3072,6 +3125,19 @@ void MainWindow::manualDownloadFallback(const std::wstring& reason, const std::w
         ShellExecuteW(hwnd_, L"open", pageUrl.empty() ? kReleasesPage : pageUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
 
+bool MainWindow::closeOtherInstances() {
+    auto pids = otherProcessesOfImage(exePath_, GetCurrentProcessId());
+    if (pids.empty()) return true;
+    std::vector<HANDLE> procs;
+    for (auto pid : pids) {
+        if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid)) procs.push_back(h);
+        AllowSetForegroundWindow(pid); // 讓那邊的存檔詢問能跳到前面
+    }
+    bool ok = closeWindowsWithProgress(hwnd_, closeForUpdateMessage(), mainWindowsOf(pids), procs);
+    for (HANDLE h : procs) CloseHandle(h);
+    return ok;
+}
+
 void MainWindow::installUpdate(const ReleaseInfo& r) {
     std::wstring app = exeDir();
     // 不能自動更新的情況：先講清楚原因，再給下載頁。
@@ -3089,6 +3155,14 @@ void MainWindow::installUpdate(const ReleaseInfo& r) {
         manualDownloadFallback(fmt1(L"mpainter cannot write to its folder:\n%s", app), r.pageUrl);
         return;
     }
+    // 同一個 exe 還有別的 mpainter 開著：先說清楚全部都會被關掉。
+    auto others = otherProcessesOfImage(exePath_, GetCurrentProcessId());
+    if (!others.empty()) {
+        wchar_t msg[640];
+        swprintf(msg, 640, tr(L"%d other mpainter windows are open. Installing the update closes all of them (each asks to save unsaved changes first); only this one opens again. Continue?"),
+                 static_cast<int>(others.size()));
+        if (!askOk(hwnd_, msg, TD_INFORMATION_ICON, true)) return;
+    }
     if (!confirmDiscard()) return;
 
     wchar_t tmp[MAX_PATH];
@@ -3104,6 +3178,14 @@ void MainWindow::installUpdate(const ReleaseInfo& r) {
     if (!downloadUpdateWithProgress(hwnd_, r, work, staging, err, cancelled)) {
         removeDirectoryRecursive(work);
         if (!cancelled) MessageBoxW(hwnd_, fmt1(L"Update failed: %s", err).c_str(), kAppName, MB_ICONWARNING);
+        return;
+    }
+    // 換檔前把其他 mpainter 關掉（下載期間新開的也算）；有一個沒關就整個取消。
+    if (!closeOtherInstances()) {
+        removeDirectoryRecursive(work);
+        SetForegroundWindow(hwnd_); // 使用者剛在別的視窗按了取消，焦點在那邊
+        askOk(hwnd_, tr(L"Another mpainter window was not closed, so the update was cancelled. Nothing was changed."),
+              TD_WARNING_ICON, false);
         return;
     }
     std::wstring exeName = exePath_.substr(exePath_.find_last_of(L"\\/") + 1);

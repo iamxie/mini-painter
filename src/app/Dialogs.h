@@ -59,6 +59,10 @@ bool checkUpdateWithProgress(HWND owner, const std::wstring& url, ReleaseInfo& o
 // 失敗回 false，error 是給人看的訊息（已翻譯 + 英文細節）；使用者取消時 cancelled 為 true、error 空。
 bool downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, const std::wstring& workDir, std::wstring& stagingDir,
                                 std::wstring& error, bool& cancelled);
+// 自動更新前請其他 mpainter 關閉：背景依序對 windows 送 closeMsg（wParam = 自己的 pid；對方有沒存的修改會先問，按取消回 0），
+// 再等 processes（要有 SYNCHRONIZE）都結束，最多 30 秒。有一個不關、逾時或使用者取消就回 false。
+bool closeWindowsWithProgress(HWND owner, UINT closeMsg, const std::vector<HWND>& windows,
+                              const std::vector<HANDLE>& processes);
 
 // 「設定」（modal PropertySheet：一般 / 模式 / 壓縮檔 / Windows 整合，取消 / 確定 / 套用）。
 struct SettingsDialogInfo {

@@ -268,6 +268,21 @@ TEST_CASE("Document：undo / redo 來回不丟東西") {
     CHECK(d.undoCount() == 16);
 }
 
+TEST_CASE("Document：undo 到小圖時歷史可能超過上限，但握著的圖總量不變") {
+    Document d;
+    d.setUndoMemoryLimitMB(16);
+    d.reset(mib(10));       // A
+    d.commitImage(mib());   // B
+    d.commitImage(mib());   // C
+    d.commitImage(mib(10)); // D：歷史 A + B + C = 12 MiB，沒超過
+    CHECK(d.undoCount() == 3);
+    CHECK(d.historyBytes() == 12u * 1024 * 1024);
+    size_t total = d.historyBytes() + d.image()->pixels.size(); // 22 MiB
+    d.undo(); // 目前換成 C（1 MiB），D 進 redo
+    CHECK(d.historyBytes() == 21u * 1024 * 1024); // 歷史超過 16 MiB 的上限
+    CHECK(d.historyBytes() + d.image()->pixels.size() == total); // 但總量沒變：undo 不配新圖，只是換一張當目前
+}
+
 // ---- 快滿的提示：下一步會不會丟掉最早的一步 ----
 
 TEST_CASE("nextCommitMayDropUndo：步數上限，滿了才是 true，undo 後解除") {

@@ -1,10 +1,44 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <windows.h>
+
+#include <mutex>
+#include <thread>
 #include <utility>
+#include <vector>
 
 #include "core/ImageOps.h"
 
 using namespace mp;
+
+TEST_CASE("parallelRows：每一列剛好跑一次") {
+    for (int rows : {1, 63, 64, 1000}) {
+        std::vector<int> hit(static_cast<size_t>(rows), 0);
+        std::mutex m;
+        parallelRows(rows, [&](int y0, int y1) {
+            std::lock_guard<std::mutex> lock(m);
+            for (int y = y0; y < y1; ++y) ++hit[static_cast<size_t>(y)];
+        });
+        for (int h : hit) CHECK(h == 1);
+    }
+}
+
+TEST_CASE("parallelRows：工作執行緒跟著呼叫端的優先順序") {
+    for (int priority : {THREAD_PRIORITY_BELOW_NORMAL, THREAD_PRIORITY_NORMAL}) {
+        std::vector<int> seen;
+        std::mutex m;
+        std::thread caller([&] {
+            SetThreadPriority(GetCurrentThread(), priority);
+            parallelRows(1000, [&](int, int) {
+                std::lock_guard<std::mutex> lock(m);
+                seen.push_back(GetThreadPriority(GetCurrentThread()));
+            });
+        });
+        caller.join();
+        REQUIRE_FALSE(seen.empty());
+        for (int p : seen) CHECK(p == priority);
+    }
+}
 
 static void set(Image& img, int x, int y, uint8_t b, uint8_t g, uint8_t r, uint8_t a = 255) {
     uint8_t* p = img.px(x, y);

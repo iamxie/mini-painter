@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 0.9.6 LANGUAGES CXX)
+project(mpainter VERSION 0.9.7 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,12 +43,14 @@ add_library(mp_core STATIC
     src/core/IoError.cpp
     src/core/ImageFormat.cpp
     src/core/Image.cpp
+    src/core/Parallel.cpp
     src/core/ImageOps.cpp
     src/core/ImageIO.cpp
     src/core/Metadata.cpp
     src/core/FolderNav.cpp
     src/core/Annotation.cpp
     src/core/Document.cpp
+    src/core/Editor.cpp
     src/core/ColorAdjust.cpp
     src/core/Settings.cpp
     src/core/ShellReg.cpp
@@ -57,9 +59,15 @@ add_library(mp_core STATIC
     src/core/TempDir.cpp
     src/core/Archive.cpp
     src/core/Shelf.cpp
+    src/core/UpdateError.cpp
+    src/core/Version.cpp
+    src/core/Sha256.cpp
+    src/core/Http.cpp
+    src/core/Install.cpp
     src/core/Update.cpp
     src/core/Crop.cpp
     src/core/ViewFit.cpp
+    src/core/BookPrep.cpp
     src/core/Prefetch.cpp
     src/core/Commands.cpp
     src/core/Viewport.cpp
@@ -72,6 +80,11 @@ target_link_libraries(mp_core PRIVATE WebP::webp WebP::webpdecoder WebP::webpdem
 
 # Direct2D / DirectWrite 包裝。主程式與測試共用同一份。
 add_library(mp_render STATIC
+    src/render/RenderDevice.cpp
+    src/render/Surface.cpp
+    src/render/BitmapCache.cpp
+    src/render/AnnotationPainter.cpp
+    src/render/Flatten.cpp
     src/render/Renderer.cpp
 )
 target_link_libraries(mp_render PUBLIC mp_core PRIVATE d2d1 dwrite)
@@ -85,7 +98,12 @@ add_executable(mpainter WIN32
     src/app/MainWindow.cpp
     src/app/Popups.cpp
     src/app/InfoPanel.cpp
-    src/app/Dialogs.cpp
+    src/app/DialogUtil.cpp
+    src/app/ProgressDialog.cpp
+    src/app/ImageDialogs.cpp
+    src/app/AboutDialog.cpp
+    src/app/ArchiveDialogs.cpp
+    src/app/UpdateDialogs.cpp
     src/app/SettingsDialog.cpp
     src/app/UiText.cpp
     src/app/app.rc
@@ -102,6 +120,7 @@ add_executable(mp_tests
     src/tests/test_geometry.cpp
     src/tests/test_annotation.cpp
     src/tests/test_document.cpp
+    src/tests/test_editor.cpp
     src/tests/test_image_ops.cpp
     src/tests/test_image_io.cpp
     src/tests/test_image_format.cpp
@@ -129,6 +148,10 @@ add_executable(mp_tests
     src/tests/test_paging.cpp
     # Renderer 的點陣圖快取（畫在記憶體裡的 render target）。src/app 仍然不測。
     src/tests/test_renderer.cpp
+    # 存檔寫出去的像素與每種標註的繪製。
+    src/tests/test_render_pixels.cpp
+    # 記憶體量測（隱藏標籤，平常不跑）。
+    src/tests/test_mem.cpp
 )
 # bit7z：測試自己用它現場產 zip / 7z 當 fixture。
 target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Catch2WithMain ws2_32 d2d1 dwrite shell32)

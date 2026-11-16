@@ -102,3 +102,60 @@ TEST_CASE("metaLabelText / metaValueText / fileSizeText") {
     CHECK(metaValueText(no) == L"No");
     CHECK(fileSizeText(500) == L"500 位元組");
 }
+
+TEST_CASE("archiveErrorText：代碼翻成說明，Windows 的錯誤用系統的說明，其他的用 7-Zip 的原文") {
+    ArchiveError e;
+    e.reason = ArchiveFailure::CrcError;
+    CHECK(archiveErrorText(e) == archiveFailureMessage(ArchiveFailure::CrcError)); // 沒有翻譯表：英文 key
+    {
+        setActiveLang(parseLangText(L"_code=zh-TW\nThe checksum does not match (the archive is damaged)=檢查碼不符\n"));
+        CHECK(archiveErrorText(e) == L"檢查碼不符");
+        setActiveLang({});
+    }
+    e.reason = ArchiveFailure::System;
+    e.systemError = ERROR_ACCESS_DENIED;
+    CHECK(archiveErrorText(e) == systemErrorText(ERROR_ACCESS_DENIED));
+    e.systemError = 0; // 沒有錯誤碼：退回一般的說明
+    CHECK(archiveErrorText(e) == archiveFailureMessage(ArchiveFailure::System));
+    e.reason = ArchiveFailure::Other;
+    e.detail = L"Some 7-Zip text";
+    CHECK(archiveErrorText(e) == L"Some 7-Zip text");
+    e.detail.clear();
+    CHECK(archiveErrorText(e) == archiveFailureMessage(ArchiveFailure::Other));
+    CHECK(archiveErrorText({}).empty());
+}
+
+TEST_CASE("updateErrorText：路徑與狀態碼填進句子，系統錯誤加系統的說明；下載的錯誤前面加「下載失敗」") {
+    UpdateError e;
+    CHECK(updateErrorText(e).empty());
+    e.code = UpdateErrorCode::Cancelled;
+    CHECK(updateErrorText(e).empty());
+
+    e.code = UpdateErrorCode::HttpStatus;
+    e.httpStatus = 403;
+    CHECK(updateErrorText(e) == L"The server answered HTTP 403");
+    CHECK(updateFailureText(e) == L"The download failed: The server answered HTTP 403");
+
+    e = {};
+    e.code = UpdateErrorCode::RenameFailed;
+    e.detail = L"C:\\app\\7z.dll";
+    e.systemError = ERROR_ACCESS_DENIED;
+    CHECK(updateErrorText(e) == L"Could not rename C:\\app\\7z.dll (" + systemErrorText(ERROR_ACCESS_DENIED) + L")");
+    CHECK(updateFailureText(e) == updateErrorText(e)); // 不是下載的錯誤：不加前綴
+
+    e = {};
+    e.code = UpdateErrorCode::UnpackFailed;
+    e.archive.reason = ArchiveFailure::CrcError;
+    CHECK(updateErrorText(e) == std::wstring(L"Could not unpack the update: ") + archiveFailureMessage(ArchiveFailure::CrcError));
+
+    e = {};
+    e.code = UpdateErrorCode::ChecksumMismatch;
+    CHECK(updateFailureText(e) == L"The downloaded file is damaged (checksum mismatch). Nothing was changed.");
+
+    setActiveLang(parseLangText(L"_code=zh-TW\nThe server answered HTTP %d=伺服器回應 HTTP %d\nThe download failed: %s=下載失敗：%s\n"));
+    e = {};
+    e.code = UpdateErrorCode::HttpStatus;
+    e.httpStatus = 500;
+    CHECK(updateFailureText(e) == L"下載失敗：伺服器回應 HTTP 500");
+    setActiveLang({});
+}

@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "core/ImageOps.h"
+#include "core/Parallel.h"
 
 using namespace mp;
 
@@ -47,14 +48,11 @@ static void set(Image& img, int x, int y, uint8_t b, uint8_t g, uint8_t r, uint8
 
 TEST_CASE("rotateCCW90：3x2 轉成 2x3，右上角跑到左上角") {
     Image img(3, 2);
-    img.dpiX = 72; img.dpiY = 144;
     set(img, 2, 0, 1, 2, 3); // 右上
     set(img, 0, 1, 9, 9, 9); // 左下
     Image out = rotateCCW90(img);
     CHECK(out.width == 2);
     CHECK(out.height == 3);
-    CHECK(out.dpiX == 144);
-    CHECK(out.dpiY == 72);
     CHECK(out.px(0, 0)[0] == 1); // 原右上 (2,0) -> (0, 0)
     CHECK(out.px(1, 2)[0] == 9); // 原左下 (0,1) -> (1, 2)
 }
@@ -67,16 +65,13 @@ TEST_CASE("rotateCCW90 四次回到原圖") {
     CHECK(r.pixels == img.pixels);
 }
 
-TEST_CASE("cropImage：取出指定範圍，dpi 照抄") {
+TEST_CASE("cropImage：取出指定範圍") {
     Image img(5, 4);
-    img.dpiX = 72; img.dpiY = 144;
     for (int y = 0; y < 4; ++y)
         for (int x = 0; x < 5; ++x) set(img, x, y, static_cast<uint8_t>(x), static_cast<uint8_t>(y), 7);
     Image out = cropImage(img, 1, 2, 3, 2);
     REQUIRE(out.width == 3);
     REQUIRE(out.height == 2);
-    CHECK(out.dpiX == 72);
-    CHECK(out.dpiY == 144);
     for (int y = 0; y < 2; ++y)
         for (int x = 0; x < 3; ++x) {
             CHECK(out.px(x, y)[0] == x + 1);
@@ -282,10 +277,8 @@ TEST_CASE("applyExifOrientation：八種方向逐像素對照 EXIF 的定義") {
     CHECK(applyExifOrientation(img, 9).pixels == img.pixels);
 }
 
-TEST_CASE("toStraight / toPremultiplied：換算、不透明與全透明的像素不動、尺寸與 DPI 跟著走") {
+TEST_CASE("toStraight / toPremultiplied：換算、不透明與全透明的像素不動、尺寸跟著走") {
     StraightImage s(4, 1);
-    s.dpiX = 150;
-    s.dpiY = 72;
     auto put = [&](int x, uint8_t b, uint8_t g, uint8_t r, uint8_t a) {
         uint8_t* p = s.px(x, 0);
         p[0] = b; p[1] = g; p[2] = r; p[3] = a;
@@ -299,8 +292,6 @@ TEST_CASE("toStraight / toPremultiplied：換算、不透明與全透明的像�
     CHECK(p.pixels.data() == buffer); // 緩衝區是搬過去的，沒有複製
     CHECK(p.width == 4);
     CHECK(p.height == 1);
-    CHECK(p.dpiX == 150);
-    CHECK(p.dpiY == 72);
     CHECK(p.px(0, 0)[2] == 30);
     CHECK(p.px(1, 0)[0] == 100); // 200 × 128 / 255
     CHECK(p.px(1, 0)[1] == 50);
@@ -312,7 +303,6 @@ TEST_CASE("toStraight / toPremultiplied：換算、不透明與全透明的像�
     CHECK(hasTransparency(p));
     StraightImage back = toStraight(std::move(p));
     CHECK(back.pixels.data() == buffer);
-    CHECK(back.dpiX == 150);
     CHECK(back.px(0, 0)[0] == 10);
     CHECK(std::abs(back.px(1, 0)[0] - 200) <= 1); // 捨入誤差一階以內
     CHECK(std::abs(back.px(1, 0)[1] - 100) <= 1);
@@ -331,4 +321,30 @@ TEST_CASE("premultiplyChannel / unpremultiplyChannel") {
     CHECK(unpremultiplyChannel(7, 255) == 7);
     CHECK(unpremultiplyChannel(7, 0) == 7);     // alpha 0：沒有顏色可還原，原樣
     CHECK(unpremultiplyChannel(200, 100) == 255); // 不合法的輸入（顏色大於 alpha）夾在 255
+}
+
+TEST_CASE("applyExifOrientation（接手來源）：結果和複製的版本一樣；翻轉與轉 180 度沿用原本的緩衝區") {
+    for (auto size : {std::pair<int, int>{5, 3}, {4, 4}, {1, 6}, {6, 1}, {1, 1}}) {
+        Image img(size.first, size.second);
+        for (int y = 0; y < img.height; ++y)
+            for (int x = 0; x < img.width; ++x) set(img, x, y, static_cast<uint8_t>(x + 1), static_cast<uint8_t>(y + 1), 9);
+        for (int o = 0; o <= 9; ++o) {
+            CAPTURE(size.first, size.second, o);
+            Image expected = applyExifOrientation(img, o);
+            Image owned = img;
+            const uint8_t* buffer = owned.pixels.data();
+            Image out = applyExifOrientation(std::move(owned), o);
+            CHECK(out.width == expected.width);
+            CHECK(out.height == expected.height);
+            CHECK(out.pixels == expected.pixels);
+            const bool swaps = o >= 5 && o <= 8;
+            CHECK((out.pixels.data() == buffer) == !swaps); // 不對調寬高的方向都不另外配置
+        }
+    }
+}
+
+TEST_CASE("Dpi：預設 96，swapped 把水平與垂直對調") {
+    CHECK(Dpi{} == Dpi{96.0, 96.0});
+    CHECK(swapped(Dpi{300, 150}) == Dpi{150, 300});
+    CHECK(Dpi{72, 72} != Dpi{72, 96});
 }

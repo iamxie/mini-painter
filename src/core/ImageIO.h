@@ -12,6 +12,7 @@ namespace mp {
 
 struct LoadResult {
     ImagePtr image;  // 失敗時為 nullptr
+    Dpi dpi;         // 檔案裡記的解析度（和圖同一個方向）；沒記或不合理時是 96
     ImageInfo info;
     IoError error;   // 失敗原因
 };
@@ -30,6 +31,8 @@ struct SaveOptions {
     // 全部照抄，只改與像素不符的：Orientation 一律 1、尺寸變了改 PixelX/YDimension、EXIF 縮圖重新產生。
     // 跨格式時帶得過去的範圍見 metadataCarried。
     std::wstring metadataSource;
+    // 寫進檔案的解析度（WebP 沒有這個欄位）。
+    Dpi dpi;
 };
 
 struct SaveResult {
@@ -43,7 +46,10 @@ struct SaveResult {
 
 // 存檔。格式依副檔名決定。先寫到暫存檔再取代原檔，失敗不動原檔。JPEG 品質固定 0.9，WebP 有損、品質 90。
 // 存不了透明的格式（見 extensionKeepsTransparency）先疊在白底上。不丟例外。
+// 記憶體：不透明的圖直接拿來編碼，不複製；有透明的圖要換算像素，這個版本會複製一份。
 SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptions& opt = {});
+// 接手 img 的版本：有透明時直接在 img 上換算，不另外複製。呼叫後 img 的內容不能再用。
+SaveResult saveImage(Image&& img, const std::wstring& path, const SaveOptions& opt = {});
 
 // source 格式的檔存成 target 格式時，section 這種區塊帶不帶得過去。同格式全部帶。
 // 存檔（saveImage）與事前的警告（metadataLossOnSave）都看這一個函式。

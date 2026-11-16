@@ -13,8 +13,6 @@ using mp::test::tempPath;
 
 static Image testImage(bool withAlpha) {
     Image img(16, 8);
-    img.dpiX = 150;
-    img.dpiY = 150;
     for (int y = 0; y < img.height; ++y)
         for (int x = 0; x < img.width; ++x) {
             uint8_t* p = img.px(x, y);
@@ -40,15 +38,19 @@ static int maxDiff(const Image& a, const Image& b) {
 TEST_CASE("PNG 存檔再讀回，像素與 DPI 一致") {
     Image img = testImage(true);
     auto path = tempPath(L"a.png");
-    REQUIRE(saveImage(img, path));
+    SaveOptions opt;
+    opt.dpi = {150, 150};
+    REQUIRE(saveImage(img, path, opt));
     auto r = loadImage(path);
     REQUIRE(r.image);
     CHECK(r.info.format == ImageFormat::Png);
     CHECK(r.info.colorModel == ColorModel::Rgb);
     CHECK(r.info.bitsPerPixel == 32);
     CHECK(maxDiff(*r.image, img) <= 1);
-    CHECK(r.image->dpiX > 149);
-    CHECK(r.image->dpiX < 151);
+    CHECK(r.dpi.x > 149);
+    CHECK(r.dpi.x < 151);
+    CHECK(r.dpi.y > 149);
+    CHECK(r.dpi.y < 151);
     DeleteFileW(path.c_str());
 }
 
@@ -280,5 +282,72 @@ TEST_CASE("saveImage：沒有 metadataSource 時 metadataDropped 是 false") {
         CHECK(res);
         CHECK_FALSE(res.metadataDropped);
         DeleteFileW(path.c_str());
+    }
+}
+
+TEST_CASE("解析度：水平與垂直分開存、分開讀；沒給就是 96；WebP 沒有這個欄位") {
+    Image img = testImage(false);
+    for (auto* name : {L"dpi.png", L"dpi.jpg", L"dpi.tif", L"dpi.bmp"}) {
+        CAPTURE(std::wstring(name).size(), name[4]);
+        auto path = tempPath(name);
+        SaveOptions opt;
+        opt.dpi = {300, 150};
+        REQUIRE(saveImage(img, path, opt));
+        auto r = loadImage(path);
+        REQUIRE(r.image);
+        CHECK(std::abs(r.dpi.x - 300) < 1);
+        CHECK(std::abs(r.dpi.y - 150) < 1);
+        REQUIRE(saveImage(img, path)); // 沒給：96
+        r = loadImage(path);
+        REQUIRE(r.image);
+        CHECK(std::abs(r.dpi.x - 96) < 1);
+        CHECK(std::abs(r.dpi.y - 96) < 1);
+    }
+    auto webp = tempPath(L"dpi.webp");
+    SaveOptions opt;
+    opt.dpi = {300, 150};
+    REQUIRE(saveImage(img, webp, opt));
+    auto r = loadImage(webp);
+    REQUIRE(r.image);
+    CHECK(r.dpi == Dpi{});
+}
+
+TEST_CASE("saveImage：來源的圖不被改動；接手的版本存出來的檔一模一樣") {
+    // 有透明的圖存檔要換算像素（鋪白底、換成 straight）。const 版本複製一份再改，接手的版本直接改交進來的那一份。
+    for (bool alpha : {false, true}) {
+        for (auto* ext : {L".png", L".jpg", L".bmp", L".tif", L".webp"}) {
+            CAPTURE(alpha, ext[1]);
+            const Image img = testImage(alpha);
+            const std::vector<uint8_t> before = img.pixels;
+            auto a = tempPath((std::wstring(L"keep_a") + ext).c_str());
+            auto b = tempPath((std::wstring(L"keep_b") + ext).c_str());
+            REQUIRE(saveImage(img, a));
+            CHECK(img.pixels == before);
+            Image owned = img;
+            REQUIRE(saveImage(std::move(owned), b));
+            CHECK(mp::test::readBytes(a) == mp::test::readBytes(b));
+        }
+    }
+}
+
+TEST_CASE("saveImage：很寬、很高、只有一個像素的圖都存得回來（編碼器分段讀來源）") {
+    for (auto size : {std::pair<int, int>{3000, 2}, {2, 3000}, {1, 1}, {257, 131}}) {
+        Image img(size.first, size.second);
+        for (int y = 0; y < img.height; ++y)
+            for (int x = 0; x < img.width; ++x) {
+                uint8_t* p = img.px(x, y);
+                p[0] = static_cast<uint8_t>(x * 3 + y);
+                p[1] = static_cast<uint8_t>(x + y * 5);
+                p[2] = static_cast<uint8_t>(x ^ y);
+                p[3] = 255;
+            }
+        for (auto* name : {L"shape.png", L"shape.bmp", L"shape.tif"}) {
+            CAPTURE(size.first, size.second, name[6]);
+            auto path = tempPath(name);
+            REQUIRE(saveImage(img, path));
+            auto r = loadImage(path);
+            REQUIRE(r.image);
+            CHECK(maxDiff(*r.image, img) == 0); // 無損格式：逐像素相同
+        }
     }
 }

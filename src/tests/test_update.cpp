@@ -5,9 +5,11 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <atomic>
 #include <cwctype>
 #include <map>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -15,6 +17,7 @@
 
 #include "core/Archive.h"
 #include "core/TempDir.h"
+#include "core/AppInfo.h"
 #include "core/Update.h"
 #include "test_archive_util.h"
 #include "test_util.h"
@@ -55,6 +58,7 @@ public:
         stop_ = true;
         closesocket(ls_);
         th_.join();
+        for (SOCKET c : held_) closesocket(c);
         WSACleanup();
     }
     std::wstring url(const std::string& path) const {
@@ -66,6 +70,13 @@ public:
     }
     void status(const std::string& path, int code) {
         routes_[path] = "HTTP/1.1 " + std::to_string(code) + " X\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    }
+    // 收下要求但一直不回應（連線握著，到伺服器關掉為止）。
+    void hang(const std::string& path) { hang_.insert(path); }
+    // 先送出標頭與一部分內容，然後就不送了（Content-Length 說還有更多）。
+    void stall(const std::string& path, const std::string& partial, size_t promised) {
+        routes_[path] = "HTTP/1.1 200 OK\r\nContent-Length: " + std::to_string(promised) + "\r\nConnection: close\r\n\r\n" + partial;
+        hang_.insert(path);
     }
     void redirect(const std::string& path, const std::string& to) {
         routes_[path] = "HTTP/1.1 302 Found\r\nLocation: " + to + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
@@ -87,6 +98,11 @@ private:
             size_t sp1 = req.find(' '), sp2 = req.find(' ', sp1 + 1);
             if (sp1 != std::string::npos && sp2 != std::string::npos) path = req.substr(sp1 + 1, sp2 - sp1 - 1);
             auto it = routes_.find(path);
+            if (hang_.count(path)) {
+                if (it != routes_.end()) send(c, it->second.data(), static_cast<int>(it->second.size()), 0);
+                held_.push_back(c);
+                continue;
+            }
             std::string resp = it != routes_.end() ? it->second
                                                    : "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
             send(c, resp.data(), static_cast<int>(resp.size()), 0);
@@ -98,6 +114,8 @@ private:
     int port_ = 0;
     std::atomic<bool> stop_{false};
     std::map<std::string, std::string> routes_;
+    std::set<std::string> hang_;
+    std::vector<SOCKET> held_;
     std::thread th_;
 };
 
@@ -190,26 +208,35 @@ TEST_CASE("httpGetText：200 取內容、非 200 回 HTTP 碼、跟著轉址、�
     srv.status("/limit", 403);
     srv.redirect("/moved", "/latest");
     std::string body;
-    std::wstring err;
-    REQUIRE(httpGetText(srv.url("/latest"), body, err));
-    CHECK(body == kReleaseJson);
-    CHECK(err.empty());
-
-    CHECK_FALSE(httpGetText(srv.url("/limit"), body, err));
-    CHECK(err == L"HTTP 403");
-    CHECK_FALSE(httpGetText(srv.url("/none"), body, err));
-    CHECK(err == L"HTTP 404");
-
-    REQUIRE(httpGetText(srv.url("/moved"), body, err));
+    REQUIRE(httpGetText(srv.url("/latest"), body).ok());
     CHECK(body == kReleaseJson);
 
-    CHECK_FALSE(httpGetText(L"http://127.0.0.1:1/x", body, err));
-    CHECK_FALSE(err.empty());
-    CHECK_FALSE(httpGetText(L"not a url", body, err));
-    CHECK_FALSE(err.empty());
+    UpdateError e = httpGetText(srv.url("/limit"), body);
+    CHECK(e.code == UpdateErrorCode::HttpStatus);
+    CHECK(e.httpStatus == 403);
+    CHECK(body.empty());
+    e = httpGetText(srv.url("/none"), body);
+    CHECK(e.code == UpdateErrorCode::HttpStatus);
+    CHECK(e.httpStatus == 404);
+
+    REQUIRE(httpGetText(srv.url("/moved"), body).ok());
+    CHECK(body == kReleaseJson);
+
+    e = httpGetText(L"http://127.0.0.1:1/x", body);
+    CHECK(e.code == UpdateErrorCode::ConnectFailed);
+    CHECK(e.systemError != 0);
+    e = httpGetText(L"not a url", body);
+    CHECK(e.code == UpdateErrorCode::BadUrl);
+    CHECK(e.detail == L"not a url");
+
+    // 回應大得不合理（查版本的 API 不會回這麼多）
+    srv.ok("/huge", std::string(5u << 20, 'x'));
+    e = httpGetText(srv.url("/huge"), body);
+    CHECK(e.code == UpdateErrorCode::ResponseTooLarge);
+    CHECK(body.empty());
 }
 
-TEST_CASE("httpDownload：寫檔、進度、取消時刪檔且 error 空、失敗不留檔") {
+TEST_CASE("httpDownload：寫檔、進度、取消時刪檔、失敗不留檔") {
     TestServer srv;
     std::string big(300 * 1024, 'x');
     for (size_t i = 0; i < big.size(); ++i) big[i] = static_cast<char>('a' + i % 26);
@@ -217,23 +244,207 @@ TEST_CASE("httpDownload：寫檔、進度、取消時刪檔且 error 空、失�
     srv.redirect("/dl", "/pkg.zip");
     std::wstring root = testRoot(L"dl");
     std::wstring out = root + L"\\pkg.zip";
-    std::wstring err;
     uint64_t lastDone = 0, lastTotal = 0;
     int calls = 0;
-    REQUIRE(httpDownload(srv.url("/dl"), out, [&](uint64_t d, uint64_t t) { lastDone = d; lastTotal = t; ++calls; return true; }, err));
+    REQUIRE(httpDownload(srv.url("/dl"), out, [&](uint64_t d, uint64_t t) { lastDone = d; lastTotal = t; ++calls; return true; }).ok());
     CHECK(readBytes(out) == big);
     CHECK(lastDone == big.size());
     CHECK(lastTotal == big.size());
     CHECK(calls >= 1);
 
     DeleteFileW(out.c_str());
-    CHECK_FALSE(httpDownload(srv.url("/dl"), out, [](uint64_t, uint64_t) { return false; }, err));
-    CHECK(err.empty());
+    UpdateError e = httpDownload(srv.url("/dl"), out, [](uint64_t, uint64_t) { return false; });
+    CHECK(e.cancelled());
     CHECK_FALSE(exists(out));
 
-    CHECK_FALSE(httpDownload(srv.url("/missing"), out, nullptr, err));
-    CHECK(err == L"HTTP 404");
+    e = httpDownload(srv.url("/missing"), out, nullptr);
+    CHECK(e.code == UpdateErrorCode::HttpStatus);
+    CHECK(e.httpStatus == 404);
     CHECK_FALSE(exists(out));
+
+    // 目的地建不出檔（上層資料夾不存在）
+    e = httpDownload(srv.url("/dl"), root + L"\\no\\such\\pkg.zip", nullptr);
+    CHECK(e.code == UpdateErrorCode::CreateFileFailed);
+    CHECK(e.systemError != 0);
+}
+
+TEST_CASE("HttpCancel：伺服器收了要求卻不回應時，取消馬上讓卡住的呼叫回來（B-24a）") {
+    // 以前按了取消要等 WinHTTP 自己逾時（等回應 30 秒），這段時間進度框一直停在「取消中」。
+    TestServer srv;
+    srv.hang("/silent");
+    HttpCancel cancel;
+    std::string body;
+    UpdateError result;
+    const ULONGLONG t0 = GetTickCount64();
+    std::thread worker([&] { result = httpGetText(srv.url("/silent"), body, &cancel); });
+    Sleep(500); // 讓它連上、送出要求、卡在等回應
+    CHECK_FALSE(cancel.cancelled());
+    cancel.cancel();
+    worker.join();
+    const ULONGLONG elapsed = GetTickCount64() - t0;
+    CHECK(result.cancelled());
+    CHECK(cancel.cancelled());
+    CHECK(elapsed < 5000); // 遠小於 30 秒的逾時
+
+    // 取消之後才開始的要求：一開始就回 Cancelled，不連線
+    srv.ok("/ok", "hello");
+    CHECK(httpGetText(srv.url("/ok"), body, &cancel).cancelled());
+    cancel.cancel(); // 重複取消沒有事
+
+    // 沒被取消的要求照常做完，之後這個物件還能再用
+    HttpCancel fresh;
+    REQUIRE(httpGetText(srv.url("/ok"), body, &fresh).ok());
+    CHECK(body == "hello");
+    REQUIRE(httpGetText(srv.url("/ok"), body, &fresh).ok());
+    CHECK_FALSE(fresh.cancelled());
+}
+
+TEST_CASE("HttpCancel：下載到一半伺服器不送了，取消馬上回來，不留下載到一半的檔") {
+    TestServer srv;
+    srv.stall("/half", std::string(1000, 'x'), 1000000);
+    std::wstring out = testRoot(L"dlcancel") + L"\\pkg.zip";
+    HttpCancel cancel;
+    UpdateError result;
+    const ULONGLONG t0 = GetTickCount64();
+    std::thread worker([&] { result = httpDownload(srv.url("/half"), out, nullptr, &cancel); });
+    Sleep(500);
+    cancel.cancel();
+    worker.join();
+    CHECK(result.cancelled());
+    CHECK(GetTickCount64() - t0 < 5000);
+    CHECK_FALSE(exists(out));
+}
+
+TEST_CASE("fetchLatestRelease：查到最新版；回應不是預期的格式、連不上各有代碼；可以取消") {
+    TestServer srv;
+    srv.ok("/latest", kReleaseJson);
+    srv.ok("/html", "<html>rate limited</html>");
+    srv.status("/down", 503);
+    srv.hang("/silent");
+    ReleaseInfo r;
+    REQUIRE(fetchLatestRelease(srv.url("/latest"), r).ok());
+    CHECK(r.version == L"0.7.0");
+    CHECK(fetchLatestRelease(srv.url("/html"), r).code == UpdateErrorCode::BadResponse);
+    UpdateError e = fetchLatestRelease(srv.url("/down"), r);
+    CHECK(e.code == UpdateErrorCode::HttpStatus);
+    CHECK(e.httpStatus == 503);
+    HttpCancel cancel;
+    std::thread canceller([&] {
+        Sleep(300);
+        cancel.cancel();
+    });
+    CHECK(fetchLatestRelease(srv.url("/silent"), r, &cancel).cancelled());
+    canceller.join();
+}
+
+TEST_CASE("downloadUpdate：下載、核對 .sha256、解開，並確認裡面有 mpainter.exe；各種失敗各有代碼") {
+    mp::test::requireArchiveLibrary();
+    std::wstring root = testRoot(L"flow");
+    // 一個像樣的發佈包
+    std::wstring zipPath = root + L"\\src.zip";
+    mp::test::makeArchive(zipPath, bit7z::BitFormat::Zip, {{"mpainter.exe", "new exe"}, {"lang/zh-TW.txt", "zh"}, {"readme.txt", "r"}});
+    const std::string zip = mp::test::readBytes(zipPath);
+    const std::string sha = sha256OfFile(zipPath);
+    // 沒有 exe 的包
+    std::wstring noExePath = root + L"\\noexe.zip";
+    mp::test::makeArchive(noExePath, bit7z::BitFormat::Zip, {{"readme.txt", "r"}});
+    const std::string noExe = mp::test::readBytes(noExePath);
+
+    TestServer srv;
+    srv.ok("/pkg.zip", zip);
+    srv.ok("/pkg.zip.sha256", sha + "  mini-painter-9.9.9-win64.zip\n");
+    srv.ok("/wrong.sha256", std::string(64, '0') + "\n");
+    srv.ok("/noexe.zip", noExe);
+    srv.ok("/noexe.zip.sha256", sha256OfFile(noExePath) + "\n");
+    srv.ok("/garbage.zip", "this is not a zip");
+    {
+        std::wstring g = root + L"\\garbage.bin";
+        writeBytes(g, "this is not a zip");
+        srv.ok("/garbage.zip.sha256", sha256OfFile(g) + "\n");
+    }
+    ReleaseInfo rel;
+    rel.version = L"9.9.9";
+    rel.zipUrl = srv.url("/pkg.zip");
+    rel.shaUrl = srv.url("/pkg.zip.sha256");
+
+    // 成功：階段依序回報，解開的內容在 staging
+    std::vector<DownloadStage> stages;
+    uint64_t lastDone = 0;
+    DownloadHooks hooks;
+    hooks.onStage = [&](DownloadStage st) { stages.push_back(st); };
+    hooks.progress = [&](uint64_t done, uint64_t) { lastDone = done; };
+    std::wstring work = root + L"\\w1", staging;
+    REQUIRE(createDirectories(work));
+    REQUIRE(downloadUpdate(rel, work, staging, hooks).ok());
+    CHECK(stages == std::vector<DownloadStage>{DownloadStage::Downloading, DownloadStage::Verifying, DownloadStage::Unpacking});
+    CHECK(lastDone == zip.size());
+    CHECK(staging == work + L"\\pkg");
+    CHECK(readBytes(staging + L"\\mpainter.exe") == "new exe");
+    CHECK(readBytes(staging + L"\\lang\\zh-TW.txt") == "zh");
+    CHECK(readBytes(work + L"\\mini-painter-9.9.9-win64.zip") == zip);
+
+    auto run = [&](const ReleaseInfo& r, const wchar_t* dir) {
+        std::wstring w = root + L"\\" + dir, st;
+        REQUIRE(createDirectories(w));
+        UpdateError e = downloadUpdate(r, w, st);
+        CHECK(st.empty()); // 失敗時不給 staging
+        return e;
+    };
+    // 檢查碼對不上：不解開
+    ReleaseInfo bad = rel;
+    bad.shaUrl = srv.url("/wrong.sha256");
+    CHECK(run(bad, L"w2").code == UpdateErrorCode::ChecksumMismatch);
+    CHECK_FALSE(exists(root + L"\\w2\\pkg\\mpainter.exe"));
+    // .sha256 抓不到
+    bad.shaUrl = srv.url("/nope.sha256");
+    UpdateError e = run(bad, L"w3");
+    CHECK(e.code == UpdateErrorCode::HttpStatus);
+    CHECK(e.httpStatus == 404);
+    // zip 抓不到
+    bad = rel;
+    bad.zipUrl = srv.url("/nope.zip");
+    CHECK(run(bad, L"w4").code == UpdateErrorCode::HttpStatus);
+    // 包裡沒有 exe
+    bad.zipUrl = srv.url("/noexe.zip");
+    bad.shaUrl = srv.url("/noexe.zip.sha256");
+    CHECK(run(bad, L"w5").code == UpdateErrorCode::NoExeInPackage);
+    // 檢查碼對、但不是壓縮檔
+    bad.zipUrl = srv.url("/garbage.zip");
+    bad.shaUrl = srv.url("/garbage.zip.sha256");
+    e = run(bad, L"w6");
+    CHECK(e.code == UpdateErrorCode::UnpackFailed);
+    CHECK_FALSE(e.archive.empty());
+
+    // 取消：一開始就取消、下載完之後才取消（階段之間也會看）
+    HttpCancel cancelled;
+    cancelled.cancel();
+    DownloadHooks ch;
+    ch.cancel = &cancelled;
+    std::wstring w7 = root + L"\\w7";
+    REQUIRE(createDirectories(w7));
+    CHECK(downloadUpdate(rel, w7, staging = L"", ch).cancelled());
+    HttpCancel late;
+    DownloadHooks lh;
+    lh.cancel = &late;
+    lh.onStage = [&](DownloadStage st) {
+        if (st == DownloadStage::Verifying) late.cancel();
+    };
+    std::wstring w8 = root + L"\\w8";
+    REQUIRE(createDirectories(w8));
+    CHECK(downloadUpdate(rel, w8, staging = L"", lh).cancelled());
+    CHECK_FALSE(exists(w8 + L"\\pkg\\mpainter.exe"));
+}
+
+TEST_CASE("updateErrorMessage：每個代碼都有說明，取消與沒有錯誤是空的") {
+    CHECK(std::wstring(updateErrorMessage(UpdateErrorCode::None)).empty());
+    CHECK(std::wstring(updateErrorMessage(UpdateErrorCode::Cancelled)).empty());
+    for (int c = static_cast<int>(UpdateErrorCode::BadUrl); c <= static_cast<int>(UpdateErrorCode::FolderNotWritable); ++c) {
+        CAPTURE(c);
+        CHECK_FALSE(std::wstring(updateErrorMessage(static_cast<UpdateErrorCode>(c))).empty());
+    }
+    UpdateError none;
+    CHECK(none.ok());
+    CHECK_FALSE(none.cancelled());
 }
 
 TEST_CASE("isDirWritable：temp 可寫、不存在的資料夾不行，試寫不留檔") {
@@ -298,8 +509,7 @@ TEST_CASE("planInstall / applyInstall / removeOldFiles：換掉發佈包的檔�
 
     auto steps = planInstall(stage, app, L"mp.exe");
     REQUIRE(steps.size() == 4);
-    std::wstring err;
-    REQUIRE(applyInstall(steps, err));
+    REQUIRE(applyInstall(steps).ok());
     CHECK(readBytes(app + L"\\mp.exe") == "new exe");
     CHECK_FALSE(exists(app + L"\\mpainter.exe"));
     CHECK(readBytes(app + L"\\7z.dll") == "new dll");
@@ -329,8 +539,7 @@ TEST_CASE("applyInstall：上次的 .old 還刪不掉（被占住）就用 .old2
     HANDLE lock = CreateFileW((app + L"\\7z.dll.old").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     REQUIRE(lock != INVALID_HANDLE_VALUE);
     auto steps = planInstall(stage, app, L"mpainter.exe");
-    std::wstring err;
-    REQUIRE(applyInstall(steps, err));
+    REQUIRE(applyInstall(steps).ok());
     CHECK(readBytes(app + L"\\7z.dll") == "v3");
     CHECK(readBytes(app + L"\\7z.dll.old2") == "v2");
     CHECK(removeOldFiles(app) == 1); // .old 還被占住
@@ -352,10 +561,12 @@ TEST_CASE("applyInstall：中途失敗整批還原，不留 .old") {
     HANDLE lock = CreateFileW((app + L"\\b.txt").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     REQUIRE(lock != INVALID_HANDLE_VALUE);
     auto steps = planInstall(stage, app, L"mpainter.exe");
-    std::wstring err;
-    CHECK_FALSE(applyInstall(steps, err));
+    UpdateError err = applyInstall(steps);
+    CHECK_FALSE(err.ok());
     CloseHandle(lock);
-    CHECK_FALSE(err.empty());
+    CHECK(err.code == UpdateErrorCode::RenameFailed);
+    CHECK(err.detail == app + L"\\b.txt");
+    CHECK(err.systemError != 0);
     CHECK(readBytes(app + L"\\a.txt") == "old a");
     CHECK(readBytes(app + L"\\b.txt") == "old b");
     CHECK_FALSE(exists(app + L"\\c.txt"));
@@ -372,8 +583,7 @@ TEST_CASE("applyInstall：已載入的 DLL 能改名換掉（執行中的 exe �
     REQUIRE(real != nullptr);
     writeBytes(stage + L"\\7z.dll", "new dll");
     auto steps = planInstall(stage, app, L"mpainter.exe");
-    std::wstring err;
-    REQUIRE(applyInstall(steps, err));
+    REQUIRE(applyInstall(steps).ok());
     CHECK(readBytes(app + L"\\7z.dll") == "new dll");
     CHECK(exists(app + L"\\7z.dll.old"));
     CHECK(removeOldFiles(app) == 1); // 還載入中，刪不掉
@@ -390,13 +600,91 @@ TEST_CASE("extractAll：照資料夾結構整包解開（給發佈包用）") {
         mp::test::makeArchive(zip, bit7z::BitFormat::Zip,
                               {{"mpainter.exe", "exe"}, {"lang/zh-TW.txt", "zh"}, {"readme.txt", "r"}});
     }
-    std::wstring err;
-    REQUIRE(extractAll(zip, root + L"\\out", err));
+    REQUIRE(extractAll(zip, root + L"\\out").empty());
     CHECK(readBytes(root + L"\\out\\mpainter.exe") == "exe");
     CHECK(readBytes(root + L"\\out\\lang\\zh-TW.txt") == "zh");
     CHECK(readBytes(root + L"\\out\\readme.txt") == "r");
 
     writeBytes(root + L"\\bad.zip", "not a zip at all");
-    CHECK_FALSE(extractAll(root + L"\\bad.zip", root + L"\\out2", err));
-    CHECK_FALSE(err.empty());
+    ArchiveError bad = extractAll(root + L"\\bad.zip", root + L"\\out2");
+    CHECK_FALSE(bad.empty());
+}
+
+TEST_CASE("發佈包有巢狀的子資料夾：安裝會把資料夾建出來；要寫的資料夾都要能寫才裝（R-32）") {
+    std::wstring root = testRoot(L"nested");
+    std::wstring stage = root + L"\\stage", app = root + L"\\app";
+    writeBytes(stage + L"\\mpainter.exe", "exe");
+    writeBytes(stage + L"\\lang\\zh-TW.txt", "zh");
+    writeBytes(stage + L"\\docs\\en\\guide.txt", "guide"); // 兩層、app 裡都還沒有
+    REQUIRE(createDirectories(app));
+    auto steps = planInstall(stage, app, L"mpainter.exe");
+    REQUIRE(steps.size() == 3);
+    CHECK(installTargetsWritable(steps).ok()); // 還不存在的資料夾：看最近的、存在的上層（app）
+    REQUIRE(applyInstall(steps).ok());
+    CHECK(readBytes(app + L"\\docs\\en\\guide.txt") == "guide");
+    CHECK(readBytes(app + L"\\lang\\zh-TW.txt") == "zh");
+
+    // 要寫的位置上有個同名的檔擋著資料夾：建不出來，整批還原
+    std::wstring app2 = root + L"\\app2";
+    writeBytes(app2 + L"\\docs", "a file named docs");
+    writeBytes(app2 + L"\\mpainter.exe", "old exe");
+    steps = planInstall(stage, app2, L"mpainter.exe");
+    UpdateError err = applyInstall(steps);
+    CHECK_FALSE(err.ok());
+    CHECK(readBytes(app2 + L"\\mpainter.exe") == "old exe"); // 已經換掉的也還原了
+    CHECK_FALSE(exists(app2 + L"\\mpainter.exe.old"));
+
+    // 目的地是資料夾：FolderInTheWay，帶路徑
+    std::wstring app3 = root + L"\\app3";
+    REQUIRE(createDirectories(app3 + L"\\mpainter.exe"));
+    steps = planInstall(stage, app3, L"mpainter.exe");
+    err = applyInstall(steps);
+    CHECK(err.code == UpdateErrorCode::FolderInTheWay);
+    CHECK(err.detail == app3 + L"\\mpainter.exe");
+
+    // 整個 app 資料夾不存在、上層也不存在（磁碟機代號不存在）：不能寫
+    std::vector<InstallStep> nowhere(1);
+    nowhere[0].src = stage + L"\\mpainter.exe";
+    nowhere[0].dst = L"Q:\\no\\such\\place\\mpainter.exe";
+    if (GetFileAttributesW(L"Q:\\") == INVALID_FILE_ATTRIBUTES) CHECK(installTargetsWritable(nowhere).ok()); // 沒有可檢查的上層：交給 applyInstall 去失敗
+}
+
+TEST_CASE("removeOldFiles：只找這一版發佈包會放檔案的資料夾（根目錄與 kPackageSubdirs）") {
+    std::wstring root = testRoot(L"oldscope");
+    std::wstring app = root + L"\\app";
+    writeBytes(app + L"\\a.txt", "new");
+    writeBytes(app + L"\\a.txt.old", "old");
+    writeBytes(app + L"\\lang\\zh-TW.txt", "new");
+    writeBytes(app + L"\\lang\\zh-TW.txt.old", "old");
+    // 別的子資料夾（例如解壓縮的暫存、使用者自己的東西）不碰
+    writeBytes(app + L"\\temp\\b.txt", "x");
+    writeBytes(app + L"\\temp\\b.txt.old", "user");
+    CHECK(removeOldFiles(app) == 0);
+    CHECK_FALSE(exists(app + L"\\a.txt.old"));
+    CHECK_FALSE(exists(app + L"\\lang\\zh-TW.txt.old"));
+    CHECK(exists(app + L"\\temp\\b.txt.old"));
+    bool hasLang = false;
+    for (const wchar_t* sub : kPackageSubdirs) hasLang = hasLang || std::wstring(sub) == L"lang";
+    CHECK(hasLang); // 發佈包現在的結構：lang 是唯一的子資料夾，改了打包要一起改這個表
+}
+
+// 要連外網，平常不跑：mp_tests "[.net]"。對真的 GitHub（HTTPS）在不同的時間點取消，看會不會馬上回來。
+// 交握到一半、等回應、讀內容的途中都可能被取消到；每一次不是做完（ok）就是 Cancelled，而且都很快。
+TEST_CASE("HttpCancel：對真的 HTTPS 伺服器在不同時間點取消", "[.net]") {
+    for (int delayMs : {0, 5, 15, 30, 60, 100, 150, 250, 400}) {
+        HttpCancel cancel;
+        std::string body;
+        UpdateError result;
+        const ULONGLONG t0 = GetTickCount64();
+        std::thread worker([&] { result = httpGetText(kDefaultUpdateUrl, body, &cancel); });
+        Sleep(static_cast<DWORD>(delayMs));
+        cancel.cancel();
+        worker.join();
+        const ULONGLONG elapsed = GetTickCount64() - t0;
+        std::printf("NET cancel after %3d ms: %s, returned after %llu ms, body %zu bytes\n", delayMs,
+                    result.ok() ? "completed" : result.cancelled() ? "cancelled" : "other error", elapsed, body.size());
+        std::fflush(stdout);
+        CHECK((result.ok() || result.cancelled()));
+        CHECK(elapsed < static_cast<ULONGLONG>(delayMs) + 3000);
+    }
 }

@@ -1,5 +1,7 @@
 #include "core/ImageOps.h"
 
+#include "core/Parallel.h"
+
 #include <windows.h>
 
 #include <algorithm>
@@ -10,74 +12,90 @@
 
 namespace mp {
 
-Image rotateCCW90(const Image& src) {
-    Image out(src.height, src.width);
-    out.dpiX = src.dpiY;
-    out.dpiY = src.dpiX;
-    // 原圖 (x, y) -> 新圖 (y, W-1-x)
-    for (int y = 0; y < src.height; ++y) {
+namespace {
+
+uint32_t loadPx(const uint8_t* p) {
+    uint32_t v;
+    std::memcpy(&v, p, 4);
+    return v;
+}
+void storePx(uint8_t* p, uint32_t v) { std::memcpy(p, &v, 4); }
+
+// 寬高對調的四種轉法（EXIF orientation 5～8）。來源 (x, y) 寫到新圖的哪裡：
+//   5 轉置 (y, x)；6 順時針 90 (H-1-y, x)；7 反轉置 (H-1-y, W-1-x)；8 逆時針 90 (y, W-1-x)。
+// 一次寫好，不經過中間的圖。
+Image transposed(const Image& src, int orientation) {
+    const int W = src.width, H = src.height;
+    Image out(H, W);
+    const bool flipX = orientation == 6 || orientation == 7; // 新圖的 x = H-1-y
+    const bool flipY = orientation == 7 || orientation == 8; // 新圖的 y = W-1-x
+    for (int y = 0; y < H; ++y) {
         const uint8_t* s = src.row(y);
-        for (int x = 0; x < src.width; ++x) {
-            std::memcpy(out.px(y, src.width - 1 - x), s + static_cast<size_t>(x) * 4, 4);
-        }
+        const int ox = flipX ? H - 1 - y : y;
+        for (int x = 0; x < W; ++x, s += 4) std::memcpy(out.px(ox, flipY ? W - 1 - x : x), s, 4);
     }
     return out;
 }
+
+// 原地左右翻。
+void flipHInPlace(Image& img) {
+    for (int y = 0; y < img.height; ++y) {
+        uint8_t* l = img.row(y);
+        uint8_t* r = img.width > 0 ? img.px(img.width - 1, y) : l;
+        for (; l < r; l += 4, r -= 4) {
+            uint32_t t = loadPx(l);
+            storePx(l, loadPx(r));
+            storePx(r, t);
+        }
+    }
+}
+
+// 原地上下翻。
+void flipVInPlace(Image& img) {
+    for (int y = 0; y < img.height / 2; ++y) std::swap_ranges(img.row(y), img.row(y) + img.stride(), img.row(img.height - 1 - y));
+}
+
+// 原地轉 180 度：整個緩衝區的像素順序反過來。
+void rotate180InPlace(Image& img) {
+    if (img.empty()) return;
+    uint8_t* l = img.pixels.data();
+    uint8_t* r = img.pixels.data() + img.pixels.size() - 4;
+    for (; l < r; l += 4, r -= 4) {
+        uint32_t t = loadPx(l);
+        storePx(l, loadPx(r));
+        storePx(r, t);
+    }
+}
+
+} // namespace
+
+Image rotateCCW90(const Image& src) { return transposed(src, 8); }
 
 Image cropImage(const Image& src, int x, int y, int w, int h) {
     int x0 = std::max(0, x), y0 = std::max(0, y);
     int x1 = std::min(src.width, x + w), y1 = std::min(src.height, y + h);
     if (x1 <= x0 || y1 <= y0) return Image{};
     Image out(x1 - x0, y1 - y0);
-    out.dpiX = src.dpiX;
-    out.dpiY = src.dpiY;
     for (int row = 0; row < out.height; ++row) std::memcpy(out.row(row), src.px(x0, y0 + row), out.stride());
     return out;
 }
 
-static Image rotateCW90(const Image& src) {
-    Image out(src.height, src.width);
-    out.dpiX = src.dpiY;
-    out.dpiY = src.dpiX;
-    for (int y = 0; y < src.height; ++y) {
-        const uint8_t* s = src.row(y);
-        for (int x = 0; x < src.width; ++x) {
-            std::memcpy(out.px(src.height - 1 - y, x), s + static_cast<size_t>(x) * 4, 4);
-        }
+Image applyExifOrientation(Image&& src, int orientation) {
+    switch (orientation) {
+    case 2: flipHInPlace(src); return std::move(src);
+    case 3: rotate180InPlace(src); return std::move(src);
+    case 4: flipVInPlace(src); return std::move(src);
+    case 5:
+    case 6:
+    case 7:
+    case 8: return transposed(src, orientation);
+    default: return std::move(src);
     }
-    return out;
-}
-
-static Image flipH(const Image& src) {
-    Image out = src;
-    for (int y = 0; y < src.height; ++y) {
-        const uint8_t* s = src.row(y);
-        for (int x = 0; x < src.width; ++x) {
-            std::memcpy(out.px(src.width - 1 - x, y), s + static_cast<size_t>(x) * 4, 4);
-        }
-    }
-    return out;
-}
-
-static Image flipV(const Image& src) {
-    Image out = src;
-    for (int y = 0; y < src.height; ++y) {
-        std::memcpy(out.row(src.height - 1 - y), src.row(y), src.stride());
-    }
-    return out;
 }
 
 Image applyExifOrientation(const Image& src, int orientation) {
-    switch (orientation) {
-    case 2: return flipH(src);
-    case 3: return rotateCW90(rotateCW90(src));
-    case 4: return flipV(src);
-    case 5: return rotateCW90(flipV(src));
-    case 6: return rotateCW90(src);
-    case 7: return rotateCCW90(flipV(src));
-    case 8: return rotateCCW90(src);
-    default: return src;
-    }
+    if (orientation >= 5 && orientation <= 8) return transposed(src, orientation);
+    return applyExifOrientation(Image(src), orientation);
 }
 
 Image resampleFast(const Image& src, int newW, int newH) {
@@ -85,8 +103,6 @@ Image resampleFast(const Image& src, int newW, int newH) {
     newH = std::max(1, newH);
     if (newW == src.width && newH == src.height) return src;
     Image out(newW, newH);
-    out.dpiX = src.dpiX;
-    out.dpiY = src.dpiY;
     if (src.empty()) return out;
 
     const bool shrinkX = newW < src.width;
@@ -183,33 +199,11 @@ std::vector<Taps> makeTaps(int n, int m) {
 
 } // namespace
 
-void parallelRows(int rows, const std::function<void(int, int)>& fn) {
-    unsigned hw = std::thread::hardware_concurrency();
-    int threads = static_cast<int>(std::clamp<unsigned>(hw ? hw : 2, 1, 16));
-    if (rows < 64) threads = 1;
-    if (threads == 1) { fn(0, rows); return; }
-    // 新執行緒預設是一般優先順序，不會繼承呼叫端的；照抄過去。
-    int priority = GetThreadPriority(GetCurrentThread());
-    std::vector<std::thread> pool;
-    int chunk = (rows + threads - 1) / threads;
-    for (int t = 0; t < threads; ++t) {
-        int y0 = t * chunk, y1 = std::min(rows, y0 + chunk);
-        if (y0 >= y1) break;
-        pool.emplace_back([=, &fn] {
-            if (priority != THREAD_PRIORITY_ERROR_RETURN) SetThreadPriority(GetCurrentThread(), priority);
-            fn(y0, y1);
-        });
-    }
-    for (auto& th : pool) th.join();
-}
-
 Image resample(const Image& src, int newW, int newH) {
     newW = std::max(1, newW);
     newH = std::max(1, newH);
     if (newW == src.width && newH == src.height) return src;
     Image out(newW, newH);
-    out.dpiX = src.dpiX;
-    out.dpiY = src.dpiY;
     if (src.empty()) return out;
 
     // 先水平（src.height 列 -> newW 寬），再垂直。中間用 8 位元，誤差可接受。

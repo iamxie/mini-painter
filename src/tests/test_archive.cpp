@@ -434,3 +434,157 @@ TEST_CASE("sniffImageExtension：看檔頭認 png / jpg / webp / bmp / tif，其
     CHECK(sniffImageExtension(root + L"\\missing").empty());
     removeDirectoryRecursive(root);
 }
+
+TEST_CASE("解不開的原因是代碼，不是英文句子：CRC 錯、不是壓縮檔、每個代碼都有說明") {
+    ensureLib();
+    std::wstring root = testRoot(L"reasons");
+    std::string png = pngBytes(4, 4);
+    writeStoredZip(root + L"\\c.zip", {{"1.png", png}, {"2.png", png}});
+    std::string bytes = readBytes(root + L"\\c.zip");
+    size_t data2 = (30 + 5 + png.size()) + 30 + 5;
+    for (size_t i = 16; i < 24; ++i) bytes[data2 + i] = static_cast<char>(~bytes[data2 + i]);
+    writeBytes(root + L"\\c.zip", bytes);
+    ArchiveResult r = extractImages(root + L"\\c.zip", root + L"\\out", {});
+    REQUIRE(r.status == ArchiveStatus::Incomplete);
+    CHECK(r.error.reason == ArchiveFailure::CrcError); // 內容被改過：檢查碼不符
+    CHECK(r.usable());
+
+    writeBytes(root + L"\\not.zip", "this is not an archive at all");
+    r = extractImages(root + L"\\not.zip", root + L"\\out2", {});
+    CHECK(r.status == ArchiveStatus::NotArchive);
+    CHECK(r.error.reason == ArchiveFailure::InvalidArchive); // 有翻譯的代碼，不是 7-Zip 的英文句子
+    CHECK(r.error.detail.empty());
+    CHECK_FALSE(r.usable());
+
+    // 解成功：沒有原因
+    makeArchive(root + L"\\ok.zip", bit7z::BitFormat::Zip, {{"1.png", png}});
+    r = extractImages(root + L"\\ok.zip", root + L"\\out3", {});
+    REQUIRE(r.status == ArchiveStatus::Ok);
+    CHECK(r.error.empty());
+
+    CHECK(std::wstring(archiveFailureMessage(ArchiveFailure::None)).empty());
+    for (ArchiveFailure f : {ArchiveFailure::InvalidArchive, ArchiveFailure::DataError, ArchiveFailure::CrcError, ArchiveFailure::HeadersError, ArchiveFailure::UnexpectedEnd,
+                             ArchiveFailure::UnsupportedMethod, ArchiveFailure::CannotCreateFolder, ArchiveFailure::NoLibrary,
+                             ArchiveFailure::System, ArchiveFailure::Other}) {
+        CAPTURE(static_cast<int>(f));
+        CHECK_FALSE(std::wstring(archiveFailureMessage(f)).empty());
+    }
+    removeDirectoryRecursive(root);
+}
+
+TEST_CASE("findPassword：回傳對的那一個的位置；都不對回 -1；試的途中取消算取消（B-24c）") {
+    ensureLib();
+    std::wstring root = testRoot(L"findpw");
+    makeArchive(root + L"\\e.zip", bit7z::BitFormat::Zip, {{"1.png", pngBytes(2, 2)}}, {"s3cret"});
+    const std::wstring zip = root + L"\\e.zip";
+    bool cancelled = true;
+    std::vector<std::pair<int, int>> tried;
+    PasswordHooks hooks;
+    hooks.onTry = [&](int index, int total) { tried.push_back({index, total}); };
+    CHECK(findPassword(zip, {L"a", L"s3cret", L"never"}, hooks, cancelled) == 1);
+    CHECK_FALSE(cancelled);
+    CHECK(tried == std::vector<std::pair<int, int>>{{1, 3}, {2, 3}}); // 對了就不往下試
+
+    CHECK(findPassword(zip, {L"a", L"b"}, {}, cancelled) == -1);
+    CHECK_FALSE(cancelled);
+    CHECK(findPassword(zip, {}, {}, cancelled) == -1);
+    CHECK_FALSE(cancelled);
+
+    // 一開始就取消：一個都不試
+    tried.clear();
+    hooks.cancelled = [] { return true; };
+    CHECK(findPassword(zip, {L"s3cret"}, hooks, cancelled) == -1);
+    CHECK(cancelled);
+    CHECK(tried.empty());
+
+    // 試最後一個的途中按了取消（那一個也不對）：以前會被當成「都不對」，接著跳出密碼詢問
+    int asked = 0;
+    hooks.cancelled = [&] { return ++asked > 2; }; // 試兩個之前各問一次（都沒取消），試完再問就是取消了
+    CHECK(findPassword(zip, {L"a", L"b"}, hooks, cancelled) == -1);
+    CHECK(cancelled);
+
+    // 取消了但剛好試到對的：算找到（密碼是對的，不必丟掉）
+    asked = 0;
+    hooks.cancelled = [&] { return ++asked > 1; };
+    CHECK(findPassword(zip, {L"s3cret"}, hooks, cancelled) == 0);
+    CHECK_FALSE(cancelled);
+    removeDirectoryRecursive(root);
+}
+
+TEST_CASE("extractWithPasswords：沒加密直接解；加密的試密碼列表；都不對回 NeedPassword 並記下試過了；取消") {
+    ensureLib();
+    std::wstring root = testRoot(L"withpw");
+    std::string png = pngBytes(2, 2);
+    makeArchive(root + L"\\plain.zip", bit7z::BitFormat::Zip, {{"1.png", png}});
+    makeArchive(root + L"\\e.zip", bit7z::BitFormat::Zip, {{"1.png", png}, {"2.png", png}}, {"s3cret"});
+
+    PasswordExtract x = extractWithPasswords(root + L"\\plain.zip", root + L"\\o1", {}, {L"a", L"b"});
+    CHECK(x.result.status == ArchiveStatus::Ok);
+    CHECK(x.password.empty());
+    CHECK_FALSE(x.listTried); // 不需要密碼：列表沒動過
+
+    int tries = 0;
+    PasswordHooks hooks;
+    hooks.onTry = [&](int, int) { ++tries; };
+    x = extractWithPasswords(root + L"\\e.zip", root + L"\\o2", {}, {L"a", L"s3cret"}, hooks);
+    REQUIRE(x.result.status == ArchiveStatus::Ok);
+    CHECK(x.password == L"s3cret");
+    CHECK(x.listTried);
+    CHECK(tries == 2);
+    CHECK(x.result.files.size() == 2);
+
+    x = extractWithPasswords(root + L"\\e.zip", root + L"\\o3", {}, {L"a", L"b"});
+    CHECK(x.result.status == ArchiveStatus::NeedPassword);
+    CHECK(x.listTried);
+    CHECK(x.password.empty());
+    CHECK(GetFileAttributesW((root + L"\\o3").c_str()) == INVALID_FILE_ATTRIBUTES); // 沒解出東西，資料夾不留
+
+    x = extractWithPasswords(root + L"\\e.zip", root + L"\\o4", {}, {}); // 沒有列表
+    CHECK(x.result.status == ArchiveStatus::NeedPassword);
+    CHECK_FALSE(x.listTried);
+
+    // 呼叫端自己給了密碼（使用者打的）：對就解，錯就回 WrongPassword，不去試列表
+    ExtractOptions typed;
+    typed.password = L"s3cret";
+    x = extractWithPasswords(root + L"\\e.zip", root + L"\\o5", typed, {L"a"});
+    CHECK(x.result.status == ArchiveStatus::Ok);
+    CHECK(x.password == L"s3cret");
+    CHECK_FALSE(x.listTried);
+    typed.password = L"wrong";
+    x = extractWithPasswords(root + L"\\e.zip", root + L"\\o6", typed, {L"s3cret"});
+    CHECK(x.result.status == ArchiveStatus::WrongPassword);
+    CHECK(x.password.empty());
+
+    hooks.cancelled = [] { return true; };
+    x = extractWithPasswords(root + L"\\e.zip", root + L"\\o7", {}, {L"s3cret"}, hooks);
+    CHECK(x.result.status == ArchiveStatus::Cancelled);
+    CHECK_FALSE(x.listTried);
+    removeDirectoryRecursive(root);
+}
+
+TEST_CASE("loadArchiveLibrary：載過之後再呼叫都回 Ok（不看路徑）") {
+    ensureLib();
+    LibraryLoad again = loadArchiveLibrary(L"C:\\no\\such\\folder\\7z.dll");
+    CHECK(again.ok());
+    CHECK(again.status == LibraryLoad::Ok);
+    CHECK(archiveLibraryLoaded());
+    LibraryLoad unset;
+    CHECK_FALSE(unset.ok()); // 預設值是失敗，不是成功
+}
+
+TEST_CASE("LibraryLoad：三種結果分得出來") {
+    // 這個行程的 7z.dll 已經載入（載過就一律回 Ok），所以沒辦法在這裡真的載一個壞檔；只確認型別本身的行為。
+    // 「檔案在但載不進來」的訊息在 VM 桌面看過（docs/regress/messages.ps1）。
+    LibraryLoad missing;
+    missing.status = LibraryLoad::FileMissing;
+    CHECK_FALSE(missing.ok());
+    CHECK_FALSE(static_cast<bool>(missing));
+    LibraryLoad failed;
+    failed.status = LibraryLoad::LoadFailed;
+    failed.systemError = 193;
+    CHECK_FALSE(failed.ok());
+    LibraryLoad ok;
+    ok.status = LibraryLoad::Ok;
+    CHECK(ok.ok());
+    CHECK(static_cast<bool>(ok));
+}

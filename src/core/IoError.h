@@ -26,7 +26,6 @@ enum class IoErrorCode {
     CreateEncoderFailed,
     CreateFrameFailed,
     FrameSetupFailed,
-    CreateBitmapFailed,
     WriteImageFailed,
     ReplaceFailed,         // 暫存檔寫好了，取代原檔失敗
 };

@@ -1,4 +1,6 @@
 #pragma once
+#include <utility>
+#include <vector>
 #include <string>
 
 namespace mp {
@@ -23,5 +25,11 @@ float fitZoom(ViewMode mode, float canvasW, float canvasH, float viewW, float vi
 
 // w×h 的圖以 zoom 顯示時，高品質縮圖的尺寸。倍率是 1、超過 maxSide 或 kHqMaxPixels 時回 false（畫原圖）。
 bool hqTargetSize(int w, int h, float zoom, unsigned maxSide, int& tw, int& th);
+
+// 一屏（單頁一個、兩頁並排兩個）各頁的高品質縮圖尺寸，{0, 0} 表示那一頁不縮。
+// 算法就是畫面上那一套：這一屏排好的大小（spreadSize）→ 放進畫布的倍率（fitZoom）→ 每一頁的尺寸（hqTargetSize）。
+// 預先解碼在背景縮圖時用它，翻過去之後畫面要的尺寸才會剛好一樣。
+std::vector<std::pair<int, int>> screenHqTargets(ViewMode mode, float canvasW, float canvasH, bool upscaleSmall, unsigned maxSide,
+                                                 const std::vector<std::pair<int, int>>& pages);
 
 } // namespace mp

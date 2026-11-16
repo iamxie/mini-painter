@@ -1,22 +1,19 @@
 #pragma once
-#include <functional>
-
 #include "core/Image.h"
 
 namespace mp {
 
-// 把 [0, rows) 切給幾條執行緒跑 fn(y0, y1)，跑完才回來。工作執行緒用呼叫端的優先順序：
-// 預先解碼的背景執行緒（低優先）呼叫時也是低優先，不跟 UI 搶 CPU。
-void parallelRows(int rows, const std::function<void(int, int)>& fn);
-
 // 逆時針轉 90 度。
 Image rotateCCW90(const Image& src);
 
-// 裁切：取 [x, y, x + w, y + h) 的像素，範圍先夾到圖內；夾完是空的就回傳空圖。dpi 照抄。
+// 裁切：取 [x, y, x + w, y + h) 的像素，範圍先夾到圖內；夾完是空的就回傳空圖。
 Image cropImage(const Image& src, int x, int y, int w, int h);
 
-// 依 EXIF orientation（1..8）把像素轉正。1 或不認得的值就原樣複製。
+// 依 EXIF orientation（1..8）把像素轉正。1 或不認得的值就原樣複製。5～8 寬高對調（解析度要由呼叫端對調，見 swapped）。
 Image applyExifOrientation(const Image& src, int orientation);
+// 接手 src 的版本（解碼完轉正用）：2～4（翻轉、轉 180 度）原地做，不另外配置；5～8 配置一張新的、一次寫好。
+// 所以轉正最多同時握兩張，翻轉只有一張。
+Image applyExifOrientation(Image&& src, int orientation);
 
 // 重新取樣到指定大小：Lanczos3，放大縮小都用。縮小時濾波器寬度隨倍率放大（不會有摩爾紋）。
 // 多執行緒。顯示的高品質縮放和「調整尺寸」都走這裡。

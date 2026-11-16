@@ -1,5 +1,7 @@
 #include "core/ViewFit.h"
 
+#include "core/Viewport.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -61,6 +63,21 @@ bool hqTargetSize(int w, int h, float zoom, unsigned maxSide, int& tw, int& th) 
     th = std::max(1, static_cast<int>(std::lround(h * zoom)));
     if (static_cast<unsigned>(tw) > maxSide || static_cast<unsigned>(th) > maxSide) return false;
     return static_cast<long long>(tw) * th <= kHqMaxPixels;
+}
+
+std::vector<std::pair<int, int>> screenHqTargets(ViewMode mode, float canvasW, float canvasH, bool upscaleSmall, unsigned maxSide,
+                                                 const std::vector<std::pair<int, int>>& pages) {
+    std::vector<std::pair<int, int>> out(pages.size(), {0, 0});
+    if (pages.empty()) return out;
+    const PageSize first{pages[0].first, pages[0].second};
+    const PageSize second = pages.size() > 1 ? PageSize{pages[1].first, pages[1].second} : PageSize{};
+    const Pt view = spreadSize(first, pages.size() > 1 ? &second : nullptr);
+    const float zoom = fitZoom(mode, canvasW, canvasH, view.x, view.y, upscaleSmall);
+    for (size_t i = 0; i < pages.size(); ++i) {
+        int tw = 0, th = 0;
+        if (hqTargetSize(pages[i].first, pages[i].second, zoom, maxSide, tw, th)) out[i] = {tw, th};
+    }
+    return out;
 }
 
 } // namespace mp

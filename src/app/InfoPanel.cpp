@@ -5,7 +5,7 @@
 
 #include "app/UiText.h"
 #include "core/Lang.h"
-#include "render/Renderer.h"
+#include "render/Surface.h"
 
 namespace mp {
 
@@ -44,25 +44,26 @@ void fillFileFacts(InfoData& d, const std::wstring& path) {
     }
 }
 
-void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const InfoData& data, InfoPanelState& st,
+void drawInfoPanel(Surface& r, D2D1_RECT_F rect, const InfoData& data, InfoPanelState& st,
                    float ui) {
     auto px = [ui](float v) { return v * ui; };
+    ID2D1RenderTarget* rt = r.rt();
     st.hits.clear();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
-    rt->FillRectangle(rect, r.brushFor(rt, kPanelBg));
-    rt->DrawLine(D2D1::Point2F(rect.left + 0.5f, rect.top), D2D1::Point2F(rect.left + 0.5f, rect.bottom), r.brushFor(rt, kLine), 1);
+    rt->FillRectangle(rect, r.brush(kPanelBg));
+    rt->DrawLine(D2D1::Point2F(rect.left + 0.5f, rect.top), D2D1::Point2F(rect.left + 0.5f, rect.bottom), r.brush(kLine), 1);
 
     // 分頁
     float tabH = px(30), tabW = (rect.right - rect.left - px(20)) / 2;
     const wchar_t* tabNames[2] = {tr(L"File Info"), tr(L"Image Info")};
     for (int i = 0; i < 2; ++i) {
         D2D1_RECT_F tr = D2D1::RectF(rect.left + px(10) + i * tabW, rect.top + px(8), rect.left + px(10) + (i + 1) * tabW, rect.top + px(8) + tabH - px(6));
-        if (st.tab == i) rt->FillRoundedRectangle(D2D1::RoundedRect(tr, px(4), px(4)), r.brushFor(rt, kTabOn));
-        r.drawUiText(rt, tabNames[i], tr, px(13), kValue, DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (st.tab == i) rt->FillRoundedRectangle(D2D1::RoundedRect(tr, px(4), px(4)), r.brush(kTabOn));
+        r.drawUiText(tabNames[i], tr, px(13), kValue, DWRITE_TEXT_ALIGNMENT_CENTER);
         st.hits.push_back({tr, 0, i, L""});
     }
     float top = rect.top + px(8) + tabH + px(4);
-    rt->DrawLine(D2D1::Point2F(rect.left, top), D2D1::Point2F(rect.right, top), r.brushFor(rt, kLine), 1);
+    rt->DrawLine(D2D1::Point2F(rect.left, top), D2D1::Point2F(rect.right, top), r.brush(kLine), 1);
 
     // 內容
     std::vector<std::pair<std::wstring, std::vector<Row>>> sections;
@@ -108,7 +109,7 @@ void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const I
         D2D1_RECT_F hr = D2D1::RectF(rect.left, y, rect.right, y + lineH + px(4));
         // 三角形
         float tx = x0 + px(4), ty = y + (lineH + px(4)) / 2;
-        auto* br = r.brushFor(rt, kValue);
+        auto* br = r.brush(kValue);
         if (collapsed) {
             rt->DrawLine(D2D1::Point2F(tx - px(2), ty - px(4)), D2D1::Point2F(tx + px(3), ty), br, px(1.5f));
             rt->DrawLine(D2D1::Point2F(tx + px(3), ty), D2D1::Point2F(tx - px(2), ty + px(4)), br, px(1.5f));
@@ -116,24 +117,20 @@ void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const I
             rt->DrawLine(D2D1::Point2F(tx - px(4), ty - px(2)), D2D1::Point2F(tx, ty + px(3)), br, px(1.5f));
             rt->DrawLine(D2D1::Point2F(tx, ty + px(3)), D2D1::Point2F(tx + px(4), ty - px(2)), br, px(1.5f));
         }
-        r.drawUiText(rt, sec.first, D2D1::RectF(x0 + px(16), y, x1, y + lineH + px(4)), px(13), kValue, DWRITE_TEXT_ALIGNMENT_LEADING, true);
+        r.drawUiText(sec.first, D2D1::RectF(x0 + px(16), y, x1, y + lineH + px(4)), px(13), kValue, DWRITE_TEXT_ALIGNMENT_LEADING, true);
         st.hits.push_back({hr, 1, st.tab, sec.first});
         y += lineH + px(4);
         if (collapsed) continue;
         for (const auto& row : sec.second) {
             float h = 0;
             float valueW = x1 - (x0 + labelW);
-            r.measureUiText(row.value, px(12), false, valueW, &h);
+            r.device().measureUiText(row.value, px(12), false, valueW, &h);
             float rowH = std::max(lineH, h + px(6));
-            r.drawUiText(rt, row.label, D2D1::RectF(x0, y, x0 + labelW - px(6), y + rowH), px(12), kLabel, DWRITE_TEXT_ALIGNMENT_TRAILING, false,
+            r.drawUiText(row.label, D2D1::RectF(x0, y, x0 + labelW - px(6), y + rowH), px(12), kLabel, DWRITE_TEXT_ALIGNMENT_TRAILING, false,
                          DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
             // 值可能很長，允許折行
-            IDWriteTextFormat* fmt = r.uiFormat(px(12), false);
-            fmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-            fmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
-            fmt->SetWordWrapping(DWRITE_WORD_WRAPPING_WRAP);
-            rt->DrawText(row.value.c_str(), static_cast<UINT32>(row.value.size()), fmt,
-                         D2D1::RectF(x0 + labelW, y + px(3), x1, y + rowH), r.brushFor(rt, kValue), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            r.drawUiText(row.value, D2D1::RectF(x0 + labelW, y + px(3), x1, y + rowH), px(12), kValue, DWRITE_TEXT_ALIGNMENT_LEADING,
+                         false, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true, true);
             y += rowH;
         }
         y += px(6);
@@ -147,7 +144,7 @@ void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const I
         float thumbH = std::max(px(20), trackH * viewH / st.contentHeight);
         float thumbY = contentTop + px(2) + (trackH - thumbH) * (st.scroll / (st.contentHeight - viewH));
         rt->FillRoundedRectangle(D2D1::RoundedRect(D2D1::RectF(rect.right - px(8), thumbY, rect.right - px(3), thumbY + thumbH), px(2), px(2)),
-                                 r.brushFor(rt, D2D1::ColorF(0, 0, 0, 0.25f)));
+                                 r.brush(D2D1::ColorF(0, 0, 0, 0.25f)));
     }
 }
 

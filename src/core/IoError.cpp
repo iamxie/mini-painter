@@ -25,7 +25,6 @@ const wchar_t* ioErrorMessage(IoErrorCode code) {
     case IoErrorCode::CreateEncoderFailed: return trKey(L"Could not create the encoder");
     case IoErrorCode::CreateFrameFailed: return trKey(L"Could not create the frame");
     case IoErrorCode::FrameSetupFailed: return trKey(L"Frame setup failed");
-    case IoErrorCode::CreateBitmapFailed: return trKey(L"Could not create the source bitmap");
     case IoErrorCode::WriteImageFailed: return trKey(L"Writing the image failed");
     case IoErrorCode::ReplaceFailed: return trKey(L"Could not replace the original file");
     }

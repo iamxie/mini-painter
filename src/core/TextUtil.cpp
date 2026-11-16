@@ -1,5 +1,7 @@
 #include "core/TextUtil.h"
 
+#include <cwchar>
+
 #include <windows.h>
 
 #include <algorithm>
@@ -45,6 +47,20 @@ int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi) {
     } catch (const std::out_of_range&) {
         return text.find(L'-') != std::wstring::npos ? lo : hi;
     }
+}
+
+std::wstring formatFileSize(unsigned long long bytes, const wchar_t* bytesFormat) {
+    wchar_t buf[64];
+    if (bytes < 1024) {
+        swprintf(buf, 64, bytesFormat, bytes);
+    } else if (bytes < 1024ull * 1024) {
+        swprintf(buf, 64, L"%.1f KB", bytes / 1024.0);
+    } else if (bytes < 1024ull * 1024 * 1024) {
+        swprintf(buf, 64, L"%.1f MB", bytes / (1024.0 * 1024));
+    } else {
+        swprintf(buf, 64, L"%.2f GB", bytes / (1024.0 * 1024 * 1024));
+    }
+    return buf;
 }
 
 } // namespace mp

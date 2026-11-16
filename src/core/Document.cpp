@@ -8,9 +8,10 @@
 
 namespace mp {
 
-void Document::reset(ImagePtr image) {
+void Document::reset(ImagePtr image, Dpi dpi) {
     cur_ = DocState{};
     cur_.image = std::move(image);
+    cur_.dpi = dpi;
     cur_.serial = nextSerial_++;
     undo_.clear();
     redo_.clear();
@@ -85,6 +86,7 @@ void Document::commit(DocState next) {
 void Document::commitItems(std::vector<Annotation> items) {
     DocState next;
     next.image = cur_.image;
+    next.dpi = cur_.dpi;
     next.items = std::move(items);
     commit(std::move(next));
 }
@@ -92,6 +94,7 @@ void Document::commitItems(std::vector<Annotation> items) {
 void Document::commitImage(ImagePtr image) {
     DocState next;
     next.image = std::move(image);
+    next.dpi = cur_.dpi;
     next.items = cur_.items;
     commit(std::move(next));
 }

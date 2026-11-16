@@ -80,8 +80,6 @@ Image applyColorAdjust(const Image& src, const ColorAdjustParams& p) {
     if (p.isIdentity() || src.empty()) return src;
 
     Image dst(src.width, src.height);
-    dst.dpiX = src.dpiX;
-    dst.dpiY = src.dpiY;
 
     float lutR[256], lutG[256], lutB[256];
     buildLut(lutR, p.wbGainR, p);

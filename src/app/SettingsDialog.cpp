@@ -8,7 +8,7 @@
 #include <iterator>
 #include <string>
 
-#include "app/Dialogs.h"
+#include "app/DialogUtil.h"
 #include "app/UiText.h"
 #include "app/resource.h"
 #include "core/Lang.h"
@@ -103,6 +103,8 @@ struct SheetState {
 void markChanged(HWND page) { PropSheet_Changed(GetParent(page), page); }
 
 // 每一頁的 PSN_APPLY 走這裡：收齊所有已建立的頁面後才真的套用。
+// 一輪套用從目前這一頁的 PSN_KILLACTIVE 開始（見各頁的 WM_NOTIFY），那時計數歸零：
+// 上一輪如果有頁面拒絕、沒收齊，數到一半的計數不會留到這一輪。
 void pageApplied(SheetState& st) {
     if (++st.applied < st.created) return;
     st.applied = 0;
@@ -185,6 +187,7 @@ INT_PTR CALLBACK generalPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (LOWORD(wp) == IDC_LANGUAGE && HIWORD(wp) == CBN_SELCHANGE) { markChanged(dlg); return TRUE; }
         break;
     case WM_NOTIFY:
+        if (reinterpret_cast<NMHDR*>(lp)->code == PSN_KILLACTIVE) st->applied = 0;
         if (reinterpret_cast<NMHDR*>(lp)->code == PSN_APPLY) {
             int sel = static_cast<int>(SendDlgItemMessageW(dlg, IDC_LANGUAGE, CB_GETCURSEL, 0, 0));
             st->s.language = sel > 0 && static_cast<size_t>(sel - 1) < st->info->languages.size() ? st->info->languages[static_cast<size_t>(sel - 1)].first : L"";
@@ -388,6 +391,7 @@ INT_PTR CALLBACK modesPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
     case WM_NOTIFY:
+        if (reinterpret_cast<NMHDR*>(lp)->code == PSN_KILLACTIVE) st->applied = 0;
         if (reinterpret_cast<NMHDR*>(lp)->code == PSN_APPLY) {
             storeProfileControls(dlg, *st);
             pageApplied(*st);
@@ -430,6 +434,7 @@ INT_PTR CALLBACK archivePageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
     case WM_NOTIFY:
+        if (reinterpret_cast<NMHDR*>(lp)->code == PSN_KILLACTIVE) st->applied = 0;
         if (reinterpret_cast<NMHDR*>(lp)->code == PSN_APPLY) {
             st->s.unzipDir = trim(dlgText(dlg, IDC_UNZIPDIR));
             st->s.pinnedNames = readLines(dlg, IDC_PINNED, true);
@@ -474,6 +479,7 @@ INT_PTR CALLBACK windowsPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         break;
     }
     case WM_NOTIFY:
+        if (reinterpret_cast<NMHDR*>(lp)->code == PSN_KILLACTIVE) st->applied = 0;
         if (reinterpret_cast<NMHDR*>(lp)->code == PSN_APPLY) {
             st->s.contextMenu = IsDlgButtonChecked(dlg, IDC_CTXMENU) == BST_CHECKED;
             st->s.askedDefault = IsDlgButtonChecked(dlg, IDC_ASKDEFAULT) != BST_CHECKED;

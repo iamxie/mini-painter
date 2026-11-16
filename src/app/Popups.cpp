@@ -10,7 +10,7 @@
 #include <vector>
 
 #include "core/Lang.h"
-#include "render/Renderer.h"
+#include "render/Surface.h"
 
 namespace mp {
 
@@ -43,12 +43,17 @@ struct PopupBase {
     HWND hwnd = nullptr;
     HWND owner = nullptr;
     bool deactivated = false; // 因為別的視窗被啟用而關閉，就不把焦點搶回主視窗
-    Renderer* renderer = nullptr;
+    RenderDevice* device = nullptr;
     float ui = 1;
     ComPtr<ID2D1HwndRenderTarget> rt;
+    Surface surface; // rt 與它的畫刷；選單關掉時跟著這個物件一起釋放
     std::vector<Cell> cells;
     int hover = -1;
     int width = 0, height = 0;
+    // click / onCommand 裡可以直接 DestroyWindow(hwnd)（選完就關），也可能因為失去焦點被關。
+    // 視窗關掉時這個物件要刪，但那時成員函式還在堆疊上：用 inCall 記著，等最外層的呼叫回來才刪（見 popupProc）。
+    int inCall = 0;
+    bool destroyed = false;
 
     virtual ~PopupBase() = default;
     virtual void draw() = 0;
@@ -57,25 +62,27 @@ struct PopupBase {
     virtual bool onCommand(WPARAM, LPARAM) { return false; }
 
     float px(float v) const { return v * ui; }
-    ID2D1SolidColorBrush* br(D2D1_COLOR_F c) { return renderer->brushFor(rt.Get(), c); }
+    ID2D1SolidColorBrush* br(D2D1_COLOR_F c) { return surface.brush(c); }
     ID2D1SolidColorBrush* br(Color c) { return br(toD2D(c)); }
 
     bool ensureRt() {
         if (rt) return true;
-        RECT rc;
-        GetClientRect(hwnd, &rc);
-        auto props = D2D1::RenderTargetProperties(D2D1_RENDER_TARGET_TYPE_DEFAULT,
-                                                  D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96, 96);
-        if (FAILED(renderer->d2d()->CreateHwndRenderTarget(props, D2D1::HwndRenderTargetProperties(hwnd, D2D1::SizeU(rc.right, rc.bottom)), &rt)))
-            return false;
-        return true;
+        rt = device->createHwndTarget(hwnd);
+        surface.attach(rt);
+        return rt != nullptr;
     }
     void paint() {
         if (!ensureRt()) return;
         rt->BeginDraw();
         rt->Clear(D2D1::ColorF(0.98f, 0.98f, 0.98f));
         draw();
-        if (rt->EndDraw() == D2DERR_RECREATE_TARGET) { renderer->forgetTarget(rt.Get()); rt.Reset(); InvalidateRect(hwnd, nullptr, FALSE); }
+        HRESULT hr = rt->EndDraw();
+        surface.endFrame();
+        if (hr == D2DERR_RECREATE_TARGET) {
+            surface.reset();
+            rt.Reset();
+            InvalidateRect(hwnd, nullptr, FALSE);
+        }
     }
     int cellAt(POINT p) const {
         for (size_t i = 0; i < cells.size(); ++i) {
@@ -117,12 +124,23 @@ LRESULT CALLBACK popupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_LBUTTONDOWN: {
         int h = self->cellAt({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)});
-        if (h >= 0) { self->click(self->cells[h]); if (IsWindow(hwnd)) InvalidateRect(hwnd, nullptr, FALSE); }
+        if (h < 0) return 0;
+        ++self->inCall;
+        self->click(self->cells[h]);
+        if (--self->inCall == 0 && self->destroyed) delete self; // click 裡把視窗關了
+        else InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
     }
-    case WM_COMMAND:
-        if (self->onCommand(wp, lp)) return 0;
+    case WM_COMMAND: {
+        ++self->inCall;
+        const bool handled = self->onCommand(wp, lp);
+        if (--self->inCall == 0 && self->destroyed) {
+            delete self;
+            return 0;
+        }
+        if (handled) return 0;
         break;
+    }
     case WM_ACTIVATE:
         if (LOWORD(wp) == WA_INACTIVE && !g_modalChild) {
             // 焦點跑到自己的子視窗（例如下拉清單）不算
@@ -137,13 +155,13 @@ LRESULT CALLBACK popupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == VK_ESCAPE) DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
-        if (self->rt) self->renderer->forgetTarget(self->rt.Get());
         g_lastClose = GetTickCount64();
         if (g_popup == hwnd) g_popup = nullptr;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         // 選完項目關閉時，鍵盤焦點不會自動回到主視窗（Delete、Esc 會失效），要主視窗自己拿回來。
         if (!self->deactivated && self->owner) PostMessageW(self->owner, WM_MP_POPUP_CLOSED, 0, 0);
-        delete self;
+        if (self->inCall > 0) self->destroyed = true; // 成員函式還沒回來：交給它的呼叫端刪
+        else delete self;
         return 0;
     default: break;
     }
@@ -163,12 +181,13 @@ void registerPopupClass(HINSTANCE inst) {
 }
 
 // 建立並顯示。popup 的所有權交給視窗。
-void showPopup(PopupBase* p, HWND owner, Renderer& renderer, RECT anchor, float ui, int w, int h) {
+void showPopup(PopupBase* p, HWND owner, RenderDevice& device, RECT anchor, float ui, int w, int h) {
     closePopup();
     HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
     registerPopupClass(inst);
     p->owner = owner;
-    p->renderer = &renderer;
+    p->device = &device;
+    p->surface.setDevice(device);
     p->ui = ui;
     p->width = w;
     p->height = h;
@@ -218,26 +237,26 @@ struct LineStylePopup : PopupBase {
                 if (cur.widthLevel == c.value) drawSelectedFrame(c.rect);
                 float w = strokeWidthForLevel(c.value) * ui * 0.6f;
                 rt->DrawLine(D2D1::Point2F(c.rect.left + px(14), cy), D2D1::Point2F(c.rect.right - px(14), cy), br(ink), std::max(1.0f, w),
-                             renderer->roundStyle());
+                             device->roundStyle());
             } else if (c.group == 1) {
                 if (static_cast<int>(cur.line) == c.value) drawSelectedFrame(c.rect);
                 auto a = D2D1::Point2F(c.rect.left + px(8), cy), b = D2D1::Point2F(c.rect.right - px(8), cy);
-                if (c.value == 0) rt->DrawLine(a, b, br(ink), px(3), renderer->roundStyle());
-                else if (c.value == 1) rt->DrawLine(a, b, br(ink), px(3), renderer->dashStyle());
+                if (c.value == 0) rt->DrawLine(a, b, br(ink), px(3), device->roundStyle());
+                else if (c.value == 1) rt->DrawLine(a, b, br(ink), px(3), device->dashStyle());
                 else {
                     for (const FuzzyLayer& layer : kFuzzyLayers) { // 和實際畫出來的同一組參數
                         D2D1_COLOR_F f = ink;
                         f.a = ink.a * layer.alpha;
-                        rt->DrawLine(a, b, br(f), px(3) * layer.widthScale, renderer->roundStyle());
+                        rt->DrawLine(a, b, br(f), px(3) * layer.widthScale, device->roundStyle());
                     }
                 }
             } else {
                 if (static_cast<int>(cur.arrows) == c.value) drawSelectedFrame(c.rect);
                 auto a = D2D1::Point2F(c.rect.left + px(8), cy), b = D2D1::Point2F(c.rect.right - px(8), cy);
-                rt->DrawLine(a, b, br(ink), px(2), renderer->roundStyle());
+                rt->DrawLine(a, b, br(ink), px(2), device->roundStyle());
                 auto head = [&](D2D1_POINT_2F tip, float dir) {
-                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(7), tip.y - px(5)), br(ink), px(2), renderer->roundStyle());
-                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(7), tip.y + px(5)), br(ink), px(2), renderer->roundStyle());
+                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(7), tip.y - px(5)), br(ink), px(2), device->roundStyle());
+                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(7), tip.y + px(5)), br(ink), px(2), device->roundStyle());
                 };
                 if (c.value == 1 || c.value == 3) head(a, -1);
                 if (c.value == 2 || c.value == 3) head(b, 1);
@@ -310,7 +329,7 @@ struct ColorPopup : PopupBase {
             const auto& c = cells[i];
             if (c.group == 1) {
                 rt->DrawRoundedRectangle(D2D1::RoundedRect(c.rect, px(4), px(4)), br(D2D1::ColorF(0.6f, 0.6f, 0.6f)), 1);
-                renderer->drawUiText(rt.Get(), tr(L"Show Colors…"), c.rect, px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f), DWRITE_TEXT_ALIGNMENT_CENTER);
+                surface.drawUiText(tr(L"Show Colors…"), c.rect, px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f), DWRITE_TEXT_ALIGNMENT_CENTER);
                 continue;
             }
             Color col = colors[c.value];
@@ -330,7 +349,7 @@ struct ColorPopup : PopupBase {
             Color pick = cur.none() ? Color::rgb(255, 0, 0) : cur;
             bool ok = pickColorFromPopup(hwnd, owner, pick);
             if (ok) { cur = pick; onChange(cur); }
-            if (IsWindow(hwnd)) DestroyWindow(hwnd);
+            DestroyWindow(hwnd);
             return;
         }
         cur = colors[c.value];
@@ -356,14 +375,12 @@ struct ShapesPopup : PopupBase {
         drawHover(hover);
         for (const auto& c : cells) {
             D2D1_RECT_F box = D2D1::RectF(c.rect.left + px(8), c.rect.top + px(8), c.rect.right - px(8), c.rect.bottom - px(8));
-            drawKindIcon(*renderer, rt.Get(), kKinds[c.value], box, D2D1::ColorF(0.15f, 0.15f, 0.15f));
+            drawKindIcon(surface, kKinds[c.value], box, D2D1::ColorF(0.15f, 0.15f, 0.15f));
         }
     }
     void click(const Cell& c) override {
-        Kind k = kKinds[c.value];
-        HWND h = hwnd;
-        onPick(k);
-        if (IsWindow(h)) DestroyWindow(h);
+        onPick(kKinds[c.value]);
+        DestroyWindow(hwnd);
     }
 };
 const Kind ShapesPopup::kKinds[9] = {Kind::Line, Kind::Rect, Kind::RoundRect, Kind::Ellipse, Kind::Bubble,
@@ -493,8 +510,8 @@ struct FormatPopup : PopupBase {
         }
     }
     void draw() override {
-        renderer->drawUiText(rt.Get(), tr(L"Style"), D2D1::RectF(px(10), px(72), px(10 + labelW), px(96)), px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f));
-        renderer->drawUiText(rt.Get(), tr(L"Alignment"), D2D1::RectF(px(10), px(104), px(10 + labelW), px(128)), px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f));
+        surface.drawUiText(tr(L"Style"), D2D1::RectF(px(10), px(72), px(10 + labelW), px(96)), px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f));
+        surface.drawUiText(tr(L"Alignment"), D2D1::RectF(px(10), px(104), px(10 + labelW), px(128)), px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f));
     }
     void click(const Cell&) override {}
     ~FormatPopup() override { if (font) DeleteObject(font); }
@@ -504,37 +521,37 @@ struct FormatPopup : PopupBase {
 
 // ---------------------------------------------------------------------------
 
-void showLineStylePopup(HWND owner, Renderer& renderer, RECT anchor, float ui, StrokeStyle current,
+void showLineStylePopup(HWND owner, RenderDevice& device, RECT anchor, float ui, StrokeStyle current,
                         std::function<void(const StrokeStyle&)> onChange) {
     auto* p = new LineStylePopup;
     p->cur = current;
     p->onChange = std::move(onChange);
-    showPopup(p, owner, renderer, anchor, ui, static_cast<int>(220 * ui), static_cast<int>(kStrokeLevels * 26 * ui + 110 * ui));
+    showPopup(p, owner, device, anchor, ui, static_cast<int>(220 * ui), static_cast<int>(kStrokeLevels * 26 * ui + 110 * ui));
 }
 
-void showColorPopup(HWND owner, Renderer& renderer, RECT anchor, float ui, Color current, bool allowNone,
+void showColorPopup(HWND owner, RenderDevice& device, RECT anchor, float ui, Color current, bool allowNone,
                     std::function<void(Color)> onChange) {
     auto* p = new ColorPopup;
     p->cur = current;
     p->allowNone = allowNone;
     p->onChange = std::move(onChange);
     int w = static_cast<int>((20 + 12 * 26) * ui), h = static_cast<int>((10 + 22 + 12 + 9 * 26 + 8 + 28 + 12) * ui);
-    showPopup(p, owner, renderer, anchor, ui, w, h);
+    showPopup(p, owner, device, anchor, ui, w, h);
 }
 
-void showShapesPopup(HWND owner, Renderer& renderer, RECT anchor, float ui, std::function<void(Kind)> onPick) {
+void showShapesPopup(HWND owner, RenderDevice& device, RECT anchor, float ui, std::function<void(Kind)> onPick) {
     auto* p = new ShapesPopup;
     p->onPick = std::move(onPick);
-    showPopup(p, owner, renderer, anchor, ui, static_cast<int>((20 + 5 * 50 - 6) * ui), static_cast<int>((20 + 2 * 50 - 6) * ui));
+    showPopup(p, owner, device, anchor, ui, static_cast<int>((20 + 5 * 50 - 6) * ui), static_cast<int>((20 + 2 * 50 - 6) * ui));
 }
 
-void showFormatPopup(HWND owner, Renderer& renderer, RECT anchor, float ui, TextStyle current,
+void showFormatPopup(HWND owner, RenderDevice& device, RECT anchor, float ui, TextStyle current,
                      std::function<void(const TextStyle&)> onChange) {
     auto* p = new FormatPopup;
     p->cur = current;
     p->onChange = std::move(onChange);
     float w = p->measure(ui);
-    showPopup(p, owner, renderer, anchor, ui, static_cast<int>(w * ui), static_cast<int>(140 * ui));
+    showPopup(p, owner, device, anchor, ui, static_cast<int>(w * ui), static_cast<int>(140 * ui));
 }
 
 bool isPopupOpen() { return g_popup != nullptr; }
@@ -558,8 +575,9 @@ bool chooseColorDialog(HWND owner, Color& inout) {
     return true;
 }
 
-void drawKindIcon(Renderer& renderer, ID2D1RenderTarget* rt, Kind kind, D2D1_RECT_F box, D2D1_COLOR_F color) {
-    auto* br = renderer.brushFor(rt, color);
+void drawKindIcon(Surface& surface, Kind kind, D2D1_RECT_F box, D2D1_COLOR_F color) {
+    ID2D1RenderTarget* rt = surface.rt();
+    auto* br = surface.brush(color);
     float w = box.right - box.left, h = box.bottom - box.top;
     float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
     float sw = std::max(1.5f, w * 0.07f);
@@ -599,25 +617,22 @@ void drawKindIcon(Renderer& renderer, ID2D1RenderTarget* rt, Kind kind, D2D1_REC
             for (int x = 0; x < 4; ++x) {
                 D2D1_COLOR_F c = color;
                 c.a = ((x + y) % 2) ? 0.9f : 0.35f;
-                rt->FillRectangle(D2D1::RectF(box.left + x * cw, box.top + y * ch, box.left + (x + 1) * cw, box.top + (y + 1) * ch), renderer.brushFor(rt, c));
+                rt->FillRectangle(D2D1::RectF(box.left + x * cw, box.top + y * ch, box.left + (x + 1) * cw, box.top + (y + 1) * ch), surface.brush(c));
             }
         break;
     }
     case Kind::Freehand: {
-        ComPtr<ID2D1PathGeometry> geo;
-        renderer.d2d()->CreatePathGeometry(&geo);
-        ComPtr<ID2D1GeometrySink> sink;
-        geo->Open(&sink);
-        sink->BeginFigure(P(box.left, cy + h * 0.3f), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddBezier(D2D1::BezierSegment(P(box.left + w * 0.2f, box.top - h * 0.3f), P(box.left + w * 0.5f, box.bottom + h * 0.3f), P(cx + w * 0.1f, cy)));
-        sink->AddBezier(D2D1::BezierSegment(P(box.right - w * 0.3f, box.top - h * 0.2f), P(box.right - w * 0.2f, box.bottom), P(box.right, cy - h * 0.2f)));
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->Close();
-        rt->DrawGeometry(geo.Get(), br, sw);
+        auto geo = surface.device().pathGeometry([&](ID2D1GeometrySink& sink) {
+            sink.BeginFigure(P(box.left, cy + h * 0.3f), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddBezier(D2D1::BezierSegment(P(box.left + w * 0.2f, box.top - h * 0.3f), P(box.left + w * 0.5f, box.bottom + h * 0.3f), P(cx + w * 0.1f, cy)));
+            sink.AddBezier(D2D1::BezierSegment(P(box.right - w * 0.3f, box.top - h * 0.2f), P(box.right - w * 0.2f, box.bottom), P(box.right, cy - h * 0.2f)));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        });
+        if (geo) rt->DrawGeometry(geo.Get(), br, sw);
         break;
     }
     case Kind::Text:
-        renderer.drawUiText(rt, L"A", box, h, color, DWRITE_TEXT_ALIGNMENT_CENTER);
+        surface.drawUiText(L"A", box, h, color, DWRITE_TEXT_ALIGNMENT_CENTER);
         break;
     }
 }

@@ -17,20 +17,30 @@
 #include <bit7z/bitformat.hpp>
 
 #include "core/FolderNav.h"
-#include "core/TextUtil.h"
+#include "core/Lang.h"
 #include "core/TempDir.h"
+#include "core/TextUtil.h"
 
 namespace mp {
 
 namespace {
 
-std::unique_ptr<bit7z::Bit7zLibrary> g_lib;
+// 7z.dll。載入後不卸載；用到的人各拿一份 shared_ptr，不靠「反正不會釋放」這個前提。
+// Bit7zLibrary 裡只有 DLL 的 handle 與 CreateObject 的函式指標，多條執行緒可以共用同一個（各開各的 reader）。
+std::shared_ptr<bit7z::Bit7zLibrary> g_lib;
 std::mutex g_libMutex;
+
+std::shared_ptr<bit7z::Bit7zLibrary> library() {
+    std::lock_guard<std::mutex> lock(g_libMutex);
+    return g_lib;
+}
 
 // 沒有副檔名的項目只在這麼大以內才解出來看檔頭，免得把一個幾 GB 的不明檔也解了。
 constexpr uint64_t kNoExtMaxBytes = 64ull << 20;
 // 第一趟解壓中斷後，剩下的項目逐一解到記憶體補寫；超過這個大小的不補（當作解不出來）。
 constexpr uint64_t kRetryMaxBytes = 256ull << 20;
+// 解壓前目標磁碟除了圖片的總大小，還要多留這麼多空間。
+constexpr uint64_t kFreeSpaceMargin = 64ull << 20;
 
 bool isPasswordError(const bit7z::BitException& e) {
     const auto& c = e.code();
@@ -38,22 +48,293 @@ bool isPasswordError(const bit7z::BitException& e) {
            c == bit7z::BitFailureSource::DataError || c == bit7z::BitFailureSource::CRCError;
 }
 
-} // namespace
-
-bool loadArchiveLibrary(const std::wstring& dllPath) {
-    std::lock_guard<std::mutex> lock(g_libMutex);
-    if (g_lib) return true;
-    try {
-        g_lib = std::make_unique<bit7z::Bit7zLibrary>(bit7z::to_tstring(dllPath));
-        return true;
-    } catch (const bit7z::BitException&) {
-        return false;
+// bit7z 的例外 → 原因代碼。認得的種類給代碼（畫面上有翻譯）；Windows 的錯誤給錯誤碼；其他的留它的英文訊息。
+ArchiveError errorOf(const bit7z::BitException& e) {
+    ArchiveError err;
+    const auto& c = e.code();
+    if (c == bit7z::BitFailureSource::CRCError) err.reason = ArchiveFailure::CrcError;
+    else if (c == bit7z::BitFailureSource::DataError) err.reason = ArchiveFailure::DataError;
+    else if (c == bit7z::BitFailureSource::HeadersError) err.reason = ArchiveFailure::HeadersError;
+    else if (c == bit7z::BitFailureSource::UnexpectedEnd) err.reason = ArchiveFailure::UnexpectedEnd;
+    else if (c == bit7z::BitFailureSource::OperationNotSupported) err.reason = ArchiveFailure::UnsupportedMethod;
+    else if (c == bit7z::BitFailureSource::InvalidArchive || c == bit7z::BitFailureSource::FormatDetectionError)
+        err.reason = ArchiveFailure::InvalidArchive;
+    else {
+        const HRESULT hr = e.hresultCode();
+        if (HRESULT_FACILITY(hr) == FACILITY_WIN32 && HRESULT_CODE(hr) != 0) {
+            err.reason = ArchiveFailure::System;
+            err.systemError = static_cast<unsigned long>(HRESULT_CODE(hr));
+        } else {
+            err.reason = ArchiveFailure::Other;
+            err.detail = utf8ToWide(e.what());
+        }
     }
+    return err;
 }
 
-bool archiveLibraryLoaded() {
+ArchiveError errorOf(ArchiveFailure reason) {
+    ArchiveError err;
+    err.reason = reason;
+    return err;
+}
+
+bool onDisk(const std::wstring& path) {
+    DWORD attr = GetFileAttributesW(path.c_str());
+    return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// extractImages 的本體，一個階段一個函式。每個階段回 true 才往下做；回 false 時 r_ 已經是要回傳的結果。
+class ImageExtraction {
+public:
+    ImageExtraction(bit7z::Bit7zLibrary& lib, const std::wstring& archivePath, const std::wstring& destDir, const ExtractOptions& opt)
+        : lib_(lib), arcPath_(bit7z::to_tstring(archivePath)), destDir_(destDir), opt_(opt) {}
+
+    ArchiveResult run() {
+        if (open() && pickItems() && prepareDest() && firstPass() && repair()) collect();
+        return std::move(r_);
+    }
+
+private:
+    struct Item {
+        uint32_t index;
+        std::wstring name;     // 壓縮檔內的路徑，/ 分隔
+        std::wstring diskName; // 磁碟上的檔名（序號）
+        bool noExt;
+        uint64_t size;
+        bool encrypted;
+        bool landed = false;   // 已經完整寫到磁碟
+    };
+
+    bool stop(ArchiveStatus status) {
+        r_.status = status;
+        return false;
+    }
+    std::wstring diskPath(const Item& it) const { return destDir_ + L"\\" + it.diskName; }
+
+    // 1. 開檔（7z 加密檔頭在這裡就會失敗）。
+    bool open() {
+        try {
+            reader_ = std::make_unique<bit7z::BitArchiveReader>(lib_, arcPath_, bit7z::BitFormat::Auto, bit7z::to_tstring(opt_.password));
+            return true;
+        } catch (const bit7z::BitException& e) {
+            if (bit7z::BitArchiveReader::isHeaderEncrypted(lib_, arcPath_))
+                return stop(opt_.password.empty() ? ArchiveStatus::NeedPassword : ArchiveStatus::WrongPassword);
+            r_.error = errorOf(e);
+            return stop(ArchiveStatus::NotArchive);
+        }
+    }
+
+    // 2. 挑項目：支援的副檔名，或完全沒有副檔名的小檔（解出來再看檔頭）。依壓縮檔內完整路徑自然排序，
+    // 序號照這個順序給：磁碟上的順序就是閱讀順序。
+    bool pickItems() {
+        try {
+            r_.solid = reader_->isSolid();
+            for (const auto& item : reader_->items()) {
+                if (item.isDir() || item.isSymLink()) continue;
+                std::wstring rel = item.nativePath();
+                for (auto& ch : rel)
+                    if (ch == L'\\') ch = L'/';
+                if (isArchiveEntrySkipped(rel)) continue;
+                const std::wstring ext = extensionOf(rel);
+                const bool noExt = ext.empty();
+                if (noExt ? item.size() > kNoExtMaxBytes : !isSupportedExtension(ext)) continue;
+                items_.push_back({item.index(), rel, L"", noExt, item.size(), item.isEncrypted()});
+                r_.totalBytes += item.size();
+                if (item.isEncrypted()) anyEncrypted_ = true;
+            }
+        } catch (const bit7z::BitException& e) {
+            r_.error = errorOf(e);
+            return stop(ArchiveStatus::Failed);
+        }
+        if (items_.empty()) return stop(ArchiveStatus::NoImages);
+        if (anyEncrypted_ && opt_.password.empty()) return stop(ArchiveStatus::NeedPassword);
+        if (r_.totalBytes > opt_.maxTotalBytes) return stop(ArchiveStatus::TooLarge);
+        std::stable_sort(items_.begin(), items_.end(),
+                         [](const Item& a, const Item& b) { return StrCmpLogicalW(a.name.c_str(), b.name.c_str()) < 0; });
+        for (size_t i = 0; i < items_.size(); ++i) {
+            wchar_t buf[16];
+            swprintf(buf, 16, L"%05u", static_cast<unsigned>(i + 1));
+            items_[i].diskName = std::wstring(buf) + (items_[i].noExt ? L"" : extensionOf(items_[i].name));
+            byIndex_[items_[i].index] = i;
+        }
+        return true;
+    }
+
+    // 3. 目標資料夾與剩餘空間。
+    bool prepareDest() {
+        if (!createDirectories(destDir_)) {
+            r_.error = errorOf(ArchiveFailure::CannotCreateFolder);
+            return stop(ArchiveStatus::Failed);
+        }
+        ULARGE_INTEGER freeBytes{};
+        if (GetDiskFreeSpaceExW(destDir_.c_str(), &freeBytes, nullptr, nullptr) && freeBytes.QuadPart < r_.totalBytes + kFreeSpaceMargin)
+            return stop(ArchiveStatus::NoSpace);
+        return true;
+    }
+
+    // 4. 解壓：一趟解完（solid 也只解一次），每個項目的磁碟檔名由 RenameCallback 給，不要的回空字串略過。
+    // bit7z 4.1 遇到第一個解不出來的項目（CRC 錯、資料損毀、目標寫不進去）就整趟停下來丟例外，後面的項目都還沒解。
+    // 所以失敗後不直接放棄：記下原因，留下已經解好的，交給 repair 補。
+    bool firstPass() {
+        // 這些回呼掛在 reader_ 上，repair 逐一補解時還會被叫到：只能碰成員，不能捕捉這個函式的區域變數。
+        total_ = r_.totalBytes;
+        reader_->setOverwriteMode(bit7z::OverwriteMode::Overwrite);
+        if (opt_.progress) {
+            reader_->setTotalCallback([this](uint64_t t) { total_ = t; });
+            reader_->setProgressCallback([this](uint64_t done) {
+                if (!opt_.progress(done, total_)) cancelled_ = true;
+                return !cancelled_;
+            });
+        }
+        reader_->setFileCallback([this](const bit7z::tstring& f) { lastStarted_ = utf8ToWide(f); });
+        try {
+            reader_->extractTo(bit7z::to_tstring(destDir_), [&](const bit7z::BitArchiveItem& item) -> bit7z::tstring {
+                auto it = byIndex_.find(item.index());
+                return it == byIndex_.end() ? bit7z::tstring{} : bit7z::to_tstring(items_[it->second].diskName);
+            });
+        } catch (const bit7z::BitException& e) {
+            firstPassOk_ = false;
+            firstPassPwError_ = anyEncrypted_ && isPasswordError(e);
+            r_.error = errorOf(e);
+        }
+        if (cancelled_) return stop(ArchiveStatus::Cancelled);
+        // 落地檢查。第一趟成功：每個項目都該在磁碟上。失敗：出事的那個（最近一個開始寫的）先刪掉，
+        // 它可能寫到一半或內容已壞，留給 repair 重解。
+        const std::wstring failedName = lastStarted_;
+        for (Item& it : items_) {
+            if (!firstPassOk_ && _wcsicmp(it.diskName.c_str(), failedName.c_str()) == 0) {
+                DeleteFileW(diskPath(it).c_str());
+                continue;
+            }
+            it.landed = onDisk(diskPath(it));
+            if (it.landed && it.encrypted) encryptedOk_ = true;
+        }
+        return true;
+    }
+
+    // 5. 補救：第一趟中斷時，沒落地的逐一解到記憶體再寫檔，解不出來的（真的壞了）略過。
+    // 密碼錯的判定：第一趟是密碼類的錯誤、而且沒有任何加密項目解成功 → WrongPassword（錯密碼一定在第一個加密項目就倒）；
+    // 已經有加密項目解成功過，之後再出的資料錯誤就是損毀，不是密碼。
+    bool repair() {
+        if (firstPassOk_) return true;
+        if (firstPassPwError_ && !encryptedOk_) return stop(ArchiveStatus::WrongPassword);
+        for (Item& it : items_) {
+            if (cancelled_) break;
+            if (it.landed || it.size > kRetryMaxBytes) continue; // 太大的不整個抓進記憶體，當作解不出來
+            std::vector<bit7z::byte_t> buf;
+            try {
+                reader_->extractTo(buf, it.index);
+            } catch (const bit7z::BitException&) {
+                continue; // 這個項目真的解不出來
+            }
+            const std::wstring path = diskPath(it);
+            HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h == INVALID_HANDLE_VALUE) continue;
+            DWORD written = 0;
+            const bool ok = buf.empty() || (WriteFile(h, buf.data(), static_cast<DWORD>(buf.size()), &written, nullptr) && written == buf.size());
+            CloseHandle(h);
+            if (!ok) {
+                DeleteFileW(path.c_str());
+                continue;
+            }
+            it.landed = true;
+        }
+        if (cancelled_) return stop(ArchiveStatus::Cancelled);
+        return true;
+    }
+
+    // 6. 清單：沒落地的從清單拿掉並回 Incomplete，呼叫端提示後照開剩下的。沒有副檔名的看檔頭，是圖片才留下並補副檔名。
+    void collect() {
+        r_.expected = static_cast<int>(items_.size());
+        for (const Item& it : items_) {
+            if (!it.landed) continue;
+            std::wstring path = diskPath(it);
+            if (it.noExt) {
+                const std::wstring ext = sniffImageExtension(path);
+                if (ext.empty()) { // 不是圖片，本來就不算
+                    DeleteFileW(path.c_str());
+                    --r_.expected;
+                    continue;
+                }
+                if (MoveFileW(path.c_str(), (path + ext).c_str())) path += ext;
+            }
+            r_.files.push_back(path);
+            r_.names.push_back(it.name);
+        }
+        r_.written = static_cast<int>(r_.files.size());
+        if (r_.files.empty()) {
+            // 一張都沒解出來：本來就沒有圖，或整個壞了。
+            r_.status = r_.expected == 0 ? ArchiveStatus::NoImages : firstPassOk_ ? ArchiveStatus::Incomplete : ArchiveStatus::Failed;
+            return;
+        }
+        r_.status = r_.written < r_.expected ? ArchiveStatus::Incomplete : ArchiveStatus::Ok;
+        if (r_.status == ArchiveStatus::Ok) r_.error = {};
+    }
+
+    bit7z::Bit7zLibrary& lib_;
+    const bit7z::tstring arcPath_;
+    const std::wstring destDir_;
+    const ExtractOptions& opt_;
+    ArchiveResult r_;
+    std::unique_ptr<bit7z::BitArchiveReader> reader_;
+    std::vector<Item> items_;
+    std::unordered_map<uint32_t, size_t> byIndex_; // 壓縮檔內的 index → items_ 的位置
+    bool anyEncrypted_ = false;
+    uint64_t total_ = 0;       // 進度的分母（7-Zip 回報的總量）
+    std::wstring lastStarted_; // 最近一個開始寫的磁碟檔名（序號名）
+    bool cancelled_ = false;
+    bool firstPassOk_ = true;
+    bool firstPassPwError_ = false;
+    bool encryptedOk_ = false; // 有加密項目完整解出來了（密碼是對的）
+};
+
+} // namespace
+
+LibraryLoad loadArchiveLibrary(const std::wstring& dllPath) {
     std::lock_guard<std::mutex> lock(g_libMutex);
-    return g_lib != nullptr;
+    LibraryLoad result;
+    if (g_lib) {
+        result.status = LibraryLoad::Ok;
+        return result;
+    }
+    if (GetFileAttributesW(dllPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        result.status = LibraryLoad::FileMissing;
+        result.systemError = GetLastError();
+        return result;
+    }
+    // 檔案在但不是能載入的 DLL（壞掉、位元數不對）時，Windows 預設會自己跳一個「映像錯誤」的系統對話框。
+    // 關掉它（SEM_FAILCRITICALERRORS）：載入失敗由我們自己說明原因。載完就還原。VM 桌面確認過不再跳系統對話框。
+    const UINT oldMode = SetErrorMode(SEM_FAILCRITICALERRORS);
+    SetErrorMode(oldMode | SEM_FAILCRITICALERRORS);
+    try {
+        g_lib = std::make_shared<bit7z::Bit7zLibrary>(bit7z::to_tstring(dllPath));
+        result.status = LibraryLoad::Ok;
+    } catch (const bit7z::BitException& e) {
+        result.status = LibraryLoad::LoadFailed;
+        const HRESULT hr = e.hresultCode();
+        result.systemError = HRESULT_FACILITY(hr) == FACILITY_WIN32 ? static_cast<unsigned long>(HRESULT_CODE(hr)) : static_cast<unsigned long>(hr);
+    }
+    SetErrorMode(oldMode);
+    return result;
+}
+
+bool archiveLibraryLoaded() { return library() != nullptr; }
+
+const wchar_t* archiveFailureMessage(ArchiveFailure reason) {
+    switch (reason) {
+    case ArchiveFailure::None: return L"";
+    case ArchiveFailure::InvalidArchive: return trKey(L"not a supported archive");
+    case ArchiveFailure::DataError: return trKey(L"The data in the archive is damaged");
+    case ArchiveFailure::CrcError: return trKey(L"The checksum does not match (the archive is damaged)");
+    case ArchiveFailure::HeadersError: return trKey(L"The archive headers are damaged");
+    case ArchiveFailure::UnexpectedEnd: return trKey(L"The archive is incomplete");
+    case ArchiveFailure::UnsupportedMethod: return trKey(L"The archive uses a compression method that is not supported");
+    case ArchiveFailure::CannotCreateFolder: return trKey(L"Cannot create the folder to unpack into");
+    case ArchiveFailure::NoLibrary: return trKey(L"7z.dll is not loaded");
+    case ArchiveFailure::System: return trKey(L"System error");
+    case ArchiveFailure::Other: return trKey(L"Unknown error");
+    }
+    return L"";
 }
 
 bool looksLikeArchive(const std::wstring& path) {
@@ -97,31 +378,21 @@ std::wstring sniffImageExtension(const std::wstring& path) {
     return f ? f->extensions.front() : L"";
 }
 
-bool extractAll(const std::wstring& archivePath, const std::wstring& destDir, std::wstring& error) {
-    error.clear();
-    bit7z::Bit7zLibrary* lib = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_libMutex);
-        lib = g_lib.get();
-    }
-    if (!lib) { error = L"7z.dll is not loaded"; return false; }
-    if (!createDirectories(destDir)) { error = L"Cannot create folder: " + destDir; return false; }
+ArchiveError extractAll(const std::wstring& archivePath, const std::wstring& destDir) {
+    auto lib = library();
+    if (!lib) return errorOf(ArchiveFailure::NoLibrary);
+    if (!createDirectories(destDir)) return errorOf(ArchiveFailure::CannotCreateFolder);
     try {
         bit7z::BitArchiveReader reader(*lib, bit7z::to_tstring(archivePath), bit7z::BitFormat::Auto);
         reader.extractTo(bit7z::to_tstring(destDir));
-        return true;
+        return {};
     } catch (const bit7z::BitException& e) {
-        error = utf8ToWide(e.what());
-        return false;
+        return errorOf(e);
     }
 }
 
 ArchiveStatus testPassword(const std::wstring& archivePath, const std::wstring& password) {
-    bit7z::Bit7zLibrary* lib = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_libMutex);
-        lib = g_lib.get();
-    }
+    auto lib = library();
     if (!lib) return ArchiveStatus::NoLibrary;
     bit7z::tstring arcPath = bit7z::to_tstring(archivePath);
     std::unique_ptr<bit7z::BitArchiveReader> reader;
@@ -157,170 +428,52 @@ ArchiveStatus testPassword(const std::wstring& archivePath, const std::wstring& 
 }
 
 ArchiveResult extractImages(const std::wstring& archivePath, const std::wstring& destDir, const ExtractOptions& opt) {
-    ArchiveResult r;
-    bit7z::Bit7zLibrary* lib = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_libMutex);
-        lib = g_lib.get();
-    }
-    if (!lib) { r.status = ArchiveStatus::NoLibrary; return r; }
-
-    bit7z::tstring arcPath = bit7z::to_tstring(archivePath);
-    bit7z::tstring password = bit7z::to_tstring(opt.password);
-
-    // 1. 開檔（7z 加密檔頭在這裡就會失敗）
-    std::unique_ptr<bit7z::BitArchiveReader> reader;
-    try {
-        reader = std::make_unique<bit7z::BitArchiveReader>(*lib, arcPath, bit7z::BitFormat::Auto, password);
-    } catch (const bit7z::BitException& e) {
-        if (bit7z::BitArchiveReader::isHeaderEncrypted(*lib, arcPath)) {
-            r.status = opt.password.empty() ? ArchiveStatus::NeedPassword : ArchiveStatus::WrongPassword;
-            return r;
-        }
-        r.status = ArchiveStatus::NotArchive;
-        r.error = utf8ToWide(e.what());
+    auto lib = library();
+    if (!lib) {
+        ArchiveResult r;
+        r.status = ArchiveStatus::NoLibrary;
         return r;
     }
+    return ImageExtraction(*lib, archivePath, destDir, opt).run();
+}
 
-    // 2. 挑項目：支援的副檔名，或完全沒有副檔名的小檔（解出來再看檔頭）。
-    struct Item { uint32_t index; std::wstring name; bool noExt; uint64_t size; bool encrypted; };
-    std::vector<Item> items;
-    bool anyEncrypted = false;
-    try {
-        r.solid = reader->isSolid();
-        for (const auto& item : reader->items()) {
-            if (item.isDir() || item.isSymLink()) continue;
-            std::wstring rel = item.nativePath();
-            for (auto& ch : rel) if (ch == L'\\') ch = L'/';
-            if (isArchiveEntrySkipped(rel)) continue;
-            std::wstring ext = extensionOf(rel);
-            bool noExt = ext.empty();
-            if (noExt ? item.size() > kNoExtMaxBytes : !isSupportedExtension(ext)) continue;
-            items.push_back({item.index(), rel, noExt, item.size(), item.isEncrypted()});
-            r.totalBytes += item.size();
-            if (item.isEncrypted()) anyEncrypted = true;
-        }
-    } catch (const bit7z::BitException& e) {
-        r.status = ArchiveStatus::Failed;
-        r.error = utf8ToWide(e.what());
-        return r;
+int findPassword(const std::wstring& archivePath, const std::vector<std::wstring>& passwords, const PasswordHooks& hooks,
+                 bool& cancelled) {
+    cancelled = false;
+    const int total = static_cast<int>(passwords.size());
+    auto wantsCancel = [&] { return hooks.cancelled && hooks.cancelled(); };
+    for (int i = 0; i < total; ++i) {
+        if (wantsCancel()) break;
+        if (hooks.onTry) hooks.onTry(i + 1, total);
+        if (testPassword(archivePath, passwords[static_cast<size_t>(i)]) == ArchiveStatus::Ok) return i;
     }
-    if (items.empty()) { r.status = ArchiveStatus::NoImages; return r; }
-    if (anyEncrypted && opt.password.empty()) { r.status = ArchiveStatus::NeedPassword; return r; }
-    if (r.totalBytes > opt.maxTotalBytes) { r.status = ArchiveStatus::TooLarge; return r; }
-    // 依壓縮檔內完整路徑自然排序，序號照這個順序給：磁碟上的順序就是閱讀順序。
-    std::stable_sort(items.begin(), items.end(),
-                     [](const Item& a, const Item& b) { return StrCmpLogicalW(a.name.c_str(), b.name.c_str()) < 0; });
-    std::unordered_map<uint32_t, std::wstring> diskName;
-    for (size_t i = 0; i < items.size(); ++i) {
-        wchar_t buf[16];
-        swprintf(buf, 16, L"%05u", static_cast<unsigned>(i + 1));
-        diskName[items[i].index] = std::wstring(buf) + (items[i].noExt ? L"" : extensionOf(items[i].name));
-    }
+    // 沒有一個對。試的途中（包括試最後一個的時候）按了取消，要算取消，不是「都不對」。
+    cancelled = wantsCancel();
+    return -1;
+}
 
-    // 3. 目標資料夾與剩餘空間
-    if (!createDirectories(destDir)) { r.status = ArchiveStatus::Failed; r.error = L"Cannot create temp folder"; return r; }
-    ULARGE_INTEGER freeBytes{};
-    if (GetDiskFreeSpaceExW(destDir.c_str(), &freeBytes, nullptr, nullptr) && freeBytes.QuadPart < r.totalBytes + (64ull << 20)) {
-        r.status = ArchiveStatus::NoSpace;
-        return r;
+PasswordExtract extractWithPasswords(const std::wstring& archivePath, const std::wstring& destDir, const ExtractOptions& opt,
+                                     const std::vector<std::wstring>& passwords, const PasswordHooks& hooks) {
+    PasswordExtract out;
+    out.result = extractImages(archivePath, destDir, opt);
+    if (out.result.status != ArchiveStatus::NeedPassword || passwords.empty()) {
+        if (out.result.usable()) out.password = opt.password;
+        return out;
     }
-
-    // 4. 解壓：一趟解完（solid 也只解一次），每個項目的磁碟檔名由 RenameCallback 給，不要的回空字串略過。
-    // bit7z 4.1 遇到第一個解不出來的項目（CRC 錯、資料損毀、目標寫不進去）就整趟停下來丟例外，
-    // 後面的項目都還沒解。所以失敗後不直接放棄：先留下已經解好的，再把剩下的逐一解到記憶體補寫（第 5 步）。
+    removeDirectoryRecursive(destDir);
     bool cancelled = false;
-    uint64_t total = r.totalBytes;
-    reader->setOverwriteMode(bit7z::OverwriteMode::Overwrite);
-    if (opt.progress) {
-        reader->setTotalCallback([&](uint64_t t) { total = t; });
-        reader->setProgressCallback([&](uint64_t done) {
-            if (!opt.progress(done, total)) { cancelled = true; return false; }
-            return true;
-        });
+    const int hit = findPassword(archivePath, passwords, hooks, cancelled);
+    if (cancelled) {
+        out.result.status = ArchiveStatus::Cancelled;
+        return out;
     }
-    std::wstring lastStarted; // 最近一個開始寫的磁碟檔名（序號名）：第一趟失敗時就是出事的那個，可能寫了一半
-    reader->setFileCallback([&](const bit7z::tstring& f) { lastStarted = utf8ToWide(f); });
-    bool firstPassOk = true, firstPassPwError = false;
-    try {
-        reader->extractTo(bit7z::to_tstring(destDir), [&](const bit7z::BitArchiveItem& item) -> bit7z::tstring {
-            auto it = diskName.find(item.index());
-            return it == diskName.end() ? bit7z::tstring{} : bit7z::to_tstring(it->second);
-        });
-    } catch (const bit7z::BitException& e) {
-        if (cancelled) { r.status = ArchiveStatus::Cancelled; return r; }
-        firstPassOk = false;
-        firstPassPwError = anyEncrypted && isPasswordError(e);
-        r.error = utf8ToWide(e.what());
-    }
-    if (cancelled) { r.status = ArchiveStatus::Cancelled; return r; }
-
-    // 5. 落地檢查與補救。
-    // 第一趟成功：每個項目都該在磁碟上。第一趟失敗：出事的那個（lastStarted）先刪掉，它和後面沒解到的逐一解到記憶體再寫檔，
-    // 解不出來的（真的壞了）略過。密碼錯的判定：第一趟就在第一個加密項目失敗、前面沒有任何加密項目解成功 → WrongPassword；
-    // 已經有加密項目解成功過，之後再出的資料錯誤就是損毀不是密碼。
-    auto onDisk = [&](const std::wstring& path) {
-        DWORD attr = GetFileAttributesW(path.c_str());
-        return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
-    };
-    std::vector<bool> landed(items.size(), false);
-    bool encryptedOk = false;
-    for (size_t i = 0; i < items.size(); ++i) {
-        const Item& it = items[i];
-        std::wstring path = destDir + L"\\" + diskName[it.index];
-        if (!firstPassOk && _wcsicmp(diskName[it.index].c_str(), lastStarted.c_str()) == 0) {
-            DeleteFileW(path.c_str()); // 可能寫到一半或內容已壞，重解
-            continue;
-        }
-        landed[i] = onDisk(path);
-        if (landed[i] && it.encrypted) encryptedOk = true;
-    }
-    if (!firstPassOk) {
-        if (firstPassPwError && !encryptedOk) { r.status = ArchiveStatus::WrongPassword; return r; }
-        for (size_t i = 0; i < items.size() && !cancelled; ++i) {
-            if (landed[i]) continue;
-            const Item& it = items[i];
-            if (it.size > kRetryMaxBytes) continue; // 太大的不整個抓進記憶體，當作解不出來
-            std::vector<bit7z::byte_t> buf;
-            try {
-                reader->extractTo(buf, it.index);
-            } catch (const bit7z::BitException&) {
-                continue; // 這個項目真的解不出來
-            }
-            std::wstring path = destDir + L"\\" + diskName[it.index];
-            HANDLE h = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (h == INVALID_HANDLE_VALUE) continue;
-            DWORD written = 0;
-            bool ok = buf.empty() || (WriteFile(h, buf.data(), static_cast<DWORD>(buf.size()), &written, nullptr) && written == buf.size());
-            CloseHandle(h);
-            if (!ok) { DeleteFileW(path.c_str()); continue; }
-            landed[i] = true;
-        }
-        if (cancelled) { r.status = ArchiveStatus::Cancelled; return r; }
-    }
-
-    // 6. 清單：沒落地的從清單拿掉並回 Incomplete，呼叫端提示後照開剩下的。
-    r.expected = static_cast<int>(items.size());
-    for (size_t i = 0; i < items.size(); ++i) {
-        const Item& it = items[i];
-        if (!landed[i]) continue;
-        std::wstring path = destDir + L"\\" + diskName[it.index];
-        if (it.noExt) {
-            std::wstring ext = sniffImageExtension(path);
-            if (ext.empty()) { DeleteFileW(path.c_str()); --r.expected; continue; } // 不是圖片，本來就不算
-            if (MoveFileW(path.c_str(), (path + ext).c_str())) path += ext;
-        }
-        r.files.push_back(path);
-        r.names.push_back(it.name);
-    }
-    r.written = static_cast<int>(r.files.size());
-    if (r.files.empty()) {
-        if (r.expected == 0) { r.status = ArchiveStatus::NoImages; return r; }
-        r.status = firstPassOk ? ArchiveStatus::Incomplete : ArchiveStatus::Failed; // 一張都沒解出來，就是整個壞了
-        return r;
-    }
-    r.status = r.written < r.expected ? ArchiveStatus::Incomplete : ArchiveStatus::Ok;
-    return r;
+    out.listTried = true;
+    if (hit < 0) return out; // NeedPassword：列表裡沒有對的
+    ExtractOptions withPassword = opt;
+    withPassword.password = passwords[static_cast<size_t>(hit)];
+    out.result = extractImages(archivePath, destDir, withPassword);
+    out.password = withPassword.password;
+    return out;
 }
 
 } // namespace mp

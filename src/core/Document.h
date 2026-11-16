@@ -12,6 +12,7 @@ namespace mp {
 // 一個可還原的狀態：底圖加上所有標註物件。
 struct DocState {
     ImagePtr image;
+    Dpi dpi; // 存檔時寫進檔案的解析度。和像素分開：只改它的步驟和前一步共用同一張底圖，不佔 undo 的記憶體
     std::vector<Annotation> items;
     uint64_t serial = 0; // 每個狀態唯一，用來判斷有沒有未存的變更
 };
@@ -22,7 +23,7 @@ enum class LeavePrompt { None, AskSave, WarnHistory };
 // 文件 = 目前狀態 + undo / redo 堆疊。每個完成的編輯動作呼叫 commit 一次。
 class Document {
 public:
-    void reset(ImagePtr image);
+    void reset(ImagePtr image, Dpi dpi = {});
 
     // undo 最多留幾步（會先夾進允許範圍）。超過時丟最舊的；改小時立刻丟。
     void setUndoLimit(int n);
@@ -43,15 +44,16 @@ public:
 
     const DocState& state() const { return cur_; }
     ImagePtr image() const { return cur_.image; }
+    Dpi dpi() const { return cur_.dpi; }
     const std::vector<Annotation>& items() const { return cur_.items; }
     // 直接改目前狀態，不進 undo。只給「編輯中暫時更新」用，例如打字時文字方塊長高。
     std::vector<Annotation>& itemsMutable() { return cur_.items; }
 
     // 把新狀態變成目前狀態；舊的進 undo，redo 清空。
     void commit(DocState next);
-    // 方便用法：只改標註物件。
+    // 方便用法：只改標註物件（底圖、解析度維持）。
     void commitItems(std::vector<Annotation> items);
-    // 只改底圖，標註物件維持。
+    // 只改底圖（標註物件、解析度維持）。
     void commitImage(ImagePtr image);
 
     bool canUndo() const { return !undo_.empty(); }

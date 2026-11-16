@@ -22,10 +22,8 @@ struct Fixture {
         ComPtr<IWICImagingFactory> wic;
         REQUIRE(SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic))));
         REQUIRE(SUCCEEDED(wic->CreateBitmap(64, 64, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &surface)));
-        ComPtr<ID2D1RenderTarget> rt;
-        auto props = D2D1::RenderTargetProperties(
-            D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f, 96.0f);
-        REQUIRE(SUCCEEDED(r.d2d()->CreateWicBitmapRenderTarget(surface.Get(), props, &rt)));
+        ComPtr<ID2D1RenderTarget> rt = r.device().createWicTarget(surface.Get());
+        REQUIRE(rt != nullptr);
         r.setTarget(rt);
     }
     ~Fixture() {
@@ -145,9 +143,9 @@ TEST_CASE("Renderer：兩頁並排，同一幀兩張都在，第一張的指標�
         const ImageBitmap* pb = f.r.imageBitmap(b);
         REQUIRE(pa != nullptr);
         REQUIRE(pb != nullptr);
-        CHECK(pa->source == a.get());
-        CHECK(pb->source == b.get());
+        CHECK(pa != pb);
         CHECK(pa->bitmap->GetPixelSize().width == 32);
+        CHECK(pb->bitmap->GetPixelSize().width == 16);
     });
     CHECK(f.r.cachedBitmapCount() == 2);
 }
@@ -202,7 +200,7 @@ TEST_CASE("Renderer::flatten：沒有標註時是底圖的複本") {
     DocState st;
     st.image = im;
     Image out;
-    REQUIRE(f.r.flatten(st, out));
+    REQUIRE(flatten(f.r.device(), st, out));
     CHECK(out.width == 200);
     CHECK(out.height == 40);
     CHECK(out.pixels == im->pixels);
@@ -212,7 +210,7 @@ TEST_CASE("Renderer::flatten：標註畫上去，標註以外的底圖像素不�
     Fixture f;
     auto im = patterned(200, 40);
     Image out;
-    REQUIRE(f.r.flatten(withRect(im, 20, 20, 24), out));
+    REQUIRE(flatten(f.r.device(), withRect(im, 20, 20, 24), out));
     REQUIRE(out.width == 200);
     REQUIRE(out.height == 40);
     int changedNear = 0, changedFar = 0;
@@ -228,13 +226,13 @@ TEST_CASE("Renderer::flatten：標註畫上去，標註以外的底圖像素不�
 
 TEST_CASE("Renderer::flatten：邊長到 kFlattenMaxSide 為止底圖像素正確") {
     Fixture f;
-    const int sizes[][2] = {{Renderer::kFlattenMaxSide, 2}, {2, Renderer::kFlattenMaxSide}};
+    const int sizes[][2] = {{kFlattenMaxSide, 2}, {2, kFlattenMaxSide}};
     for (auto& s : sizes) {
         int w = s[0], h = s[1];
         CAPTURE(w, h);
         auto im = patterned(w, h);
         Image out;
-        REQUIRE(f.r.flatten(withRect(im, w > h ? 20.0f : 1.0f, 1.0f, 6), out)); // 框一定有一段落在圖內
+        REQUIRE(flatten(f.r.device(), withRect(im, w > h ? 20.0f : 1.0f, 1.0f, 6), out)); // 框一定有一段落在圖內
         long long changedNear = 0, changedAway = 0;
         for (int y = 0; y < h; ++y)
             for (int x = 0; x < w; ++x) {
@@ -252,17 +250,17 @@ TEST_CASE("Renderer::flatten：畫不出正確結果時回報失敗") {
     // 邊長 524288 起：每個呼叫都成功，但底圖有像素是錯的。
     // 8388608（點陣圖邊長上限）：底圖整張是錯的。8388609：render target 建不起來，回傳沒有標註的底圖。
     Fixture f;
-    const int sizes[][2] = {{Renderer::kFlattenMaxSide + 1, 1}, {1, Renderer::kFlattenMaxSide + 1}, {8388608, 1}, {8388609, 1}};
+    const int sizes[][2] = {{kFlattenMaxSide + 1, 1}, {1, kFlattenMaxSide + 1}, {8388608, 1}, {8388609, 1}};
     for (auto& s : sizes) {
         CAPTURE(s[0], s[1]);
         Image out;
-        CHECK_FALSE(f.r.flatten(withRect(patterned(s[0], s[1]), 1.0f, 1.0f, 6), out));
+        CHECK_FALSE(flatten(f.r.device(), withRect(patterned(s[0], s[1]), 1.0f, 1.0f, 6), out));
     }
     // 沒有標註就不用畫，多大都只是複製
     DocState plain;
-    plain.image = patterned(Renderer::kFlattenMaxSide + 1, 1);
+    plain.image = patterned(kFlattenMaxSide + 1, 1);
     Image out;
-    CHECK(f.r.flatten(plain, out));
+    CHECK(flatten(f.r.device(), plain, out));
     CHECK(out.pixels == plain.image->pixels);
 }
 
@@ -273,15 +271,135 @@ TEST_CASE("Renderer：馬賽克小圖只留這一幀畫過的") {
     m.id = 7;
     m.blockSize = 8;
     f.frame([&] {
-        DrawCtx ctx{f.r.rt(), a.get(), f.r.imageBitmap(a), &f.r.mosaicCache()};
-        f.r.drawAnnotation(ctx, m);
+        drawAnnotation(f.r.paintCtx(a, f.r.imageBitmap(a)), m);
     });
-    CHECK(f.r.mosaicCache().size() == 1);
+    CHECK(f.r.cachedMosaicCount() == 1);
     f.frame([&] { // 物件還在：沿用
-        DrawCtx ctx{f.r.rt(), a.get(), f.r.imageBitmap(a), &f.r.mosaicCache()};
-        f.r.drawAnnotation(ctx, m);
+        drawAnnotation(f.r.paintCtx(a, f.r.imageBitmap(a)), m);
     });
-    CHECK(f.r.mosaicCache().size() == 1);
+    CHECK(f.r.cachedMosaicCount() == 1);
     f.frame([&] { f.r.imageBitmap(a); }); // 物件刪掉了
-    CHECK(f.r.mosaicCache().empty());
+    CHECK(f.r.cachedMosaicCount() == 0);
+}
+
+TEST_CASE("Surface：畫刷一個顏色一支，同時拿兩支不會互相改色") {
+    // 以前每個 target 只有一支畫刷，每次取用就改色：先拿一支、再拿第二支，第一支也變成第二支的顏色。
+    Fixture f;
+    Surface& s = f.r.surface();
+    ID2D1SolidColorBrush* red = s.brush(D2D1::ColorF(1, 0, 0));
+    ID2D1SolidColorBrush* blue = s.brush(D2D1::ColorF(0, 0, 1));
+    REQUIRE(red != nullptr);
+    REQUIRE(blue != nullptr);
+    CHECK(red != blue);
+    CHECK(red->GetColor().r == 1.0f);
+    CHECK(red->GetColor().b == 0.0f);
+    CHECK(blue->GetColor().b == 1.0f);
+    CHECK(s.brush(D2D1::ColorF(1, 0, 0)) == red); // 同一個顏色是同一支
+    CHECK(s.brush(Color::rgb(255, 0, 0)) == red);
+    CHECK(s.brush(D2D1::ColorF(1, 0, 0, 0.5f)) != red); // alpha 不同就是另一支
+    CHECK(s.brushCount() == 3);
+}
+
+TEST_CASE("Surface：換 target 時畫刷一起丟；沒有 target 時拿不到畫刷") {
+    Fixture f;
+    Surface& s = f.r.surface();
+    REQUIRE(s.brush(D2D1::ColorF(1, 0, 0)) != nullptr);
+    CHECK(s.brushCount() == 1);
+    f.r.discardTarget();
+    CHECK(s.brushCount() == 0);
+    CHECK(s.rt() == nullptr);
+    CHECK(s.brush(D2D1::ColorF(1, 0, 0)) == nullptr);
+    s.drawUiText(L"x", D2D1::RectF(0, 0, 10, 10), 12, D2D1::ColorF(0, 0, 0)); // 沒有 target：不畫，也不當掉
+}
+
+TEST_CASE("Surface：畫刷用過太多種顏色，endFrame 清掉重來") {
+    Fixture f;
+    Surface& s = f.r.surface();
+    for (size_t i = 0; i < Surface::kMaxBrushes; ++i) s.brush(D2D1::ColorF(static_cast<float>(i), 0, 0));
+    f.r.endFrame();
+    CHECK(s.brushCount() == Surface::kMaxBrushes); // 還沒超過：留著
+    s.brush(D2D1::ColorF(0, 1, 0));
+    f.r.endFrame();
+    CHECK(s.brushCount() == 0);
+    CHECK(s.brush(D2D1::ColorF(0, 1, 0)) != nullptr);
+}
+
+TEST_CASE("RenderDevice：UI 文字格式每種組合一個，建好不再改；建不出來回 nullptr、不留在快取") {
+    Fixture f;
+    RenderDevice& d = f.r.device();
+    IDWriteTextFormat* a = d.uiFormat(13, false);
+    REQUIRE(a != nullptr);
+    CHECK(d.uiFormat(13, false) == a);
+    IDWriteTextFormat* wrapped = d.uiFormat(13, false, DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true);
+    REQUIRE(wrapped != nullptr);
+    CHECK(wrapped != a);
+    CHECK(wrapped->GetWordWrapping() == DWRITE_WORD_WRAPPING_WRAP);
+    CHECK(a->GetWordWrapping() == DWRITE_WORD_WRAPPING_NO_WRAP); // 拿了換行的那個，原本的不受影響
+    CHECK(a->GetParagraphAlignment() == DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+    CHECK(d.uiFormat(13, true) != a);
+    CHECK(d.uiFormat(13, false, DWRITE_TEXT_ALIGNMENT_CENTER) != a);
+    CHECK(d.uiFormat(13, false, DWRITE_TEXT_ALIGNMENT_CENTER)->GetTextAlignment() == DWRITE_TEXT_ALIGNMENT_CENTER);
+    // 字級不合法：DirectWrite 建不出格式。以前會把空指標存進快取，之後直接拿去用。
+    CHECK(d.uiFormat(0, false) == nullptr);
+    CHECK(d.uiFormat(-5, false) == nullptr);
+    CHECK(d.uiFormat(0, false) == nullptr); // 再問一次也一樣，不會拿到快取裡的空指標以外的東西
+    CHECK(d.measureUiText(L"abc", 0) == 0.0f);
+    f.frame([&] { f.r.drawUiText(L"abc", D2D1::RectF(0, 0, 60, 60), 0, D2D1::ColorF(0, 0, 0)); }); // 不畫，也不當掉
+}
+
+TEST_CASE("RenderDevice：pathGeometry 建出路徑；還沒 init 時回 nullptr") {
+    Fixture f;
+    auto geo = f.r.device().pathGeometry([](ID2D1GeometrySink& sink) {
+        sink.BeginFigure(D2D1::Point2F(0, 0), D2D1_FIGURE_BEGIN_FILLED);
+        sink.AddLine(D2D1::Point2F(10, 0));
+        sink.AddLine(D2D1::Point2F(10, 10));
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+    });
+    REQUIRE(geo != nullptr);
+    D2D1_RECT_F b{};
+    REQUIRE(SUCCEEDED(geo->GetBounds(nullptr, &b)));
+    CHECK(b.right == 10.0f);
+    CHECK(b.bottom == 10.0f);
+
+    RenderDevice blank; // 沒有 init：工廠是空的
+    bool called = false;
+    CHECK(blank.pathGeometry([&](ID2D1GeometrySink&) { called = true; }) == nullptr);
+    CHECK_FALSE(called);
+    CHECK(blank.createWicTarget(f.surface.Get()) == nullptr);
+    CHECK(blank.uiFormat(13, false) == nullptr);
+}
+
+TEST_CASE("MosaicCache：握著來源圖到不再畫它的那一幀；底圖換了就重做") {
+    Fixture f;
+    auto a = std::make_shared<Image>(64, 64);
+    for (auto& b : a->pixels) b = 255; // 白
+    std::weak_ptr<const Image> aWeak = a;
+    Annotation m = makeShape(Kind::Mosaic, {32, 32}, 32, StrokeStyle{});
+    m.id = 7;
+    m.blockSize = 8;
+    MosaicCache cache;
+    const MosaicCache::Tile* t = cache.get(f.r.rt(), a, m);
+    REQUIRE(t != nullptr);
+    ID2D1Bitmap* first = t->bitmap.Get();
+    CHECK(cache.get(f.r.rt(), a, m)->bitmap.Get() == first); // 沒變：沿用
+    cache.endFrame();
+    a.reset();
+    CHECK_FALSE(aWeak.expired()); // 快取握著，位址不會被別張圖重用
+    auto b = std::make_shared<Image>(64, 64);
+    const MosaicCache::Tile* t2 = cache.get(f.r.rt(), b, m);
+    REQUIRE(t2 != nullptr);
+    CHECK(aWeak.expired()); // 換了底圖：舊的那筆被換掉
+    Annotation moved = m;
+    moved.rect.left -= 8;
+    CHECK(cache.get(f.r.rt(), b, moved) != nullptr);
+    CHECK(cache.size() == 1);
+    cache.endFrame();
+    cache.endFrame(); // 這一幀沒畫
+    CHECK(cache.size() == 0);
+    // 整個在圖外、沒有 target、沒有圖：沒有小圖可畫
+    Annotation outside = m;
+    outside.rect = {200, 200, 260, 260};
+    CHECK(cache.get(f.r.rt(), b, outside) == nullptr);
+    CHECK(cache.get(nullptr, b, m) == nullptr);
+    CHECK(cache.get(f.r.rt(), nullptr, m) == nullptr);
 }

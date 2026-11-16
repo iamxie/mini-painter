@@ -60,6 +60,92 @@ IoError systemFailure(IoErrorCode code, DWORD lastError) {
     return e;
 }
 
+// 檔案沒記解析度（或記了不合理的值）時用的值。
+constexpr double kDefaultDpi = 96.0;
+
+// 解碼出來的圖依 EXIF orientation 轉正，包成 ImagePtr。寬高對調的方向（5～8）解析度也跟著對調。
+ImagePtr oriented(Image&& img, int orientation, Dpi& dpi) {
+    if (orientation >= 5 && orientation <= 8) dpi = swapped(dpi);
+    return std::make_shared<Image>(applyExifOrientation(std::move(img), orientation));
+}
+
+// 只讀的 straight 像素，給編碼器用。來源是 StraightImage，或一張不透明的 Image：
+// alpha 全是 255 時 premultiplied 和 straight 是同一組位元組，不必複製也不必換算。
+class StraightView {
+public:
+    explicit StraightView(const StraightImage& s) : px_(&s) {}
+    // 呼叫端要先確認 img 沒有透明（hasTransparency）。
+    static StraightView ofOpaque(const Image& img) { return StraightView(static_cast<const PixelBuffer*>(&img)); }
+    const PixelBuffer* operator->() const { return px_; }
+    const PixelBuffer& buffer() const { return *px_; }
+
+private:
+    explicit StraightView(const PixelBuffer* p) : px_(p) {}
+    const PixelBuffer* px_;
+};
+
+// 把我們的像素緩衝區當成 WIC 的影像來源：編碼器直接從這裡一段一段讀，不必先整張複製成 IWICBitmap
+//（那一份複製也受 4 GB 的大小限制）。緩衝區要活到編碼器 Commit 之後。
+class MemorySource final : public IWICBitmapSource {
+public:
+    MemorySource(const PixelBuffer& buf, Dpi dpi) : buf_(buf), dpi_(dpi) {}
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override {
+        if (!out) return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IWICBitmapSource)) {
+            *out = static_cast<IWICBitmapSource*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return static_cast<ULONG>(InterlockedIncrement(&refs_)); }
+    ULONG STDMETHODCALLTYPE Release() override {
+        LONG n = InterlockedDecrement(&refs_);
+        if (n == 0) delete this;
+        return static_cast<ULONG>(n);
+    }
+
+    HRESULT STDMETHODCALLTYPE GetSize(UINT* w, UINT* h) override {
+        if (!w || !h) return E_POINTER;
+        *w = static_cast<UINT>(buf_.width);
+        *h = static_cast<UINT>(buf_.height);
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetPixelFormat(WICPixelFormatGUID* format) override {
+        if (!format) return E_POINTER;
+        *format = GUID_WICPixelFormat32bppBGRA; // straight alpha
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE GetResolution(double* x, double* y) override {
+        if (!x || !y) return E_POINTER;
+        *x = dpi_.x;
+        *y = dpi_.y;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE CopyPalette(IWICPalette*) override { return WINCODEC_ERR_PALETTEUNAVAILABLE; }
+    HRESULT STDMETHODCALLTYPE CopyPixels(const WICRect* rc, UINT stride, UINT size, BYTE* out) override {
+        if (!out) return E_POINTER;
+        WICRect all{0, 0, buf_.width, buf_.height};
+        if (!rc) rc = &all;
+        if (rc->X < 0 || rc->Y < 0 || rc->Width <= 0 || rc->Height <= 0 || rc->X > buf_.width - rc->Width ||
+            rc->Y > buf_.height - rc->Height)
+            return E_INVALIDARG;
+        const size_t rowBytes = static_cast<size_t>(rc->Width) * 4;
+        if (stride < rowBytes || size < static_cast<size_t>(stride) * (rc->Height - 1) + rowBytes) return WINCODEC_ERR_INSUFFICIENTBUFFER;
+        for (int y = 0; y < rc->Height; ++y)
+            std::memcpy(out + static_cast<size_t>(y) * stride, buf_.px(rc->X, rc->Y + y), rowBytes);
+        return S_OK;
+    }
+
+private:
+    ~MemorySource() = default;
+    const PixelBuffer& buf_;
+    Dpi dpi_;
+    LONG refs_ = 1;
+};
+
 ComPtr<IWICImagingFactory> makeFactory() {
     ComPtr<IWICImagingFactory> f;
     CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f));
@@ -472,9 +558,9 @@ LoadResult loadWithWic(const std::wstring& path) {
     hr = frame->GetSize(&w, &h);
     if (FAILED(hr) || w == 0 || h == 0) { r.error = failure(IoErrorCode::EmptyImage, FAILED(hr) ? hr : S_OK); return r; }
 
-    auto img = std::make_shared<Image>(static_cast<int>(w), static_cast<int>(h));
-    if (FAILED(frame->GetResolution(&img->dpiX, &img->dpiY)) || img->dpiX <= 0) img->dpiX = 96;
-    if (img->dpiY <= 0) img->dpiY = 96;
+    Image img(static_cast<int>(w), static_cast<int>(h));
+    if (FAILED(frame->GetResolution(&r.dpi.x, &r.dpi.y)) || r.dpi.x <= 0) r.dpi.x = kDefaultDpi;
+    if (r.dpi.y <= 0) r.dpi.y = kDefaultDpi;
 
     ComPtr<IWICFormatConverter> conv;
     hr = factory->CreateFormatConverter(&conv);
@@ -482,16 +568,13 @@ LoadResult loadWithWic(const std::wstring& path) {
         hr = conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0,
                               WICBitmapPaletteTypeMedianCut);
     if (FAILED(hr)) { r.error = failure(IoErrorCode::ConvertFailed, hr); return r; }
-    hr = conv->CopyPixels(nullptr, static_cast<UINT>(img->stride()), static_cast<UINT>(img->pixels.size()),
-                          img->pixels.data());
+    hr = conv->CopyPixels(nullptr, static_cast<UINT>(img.stride()), static_cast<UINT>(img.pixels.size()), img.pixels.data());
     if (FAILED(hr)) { r.error = failure(IoErrorCode::ReadPixelsFailed, hr); return r; }
 
     readMetadata(frame.Get(), r.info);
     readColorProfile(factory.Get(), frame.Get(), r.info);
     r.info.orientation = orientationOf(frame.Get());
-
-    if (r.info.orientation >= 2) img = std::make_shared<Image>(applyExifOrientation(*img, r.info.orientation));
-    r.image = img;
+    r.image = oriented(std::move(img), r.info.orientation, r.dpi);
     return r;
 }
 
@@ -923,14 +1006,14 @@ LoadResult loadWebP(const std::wstring& path) {
     if (!readFileBytes(path, bytes)) { r.error = failure(IoErrorCode::FileUnreadable); return r; }
     WebPBitstreamFeatures feat{};
     if (WebPGetFeatures(bytes.data(), bytes.size(), &feat) != VP8_STATUS_OK) { r.error = failure(IoErrorCode::InvalidWebP); return r; }
-    auto img = std::make_shared<Image>(feat.width, feat.height);
+    Image img(feat.width, feat.height);
     WebPDecoderConfig config;
     if (!WebPInitDecoderConfig(&config)) { r.error = failure(IoErrorCode::WebPInitFailed); return r; }
     config.output.colorspace = MODE_bgrA; // premultiplied BGRA
     config.output.is_external_memory = 1;
-    config.output.u.RGBA.rgba = img->pixels.data();
-    config.output.u.RGBA.stride = static_cast<int>(img->stride());
-    config.output.u.RGBA.size = img->pixels.size();
+    config.output.u.RGBA.rgba = img.pixels.data();
+    config.output.u.RGBA.stride = static_cast<int>(img.stride());
+    config.output.u.RGBA.size = img.pixels.size();
     if (WebPDecode(bytes.data(), bytes.size(), &config) != VP8_STATUS_OK) { r.error = failure(IoErrorCode::WebPDecodeFailed); return r; }
     r.info.colorModel = ColorModel::Rgb;
     r.info.bitsPerPixel = feat.has_alpha ? 32 : 24;
@@ -946,8 +1029,7 @@ LoadResult loadWebP(const std::wstring& path) {
     if (!chunks.icc.empty()) r.info.colorProfile = iccProfileDescription(chunks.icc.data(), chunks.icc.size());
     dropEmptySections(r.info.sections);
     r.info.orientation = exifOrientation(chunks.exif.data(), chunks.exif.size());
-    if (r.info.orientation >= 2) img = std::make_shared<Image>(applyExifOrientation(*img, r.info.orientation));
-    r.image = img;
+    r.image = oriented(std::move(img), r.info.orientation, r.dpi);
     return r;
 }
 
@@ -1012,17 +1094,22 @@ bool muxWebP(const uint8_t* bitstream, size_t size, const std::vector<uint8_t>& 
     return ok;
 }
 
-IoError saveWebP(const StraightImage& straight, const std::wstring& tmpPath, const SourceMeta& meta, bool sizeChanged,
+// WebP 一律有損，品質 90（0～100）。
+constexpr float kWebPQuality = 90.0f;
+// JPEG 的品質（0～1）。
+constexpr float kJpegQuality = 0.9f;
+
+IoError saveWebP(StraightView straight, const std::wstring& tmpPath, const SourceMeta& meta, bool sizeChanged,
                  bool& metadataDropped) {
     uint8_t* encoded = nullptr;
-    size_t n = WebPEncodeBGRA(straight.pixels.data(), straight.width, straight.height,
-                              static_cast<int>(straight.stride()), 90.0f, &encoded);
+    size_t n = WebPEncodeBGRA(straight->pixels.data(), straight->width, straight->height,
+                              static_cast<int>(straight->stride()), kWebPQuality, &encoded);
     if (n == 0 || !encoded) return failure(IoErrorCode::WebPEncodeFailed);
     // 有 metadata 要帶就用 mux 把 EXIF / XMP / ICCP chunk 組進容器。組不起來時圖照存，只回報 metadata 沒帶到。
     std::vector<uint8_t> withMeta;
     if (meta.valid) {
         SourceBytes sb = bytesForWebP(meta);
-        if (!sb.exif.empty()) patchExifTiff(sb.exif, sizeChanged, straight.width, straight.height);
+        if (!sb.exif.empty()) patchExifTiff(sb.exif, sizeChanged, straight->width, straight->height);
         if (!sb.exif.empty() || !sb.xmp.empty() || !meta.chunks.icc.empty()) {
             if (!muxWebP(encoded, n, meta.chunks.icc, sb.exif, sb.xmp, withMeta)) {
                 withMeta.clear();
@@ -1037,7 +1124,7 @@ IoError saveWebP(const StraightImage& straight, const std::wstring& tmpPath, con
     return ok ? IoError{} : systemFailure(IoErrorCode::WriteFailed, lastError);
 }
 
-IoError saveWithWic(IWICImagingFactory* factory, const StraightImage& straight, const std::wstring& tmpPath, ImageFormat target,
+IoError saveWithWic(IWICImagingFactory* factory, StraightView straight, Dpi dpi, const std::wstring& tmpPath, ImageFormat target,
                     bool keepAlpha, const SourceMeta& meta, bool sizeChanged, const StraightImage* thumbnail,
                     bool& metadataDropped) {
     GUID container{};
@@ -1064,16 +1151,16 @@ IoError saveWithWic(IWICImagingFactory* factory, const StraightImage& straight, 
         VARIANT v;
         VariantInit(&v);
         v.vt = VT_R4;
-        v.fltVal = 0.9f;
+        v.fltVal = kJpegQuality;
         hr = props->Write(1, &opt, &v);
         if (FAILED(hr)) return failure(IoErrorCode::FrameSetupFailed, hr); // 品質設不進去時不要用預設品質默默存
     }
     hr = frame->Initialize(props.Get());
     if (SUCCEEDED(hr) && meta.valid &&
-        !applyMetadata(factory, frame.Get(), target, meta, straight.width, straight.height, sizeChanged))
+        !applyMetadata(factory, frame.Get(), target, meta, straight->width, straight->height, sizeChanged))
         metadataDropped = true;
-    if (SUCCEEDED(hr)) hr = frame->SetSize(static_cast<UINT>(straight.width), static_cast<UINT>(straight.height));
-    if (SUCCEEDED(hr)) hr = frame->SetResolution(straight.dpiX, straight.dpiY);
+    if (SUCCEEDED(hr)) hr = frame->SetSize(static_cast<UINT>(straight->width), static_cast<UINT>(straight->height));
+    if (SUCCEEDED(hr)) hr = frame->SetResolution(dpi.x, dpi.y);
     if (FAILED(hr)) return failure(IoErrorCode::FrameSetupFailed, hr);
     if (thumbnail) {
         // EXIF 縮圖從編輯後的圖重新產生；不支援的編碼器會失敗，忽略。
@@ -1089,14 +1176,9 @@ IoError saveWithWic(IWICImagingFactory* factory, const StraightImage& straight, 
     hr = frame->SetPixelFormat(&want); // 編碼器不支援時會改成它支援的格式，WriteSource 會自動轉換
     if (FAILED(hr)) return failure(IoErrorCode::FrameSetupFailed, hr);
 
-    ComPtr<IWICBitmap> bitmap;
-    hr = factory->CreateBitmapFromMemory(static_cast<UINT>(straight.width), static_cast<UINT>(straight.height),
-                                         GUID_WICPixelFormat32bppBGRA, static_cast<UINT>(straight.stride()),
-                                         static_cast<UINT>(straight.pixels.size()),
-                                         const_cast<BYTE*>(straight.pixels.data()), &bitmap);
-    if (FAILED(hr)) return failure(IoErrorCode::CreateBitmapFailed, hr);
-
-    hr = frame->WriteSource(bitmap.Get(), nullptr);
+    ComPtr<IWICBitmapSource> source;
+    source.Attach(new MemorySource(straight.buffer(), dpi));
+    hr = frame->WriteSource(source.Get(), nullptr);
     if (SUCCEEDED(hr)) hr = frame->Commit();
     if (SUCCEEDED(hr)) hr = encoder->Commit();
     if (FAILED(hr)) return failure(IoErrorCode::WriteImageFailed, hr);
@@ -1244,7 +1326,11 @@ bool readImageSize(const std::wstring& path, int& width, int& height) {
     return true;
 }
 
-SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptions& opt) {
+namespace {
+
+// 存檔的本體。img 沒有透明時直接拿它編碼（不複製）；有透明時要改像素（鋪白底、換成 straight），
+// 改的是 scratch（呼叫端給的、可以弄髒的那一份，內容和 img 相同）。
+SaveResult encodeAndReplace(const Image& img, Image* scratch, const std::wstring& path, const SaveOptions& opt) {
     SaveResult res;
     const std::wstring ext = extensionOf(path);
     const ImageFormat target = imageFormatOfExtension(ext);
@@ -1264,20 +1350,27 @@ SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptio
         //（orientation 轉正過的圖，寬高對調了，也算變）。
         SourceMeta meta = readSourceMeta(factory.Get(), opt.metadataSource);
         const bool sizeChanged = meta.valid && (meta.width != img.width || meta.height != img.height);
+        const bool wantThumbnail = meta.valid && (target == ImageFormat::Jpeg || target == ImageFormat::Tiff);
 
-        Image work = img;
-        // JPEG 存不了 alpha；WIC 寫的 BMP 沒有 alpha mask，讀回當成不透明。直接丟掉 alpha 時透明處會變黑，所以先鋪白底。
-        if (!format->keepsTransparency) compositeOnWhite(work);
-        // 縮圖要在還是 premultiplied 的時候縮（resample 假設 premultiplied）。
         std::optional<StraightImage> thumbnail;
-        if (meta.valid && (target == ImageFormat::Jpeg || target == ImageFormat::Tiff)) thumbnail = toStraight(makeThumbnail(work));
-        const StraightImage straight = toStraight(std::move(work));
+        std::optional<StraightImage> converted; // 有透明時：換成 straight 的那一份
+        bool keepAlpha = false;
+        if (scratch) {
+            // JPEG 存不了 alpha；WIC 寫的 BMP 沒有 alpha mask，讀回當成不透明。直接丟掉 alpha 時透明處會變黑，所以先鋪白底。
+            if (!format->keepsTransparency) compositeOnWhite(*scratch);
+            else keepAlpha = true;
+            // 縮圖要在還是 premultiplied 的時候縮（resample 假設 premultiplied）。
+            if (wantThumbnail) thumbnail = toStraight(makeThumbnail(*scratch));
+            converted = toStraight(std::move(*scratch));
+        } else if (wantThumbnail) {
+            thumbnail = toStraight(makeThumbnail(img));
+        }
+        const StraightView straight = converted ? StraightView(*converted) : StraightView::ofOpaque(img);
 
         if (target == ImageFormat::WebP) {
             res.error = saveWebP(straight, tmp, meta, sizeChanged, res.metadataDropped);
         } else {
-            const bool keepAlpha = target != ImageFormat::Jpeg && hasTransparency(straight);
-            res.error = saveWithWic(factory.Get(), straight, tmp, target, keepAlpha, meta, sizeChanged,
+            res.error = saveWithWic(factory.Get(), straight, opt.dpi, tmp, target, keepAlpha, meta, sizeChanged,
                                     thumbnail ? &*thumbnail : nullptr, res.metadataDropped);
         }
         // 來源檔常常就是要覆寫的那個檔：decoder 還握著它時 MoveFileEx 會失敗，先放掉。
@@ -1294,6 +1387,24 @@ SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptio
         DeleteFileW(tmp.c_str());
     }
     return res;
+}
+
+} // namespace
+
+SaveResult saveImage(Image&& img, const std::wstring& path, const SaveOptions& opt) {
+    return encodeAndReplace(img, hasTransparency(img) ? &img : nullptr, path, opt);
+}
+
+SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptions& opt) {
+    if (!hasTransparency(img)) return encodeAndReplace(img, nullptr, path, opt);
+    try {
+        Image copy = img; // 有透明：要改像素，只能複製一份
+        return encodeAndReplace(copy, &copy, path, opt);
+    } catch (const std::bad_alloc&) {
+        SaveResult res;
+        res.error = failure(IoErrorCode::OutOfMemory);
+        return res;
+    }
 }
 
 } // namespace mp

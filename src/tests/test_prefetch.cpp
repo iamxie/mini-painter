@@ -105,12 +105,12 @@ TEST_CASE("Prefetch：背景先解好其他屏，take 直接給、不再解；cu
     pf.setWanted({p1}, {{p2, p3}, {p4}}, std::nullopt, {}, kBig);
     pf.waitIdle();
     CHECK(c.count == 3);
-    auto r = pf.take(p2);
+    auto r = pf.get(p2);
     REQUIRE(r);
     REQUIRE(r->image);
     CHECK(r->image->width == 40);
     CHECK(c.count == 3);
-    CHECK_FALSE(pf.take(p1)); // current 是呼叫端自己解的
+    CHECK_FALSE(pf.get(p1)); // current 是呼叫端自己解的
     CHECK(pf.heldBytes() == 3 * 40 * 60 * 4);
 }
 
@@ -126,14 +126,14 @@ TEST_CASE("Prefetch：不在清單裡的立刻放掉；put 進來的 current 不
     pf.setWanted({p1}, {{p2}}, std::nullopt, {}, kBig);
     pf.waitIdle();
     CHECK(pf.heldBytes() == 50 * 50 * 4);
-    std::weak_ptr<const Image> w2 = pf.take(p2)->image;
+    std::weak_ptr<const Image> w2 = pf.get(p2)->image;
     // 翻到 2：1 變成上一屏、3 是下一屏
     pf.setWanted({p2}, {{p3}, {p1}}, std::nullopt, {}, kBig);
     pf.waitIdle();
     cur = {};
     CHECK_FALSE(w1.expired());
     CHECK(c.count == 2);
-    auto back = pf.take(p1);
+    auto back = pf.get(p1);
     REQUIRE(back);
     CHECK(back->image == w1.lock());
     back.reset();
@@ -153,20 +153,28 @@ TEST_CASE("Prefetch：上限依優先順序，放不下的那一屏起都不留�
     pf.setWanted({p1}, {{p2, p3}, {p4}}, std::nullopt, {}, 100000);
     pf.waitIdle();
     CHECK(pf.heldBytes() == 80000);
-    CHECK(pf.take(p2));
-    CHECK(pf.take(p3));
-    CHECK_FALSE(pf.take(p4));
+    CHECK(pf.get(p2));
+    CHECK(pf.get(p3));
+    CHECK_FALSE(pf.get(p4));
     // 上限改小：優先順序低的先丟（這裡只剩第一屏也放不下，整屏丟）。
     // 先把解碼器卡住：setWanted 之後背景會馬上重解，不卡住的話下面那一行有時看到的是重解後的量。
     c.gate.close();
     pf.setWanted({p1}, {{p2, p3}, {p4}}, std::nullopt, {}, 50000);
     CHECK(pf.heldBytes() == 0);
+    const int decodedBefore = c.count;
     c.gate.release();
     pf.waitIdle();
-    // 背景重新解：第一頁放得下就留著，第二頁看檔頭就知道放不下、這一輪停手。留下的是半屏（reflection.md N-04）。
-    CHECK(pf.heldBytes() == 40000);
-    CHECK(pf.take(p2));
-    CHECK_FALSE(pf.take(p3));
+    // 背景不會回頭只解半屏：開始解一屏之前先看檔頭估整屏的大小，放不下就不解（以前會留下第一頁，reflection.md N-04）。
+    CHECK(pf.heldBytes() == 0);
+    CHECK(c.count == decodedBefore);
+    CHECK_FALSE(pf.get(p2));
+    CHECK_FALSE(pf.get(p3));
+    // 上限剛好放得下一屏：整屏都留
+    pf.setWanted({p1}, {{p2, p3}, {p4}}, std::nullopt, {}, 80000);
+    pf.waitIdle();
+    CHECK(pf.heldBytes() == 80000);
+    CHECK(pf.get(p3));
+    CHECK_FALSE(pf.get(p4));
     // 單張就比上限大：看檔頭就停手
     Counting c2;
     Prefetcher pf2(c2.decoder());
@@ -190,7 +198,7 @@ TEST_CASE("Prefetch：背景正在解的那一頁，take 等它解完，不會�
     pf.setWanted({}, {{a}}, std::nullopt, {}, kBig);
     c.gate.waitEntered(1);
     // 背景卡在解 a 的時候，另一條執行緒來拿：解碼器沒放行之前 take 不能回來。
-    auto taking = std::async(std::launch::async, [&] { return pf.take(a); });
+    auto taking = std::async(std::launch::async, [&] { return pf.get(a); });
     CHECK(taking.wait_for(std::chrono::milliseconds(200)) == std::future_status::timeout);
     c.gate.release();
     auto r = taking.get();
@@ -207,7 +215,7 @@ TEST_CASE("Prefetch：解碼後檔案被改過（例如存檔），take 當作�
     pf.setWanted({}, {{a}}, std::nullopt, {}, kBig);
     pf.waitIdle();
     writePng(a, 31, 30);
-    CHECK_FALSE(pf.take(a));
+    CHECK_FALSE(pf.get(a));
 }
 
 TEST_CASE("Prefetch：高品質縮圖照 target 的尺寸先做好；尺寸不對不給；不要縮圖時丟掉") {
@@ -218,7 +226,7 @@ TEST_CASE("Prefetch：高品質縮圖照 target 的尺寸先做好；尺寸不�
     Prefetcher pf;
     pf.setWanted({}, {{a, b}}, std::nullopt, halfSize(), kBig);
     pf.waitIdle();
-    ImagePtr ia = pf.take(a)->image;
+    ImagePtr ia = pf.get(a)->image;
     ImagePtr s = pf.scaled(ia, 40, 30);
     REQUIRE(s);
     CHECK(s->width == 40);
@@ -332,8 +340,8 @@ TEST_CASE("Prefetch 換本：資料夾，背景查到下一本並先解第一屏
     CHECK(plan->wide.size() == 4);
     CHECK(plan->edge == std::vector<std::wstring>{B + L"\\1.png", B + L"\\2.png"});
     CHECK_FALSE(pf.takeBook(B, nullptr));
-    CHECK(pf.take(B + L"\\1.png"));
-    CHECK(pf.take(B + L"\\2.png"));
+    CHECK(pf.get(B + L"\\1.png"));
+    CHECK(pf.get(B + L"\\2.png"));
     CHECK(c.count == 2);
 
     // 往回：B 的上一本是 A，第一張單獨時最後一屏是 2、3
@@ -375,7 +383,7 @@ TEST_CASE("Prefetch 換本：壓縮檔先解好；沒被接手的解壓資料夾
         REQUIRE(plan->usable());
         CHECK(plan->archive);
         CHECK(plan->files.size() == 3);
-        CHECK(pf.take(plan->edge[0]));
+        CHECK(pf.get(plan->edge[0]));
         dest = plan->dest;
         REQUIRE(exists(dest));
     }
@@ -400,32 +408,46 @@ TEST_CASE("Prefetch 換本：壓縮檔先解好；沒被接手的解壓資料夾
     CHECK_FALSE(exists(dest)); // 沒接手：解構時刪
 }
 
-TEST_CASE("Prefetch 換本：等待時取消，回 Cancelled，之後不再準備") {
+TEST_CASE("Prefetch 換本：等的時候第一次問進度就取消，回 Cancelled，之後不再準備；解碼不被換本擋住") {
     std::wstring root = testRoot(L"bookcancel");
     std::wstring shelf = root + L"\\shelf", tmp = root + L"\\tmp";
     writePng(shelf + L"\\A\\1.png", 40, 60);
     writePng(shelf + L"\\A\\2.png", 40, 60);
-    writePng(root + L"\\src.png", 40, 60);
-    makeZip(shelf + L"\\B.zip", {{"1.png", readBytes(root + L"\\src.png")}});
+    // 張數多到解壓一定比 takeBook 問一次進度（約 50 ms）久。
+    std::string png = mp::test::pngBytes(2, 2);
+    std::vector<std::pair<std::string, std::string>> entries;
+    for (int i = 0; i < 4000; ++i) entries.push_back({std::to_string(i) + ".png", png});
+    makeZip(shelf + L"\\B.zip", entries);
     REQUIRE(createDirectories(tmp));
     Counting c;
-    c.gate.close();
     Prefetcher pf(c.decoder());
-    // 背景先卡在解 A\2.png，換本的工作還沒開始
-    pf.setWanted({}, {{shelf + L"\\A\\2.png"}}, std::nullopt, {}, kBig);
-    c.gate.waitEntered(1);
     BookRequest req;
     req.fromBook = shelf + L"\\A";
     req.archiveRoot = tmp;
     pf.setWanted({}, {{shelf + L"\\A\\2.png"}}, req, {}, kBig);
     int calls = 0;
-    auto plan = pf.takeBook(shelf + L"\\B.zip", [&](uint64_t, uint64_t) { return ++calls < 2; });
+    auto plan = pf.takeBook(shelf + L"\\B.zip", [&](uint64_t, uint64_t) {
+        ++calls;
+        return false;
+    });
     REQUIRE(plan);
-    CHECK(plan->extracted.status == ArchiveStatus::Cancelled);
+    REQUIRE(plan->extracted.status == ArchiveStatus::Cancelled); // 不是 Cancelled 表示取消之前就解完了：把張數加大
+    CHECK(calls == 1);
     CHECK_FALSE(plan->usable());
-    c.gate.release();
+    // 換本在另一條執行緒做：這一頁的解碼不必等它
+    CHECK(pf.get(shelf + L"\\A\\2.png"));
     pf.waitIdle();
-    CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr));
+    CHECK_FALSE(exists(tmp + L"\\pre1"));
+    CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr)); // 同一個要求不再重做
+    // 換一個要求（方向不同）再換回來：重新準備
+    BookRequest other = req;
+    other.dir = -1;
+    pf.setWanted({}, {}, other, {}, kBig);
+    pf.setWanted({}, {}, req, {}, kBig);
+    auto again = pf.takeBook(shelf + L"\\B.zip", nullptr);
+    REQUIRE(again);
+    CHECK(again->usable());
+    removeDirectoryRecursive(again->dest);
 }
 
 TEST_CASE("Prefetch 換本：解壓到一半取消，回 Cancelled，解到一半的資料夾刪掉") {
@@ -474,8 +496,180 @@ TEST_CASE("Prefetch：dropBook 等背景停下來，沒被接手的解壓資料�
     pf.waitIdle();
     REQUIRE(exists(tmp + L"\\pre1"));
     pf.dropBook();
-    pf.waitIdle();
+    // 回來的時候已經刪完了：呼叫端接著刪整個暫存資料夾，不會兩邊同時刪。
     CHECK_FALSE(exists(tmp + L"\\pre1"));
     CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr));
     CHECK(pf.heldBytes() == 0);
+}
+
+TEST_CASE("Prefetch：背景解失敗的頁不會被 get 給出去，也不會一直重試（B-24d）") {
+    // 檔案當時被別的程式鎖住，背景解失敗；之後鎖放開了，翻過去要重新解，不是拿到當時的錯誤。
+    std::wstring root = testRoot(L"failcache");
+    writePng(root + L"\\1.png", 30, 30);
+    writePng(root + L"\\2.png", 30, 30);
+    std::wstring p1 = root + L"\\1.png", p2 = root + L"\\2.png";
+    std::atomic<int> calls{0};
+    std::atomic<bool> locked{true};
+    Prefetcher pf([&](const std::wstring& p) {
+        ++calls;
+        if (locked) {
+            LoadResult r;
+            r.error.code = IoErrorCode::DecodeFailed;
+            return r;
+        }
+        return loadImage(p);
+    });
+    pf.setWanted({p1}, {{p2}}, std::nullopt, {}, kBig);
+    pf.waitIdle();
+    CHECK(calls == 1);
+    pf.setWanted({p1}, {{p2}}, std::nullopt, {}, kBig); // 再排一次：失敗過的不重試
+    pf.waitIdle();
+    CHECK(calls == 1);
+    locked = false;
+    CHECK_FALSE(pf.get(p2)); // 當時的失敗不給：呼叫端自己再解
+    LoadResult fresh = loadImage(p2);
+    REQUIRE(fresh.image);
+    pf.put(p2, fresh);
+    auto again = pf.get(p2);
+    REQUIRE(again);
+    CHECK(again->image == fresh.image);
+    // 呼叫端自己解也失敗、放進來的結果，同樣不會被給出去
+    LoadResult bad;
+    bad.error.code = IoErrorCode::DecodeFailed;
+    pf.put(p1, bad);
+    CHECK_FALSE(pf.get(p1));
+}
+
+TEST_CASE("Prefetch：算縮圖尺寸的函式在背景執行緒、不持鎖的時候被呼叫") {
+    std::wstring root = testRoot(L"targetnolock");
+    writePng(root + L"\\1.png", 40, 40);
+    writePng(root + L"\\2.png", 40, 40);
+    std::wstring p1 = root + L"\\1.png", p2 = root + L"\\2.png";
+    Prefetcher pf;
+    std::atomic<int> calls{0};
+    const DWORD uiThread = GetCurrentThreadId();
+    std::atomic<bool> onUiThread{false};
+    pf.setWanted({p1}, {{p2}}, std::nullopt, [&](const std::vector<Size2>& pages) {
+        ++calls;
+        if (GetCurrentThreadId() == uiThread) onUiThread = true;
+        pf.heldBytes(); // 要拿 Prefetcher 的鎖：如果是持鎖呼叫的，這裡就卡死了（測試的看門狗會抓到）
+        std::vector<Size2> out;
+        for (auto [w, h] : pages) out.push_back({w / 2, h / 2});
+        return out;
+    }, kBig);
+    pf.waitIdle();
+    CHECK(calls >= 1);
+    CHECK_FALSE(onUiThread);
+    ImagePtr im = pf.get(p2)->image;
+    CHECK(pf.scaled(im, 20, 20));
+}
+
+TEST_CASE("Prefetch：縮圖放不下就不縮，原圖留著") {
+    std::wstring root = testRoot(L"scalelimit");
+    writePng(root + L"\\1.png", 100, 100);
+    writePng(root + L"\\2.png", 100, 100); // 原圖 40000，縮成一半 10000
+    std::wstring p1 = root + L"\\1.png", p2 = root + L"\\2.png";
+    Prefetcher pf;
+    pf.setWanted({p1}, {{p2}}, std::nullopt, halfSize(), 45000);
+    pf.waitIdle();
+    CHECK(pf.heldBytes() == 40000);
+    ImagePtr im = pf.get(p2)->image;
+    CHECK_FALSE(pf.scaled(im, 50, 50));
+    pf.setWanted({p1}, {{p2}}, std::nullopt, halfSize(), 50000); // 剛好放得下
+    pf.waitIdle();
+    CHECK(pf.heldBytes() == 50000);
+    CHECK(pf.scaled(im, 50, 50));
+}
+
+TEST_CASE("BookPreparer：沒給解壓位置的壓縮檔不預開；資料夾照樣準備；換要求時沒人接手的解壓資料夾刪掉") {
+    std::wstring root = testRoot(L"bookprep");
+    std::wstring shelf = root + L"\\shelf", tmp = root + L"\\tmp";
+    writePng(shelf + L"\\A\\1.png", 40, 60);
+    writePng(root + L"\\src.png", 40, 60);
+    makeZip(shelf + L"\\B.zip", {{"1.png", readBytes(root + L"\\src.png")}});
+    writePng(shelf + L"\\C\\1.png", 40, 60);
+    REQUIRE(createDirectories(tmp));
+    std::atomic<int> ready{0};
+    BookPreparer books([&] { ++ready; });
+    CHECK(books.edge().empty());
+    CHECK_FALSE(books.take(shelf + L"\\B.zip", nullptr)); // 沒有要求
+
+    BookRequest req;
+    req.fromBook = shelf + L"\\A";
+    books.request(req); // archiveRoot 空的：不能預開
+    books.waitIdle();
+    CHECK(ready == 1);
+    CHECK(books.edge().empty());
+    auto plan = books.take(shelf + L"\\B.zip", nullptr);
+    REQUIRE(plan);
+    CHECK(plan->archive);
+    CHECK(plan->notPrepared);
+    CHECK_FALSE(plan->usable());
+    CHECK_FALSE(books.take(shelf + L"\\B.zip", nullptr)); // 只給一次
+
+    req.archiveRoot = tmp;
+    books.request(req);
+    books.request(req); // 一樣的要求：不重做
+    books.waitIdle();
+    CHECK(ready == 2);
+    REQUIRE(books.edge().size() == 1);
+    CHECK(exists(tmp + L"\\pre1"));
+    CHECK_FALSE(books.take(shelf + L"\\C", nullptr)); // 準備的不是這一本
+
+    BookRequest fromB = req;
+    fromB.fromBook = shelf + L"\\B.zip"; // 下一本是資料夾 C
+    books.request(fromB);
+    books.waitIdle();
+    CHECK_FALSE(exists(tmp + L"\\pre1")); // 上一個要求解好的沒人接手：刪掉
+    CHECK(books.edge() == std::vector<std::wstring>{shelf + L"\\C\\1.png"});
+    auto c = books.take(shelf + L"\\C", nullptr);
+    REQUIRE(c);
+    CHECK(c->usable());
+    CHECK_FALSE(c->archive);
+    CHECK(books.edge().size() == 1); // 接手之後那一屏還是要的
+
+    fromB.dir = 1;
+    fromB.fromBook = shelf + L"\\C"; // C 是最後一本
+    books.request(fromB);
+    books.waitIdle();
+    CHECK(books.edge().empty());
+    CHECK_FALSE(books.take(shelf + L"\\A", nullptr));
+    books.request(std::nullopt);
+    books.drop();
+    books.shutdown();
+    books.shutdown(); // 可以重複呼叫
+}
+
+TEST_CASE("planBook：密碼列表都不對時記下「試過了」；讀寬高的途中取消") {
+    std::wstring root = testRoot(L"plantried");
+    std::wstring png = root + L"\\src.png";
+    writePng(png, 40, 60);
+    std::string bytes = readBytes(png);
+    makeZip(root + L"\\C.zip", {{"1.png", bytes}, {"2.png", bytes}}, "pw");
+    BookRequest req;
+    BookPlan p = planBook(root + L"\\C.zip", req, root + L"\\t1", nullptr);
+    CHECK(p.extracted.status == ArchiveStatus::NeedPassword);
+    CHECK_FALSE(p.passwordsTried); // 沒有列表可試
+    req.passwords = {L"a", L"b"};
+    p = planBook(root + L"\\C.zip", req, root + L"\\t2", nullptr);
+    CHECK(p.extracted.status == ArchiveStatus::NeedPassword);
+    CHECK(p.passwordsTried);
+    req.passwords = {L"a", L"pw"};
+    p = planBook(root + L"\\C.zip", req, root + L"\\t3", nullptr);
+    CHECK(p.usable());
+    CHECK_FALSE(p.passwordsTried);
+    removeDirectoryRecursive(p.dest);
+
+    // 兩頁並排要逐頁讀檔頭：取消了就不讀完，解出來的也刪掉
+    req.twoPage = true;
+    int polls = 0;
+    std::wstring dest = root + L"\\t4";
+    p = planBook(root + L"\\C.zip", req, dest, [&](uint64_t, uint64_t total) {
+        if (total != 0) return true; // 解壓的進度
+        return ++polls < 3;          // 試密碼兩次之前各問一次，第三次是讀寬高之前
+    });
+    CHECK(p.extracted.status == ArchiveStatus::Cancelled);
+    CHECK_FALSE(p.usable());
+    CHECK(p.dest.empty());
+    CHECK_FALSE(exists(dest));
 }

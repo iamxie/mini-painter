@@ -11,8 +11,6 @@ namespace mp {
 struct PixelBuffer {
     int width = 0;
     int height = 0;
-    double dpiX = 96.0;
-    double dpiY = 96.0;
     std::vector<uint8_t> pixels; // width * height * 4，stride = width * 4
 
     PixelBuffer() = default;
@@ -40,6 +38,16 @@ struct StraightImage : PixelBuffer {
 };
 
 using ImagePtr = std::shared_ptr<const Image>;
+
+// 解析度（每英吋像素）。不放在像素緩衝區裡：只改解析度不必複製整張圖（文件的狀態 DocState 另外帶著）。
+struct Dpi {
+    double x = 96.0;
+    double y = 96.0;
+};
+inline bool operator==(Dpi a, Dpi b) { return a.x == b.x && a.y == b.y; }
+inline bool operator!=(Dpi a, Dpi b) { return !(a == b); }
+// 寬高對調（轉 90 度）之後的解析度。
+inline Dpi swapped(Dpi d) { return {d.y, d.x}; }
 
 // 單一色版的換算。整張圖與逐像素的運算（ColorAdjust）共用同一個公式。
 inline uint8_t premultiplyChannel(unsigned c, unsigned a) {

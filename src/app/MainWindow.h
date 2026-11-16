@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "app/Dialogs.h"
+#include "app/ImageDialogs.h"
 #include "app/InfoPanel.h"
 #include "core/Annotation.h"
 #include "core/Archive.h"
@@ -15,6 +15,7 @@
 #include "core/Commands.h"
 #include "core/Crop.h"
 #include "core/Document.h"
+#include "core/Editor.h"
 #include "core/FolderNav.h"
 #include "core/Lang.h"
 #include "core/Paging.h"
@@ -22,6 +23,7 @@
 #include "core/Settings.h"
 #include "core/Spreads.h"
 #include "core/TempDir.h"
+#include "core/Update.h"
 #include "core/ViewFit.h"
 #include "core/Viewport.h"
 #include "render/Renderer.h"
@@ -82,7 +84,8 @@ private:
     // 預先解碼：告訴背景目前這屏、翻頁方向的下一屏、上一屏，到一本的盡頭時加上換本預備。翻頁、改檢視設定、畫布大小變了時呼叫。
     void schedulePrefetch();
     std::wstring prefetchArchiveRoot(); // 換本預開壓縮檔要解到哪（必要時先載 7z.dll、建暫存資料夾）；不能預開回空字串
-    bool ensureArchiveLibrary();      // 載入 exe 旁的 7z.dll（已載入就直接回 true）
+    bool ensureArchiveLibrary();      // 載入 exe 旁的 7z.dll（已載入就直接回 true）。背景預開壓縮檔之前也要先由這裡載好
+    std::wstring archiveLibraryProblem() const; // ensureArchiveLibrary 回 false 時給使用者看的原因
     bool ensureTempDir();             // 建這個執行個體的解壓暫存資料夾（已建就直接回 true）
     bool confirmDiscard(bool leavingImage = false); // leavingImage：換圖時多說一句復原紀錄會清空
     // 換到別張圖之前（翻頁、跳本、拖檔、開啟、兩頁並排換到別頁）：沒存的修改問存檔，存過但還有復原紀錄就提醒會清空。
@@ -135,7 +138,10 @@ private:
 
     // 新版本檢查與自動更新
     void startAutoUpdateCheck();                   // 啟動時：背景查，有新版就 post WM_MP_UPDATE_FOUND
-    void offerPendingUpdate();                     // 有空檔（沒有對話框、選單、拖曳、文字編輯）才跳新版本對話框，否則稍後再試
+    // 現在能不能打斷使用者（跳出別的視窗、把這個視窗關掉）：模態對話框或進度框開著（主視窗被停用）、選單開著、
+    // 滑鼠拖到一半都不行。背景做完事要跳視窗、或別的行程要求關閉之前，都先問這個。
+    bool canInterrupt() const;
+    void offerPendingUpdate();                     // 有空檔（canInterrupt，而且沒有彈出選單、調色面板、文字編輯）才跳新版本對話框，否則稍後再試
     void checkForUpdatesNow();                     // 「關於」的檢查更新按鈕
     void offerUpdate(const ReleaseInfo& r);        // 新版本對話框 → 略過 / 稍後 / 安裝
     void installUpdate(const ReleaseInfo& r);      // 其他視窗會被關的提示 → 存檔確認 → 下載核對解開 → 關掉其他 mpainter → 換檔 → 關閉並重啟
@@ -210,22 +216,18 @@ private:
     bool onSetCursor();
     bool onKeyDown(WPARAM vk);
 
-    // 標註
-    const std::vector<Annotation>& visibleItems() const;
-    const Annotation* selectedItem() const;
-    void commitSelectedChange(const Annotation& updated);
+    // 標註。編輯的狀態與邏輯在 editor_（core/Editor.h），這裡是視窗這一側：先收掉文字框、做完更新標題與畫面。
+    Pointer pointerAt(POINT client) const; // 滑鼠位置換成圖片座標，連同目前倍率下的各種容差
+    float visibleShortSide() const;        // 看得到的範圍的短邊（圖片像素）
+    void afterItemChange();                // 選取的物件改了之後：標題、文字框位置、重畫
     void deleteSelected();
     void select(uint32_t id);
     void addShape(Kind kind);
     void addText();
     void applyStrokeStyle(const StrokeStyle& s);
     void applyTextStyle(const TextStyle& t);
-    // 工具列顯示與選單初始值：有選取物件就是它的樣式，否則是新物件的預設樣式。
-    StrokeStyle currentStroke() const;
-    TextStyle currentText() const;
     void rotateImage();
     void adjustSize();
-    void finishDrag();                 // 拖曳的結果套用到文件（由 endDrag 呼叫）
     // 結束拖曳並放掉滑鼠。apply：套用拖曳的結果（放開滑鼠）；false：丟掉（被別的動作打斷、滑鼠被搶走）。
     void endDrag(bool apply);
     // 收掉進行中的互動，回到閒置：拖到一半的丟掉、文字編輯結束（commitText：留下打的字）、裁切取消、
@@ -237,7 +239,6 @@ private:
     void beginCrop();
     void cancelCrop();  // 離開裁切模式、檢視回到進入前；不在裁切模式時什麼都不做
     void applyCrop();   // 框是整張圖時等於 cancelCrop
-    CropPart cropPartAt(POINT client) const;
     void drawCrop();
 
     // 文字編輯
@@ -276,16 +277,17 @@ private:
 
     bool showMarkup_ = false;
     bool showInfo_ = false;
-    bool freehandMode_ = false;
 
-    // 文件
-    Document doc_;
+    // 文件與編輯狀態（選取、工具、拖曳、裁切框、調整顏色、文字編輯的內容）。
+    Editor editor_;
+    Document& doc_ = editor_.doc();
     bool undoWarned_ = false; // 這張圖已經提示過復原紀錄快滿；undo 到底（含換圖）或改設定後重來
     FolderNav nav_;
     std::wstring path_;
     std::wstring loadedFrom_; // 這張圖的 metadata 來源：原本開的檔；存檔成功後就是存的那個檔
     std::wstring loadError_;
     // 壓縮檔
+    LibraryLoad archiveLoad_;             // 最近一次載入 7z.dll 的結果
     InstanceTempDir tempDir_;             // 本執行個體的暫存資料夾，第一次開壓縮檔（或預開下一本）時建立
     bool tempDirStale_ = false;           // 設定面板改了暫存位置：目前這本看完（closeArchive）就在新位置重建
     int archiveSeq_ = 0;                  // 每開一個壓縮檔用一個子資料夾
@@ -319,29 +321,14 @@ private:
     SpreadCache spreadCache_;      // 目前這本的配對與每頁是不是寬圖；清單或選項變了會自己重算
     bool shiftOne_ = false;        // 「錯開一頁」，不存 ini
 
-    // 樣式
-    StrokeStyle stroke_;
-    TextStyle text_;
-
-    // 選取與拖曳
-    uint32_t selected_ = 0;
-    enum class Drag { None, Pan, Move, Handle, Draw, Crop };
-    Drag drag_ = Drag::None;
-    Pt dragStartImg_;
+    // 拖曳：按下時的滑鼠位置與畫面位移（平移用；其他種類的拖曳狀態在 editor_）
     POINT dragStartClient_{};
     Pt dragOffsetStart_;
-    int dragHandle_ = -1;
-    bool dragMoved_ = false;
-    std::vector<Annotation> liveItems_; // 拖曳中的暫時狀態
-    std::vector<Pt> drawPath_;
 
-    // 文字編輯
+    // 文字編輯的輸入框（內容與編輯中的物件在 editor_）
     HWND edit_ = nullptr;
-    uint32_t editingId_ = 0;
     HFONT editFont_ = nullptr;
     HBRUSH editBrush_ = nullptr;
-    std::wstring editOriginal_;
-    std::wstring editText_;
 
     // 自動更新
     std::unique_ptr<ReleaseInfo> pendingUpdate_; // 背景查到、還沒問使用者的新版
@@ -350,22 +337,11 @@ private:
     bool justUpdated_ = false;
     std::wstring relaunchArgs_; // 非空：WM_DESTROY 時用這些參數重啟 exe
 
-    // 裁切
-    bool cropping_ = false;
+    // 裁切模式的檢視（框本身在 editor_）
     bool cropFit_ = false;     // 裁切模式的「整張圖放進畫布」還有效；手動縮放或改檢視模式後 false
-    CropBox cropBox_;          // 圖片座標
-    CropBox cropStart_;        // 拖曳開始時的框
-    CropPart cropPart_ = CropPart::None; // 正在拖的部位
     float cropSavedZoom_ = 1.0f; // 進入裁切模式前的檢視，取消時還原
     Pt cropSavedOffset_;
     bool cropSavedFit_ = true;
-
-    // 調整顏色
-    bool adjusting_ = false;
-    bool pickingWhite_ = false;
-    ColorAdjustParams adjustParams_;
-    ImagePtr adjustBase_;
-    ImagePtr adjustPreview_;
 };
 
 } // namespace mp

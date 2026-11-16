@@ -18,4 +18,7 @@ std::wstring lowerCopy(const std::wstring& s);
 // 位數多到 int 裝不下時，正的當成 hi、負的當成 lo。
 int clampedIntFromText(const std::wstring& text, int fallback, int lo, int hi);
 
+// 把檔案大小格式化成「1.2 MB」這類字串。bytesFormat 是不到 1 KB 時用的格式（一個 %llu），給 app 傳翻譯過的。
+std::wstring formatFileSize(unsigned long long bytes, const wchar_t* bytesFormat = L"%llu bytes");
+
 } // namespace mp

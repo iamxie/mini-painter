@@ -51,13 +51,9 @@ TEST_CASE("isIdentity only for defaults") {
 
 TEST_CASE("identity params keep pixels byte-identical") {
     Image src = gradient(17, 13);
-    src.dpiX = 300;
-    src.dpiY = 150;
     Image out = applyColorAdjust(src, ColorAdjustParams{});
     CHECK(out.width == src.width);
     CHECK(out.height == src.height);
-    CHECK(out.dpiX == 300);
-    CHECK(out.dpiY == 150);
     CHECK(out.pixels == src.pixels);
 }
 

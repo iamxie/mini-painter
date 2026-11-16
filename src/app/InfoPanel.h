@@ -11,7 +11,7 @@
 
 namespace mp {
 
-class Renderer;
+class Surface;
 
 // 資訊面板需要的資料，由主視窗在開檔時準備好。
 struct InfoData {
@@ -44,7 +44,7 @@ struct InfoPanelState {
 };
 
 // 畫面板。rect 是面板在視窗裡的範圍。
-void drawInfoPanel(Renderer& r, ID2D1RenderTarget* rt, D2D1_RECT_F rect, const InfoData& data, InfoPanelState& st,
+void drawInfoPanel(Surface& r, D2D1_RECT_F rect, const InfoData& data, InfoPanelState& st,
                    float uiScale);
 
 // 點擊。pt 是視窗座標。回傳 true 表示要重畫。

@@ -36,3 +36,29 @@ TEST_CASE("hqTargetSize：倍率 1 不縮；四捨五入；超過邊長上限或
     CHECK(tw == 1);
     CHECK(th == 1);
 }
+
+TEST_CASE("screenHqTargets：一屏各頁的縮圖尺寸，和 spreadSize → fitZoom → hqTargetSize 逐步算的一樣") {
+    const unsigned maxSide = 16384;
+    // 單頁 2000×3000 放進 1000×1000 的畫布（符合視窗）：倍率 1/3
+    auto one = screenHqTargets(ViewMode::FitWindow, 1000, 1000, false, maxSide, {{2000, 3000}});
+    REQUIRE(one.size() == 1);
+    CHECK(one[0].first == 667);
+    CHECK(one[0].second == 1000);
+    // 兩頁並排：寬相加、高取大的，兩頁用同一個倍率
+    auto two = screenHqTargets(ViewMode::FitWindow, 1000, 1000, false, maxSide, {{1000, 1500}, {1000, 1000}});
+    REQUIRE(two.size() == 2);
+    const float z = fitZoom(ViewMode::FitWindow, 1000, 1000, 2000, 1500, false);
+    int tw = 0, th = 0;
+    REQUIRE(hqTargetSize(1000, 1500, z, maxSide, tw, th));
+    CHECK(two[0] == std::pair<int, int>{tw, th});
+    REQUIRE(hqTargetSize(1000, 1000, z, maxSide, tw, th));
+    CHECK(two[1] == std::pair<int, int>{tw, th});
+    CHECK(two[0].first == 500);
+    // 實際大小：倍率 1，不縮
+    auto actual = screenHqTargets(ViewMode::Actual, 1000, 1000, false, maxSide, {{2000, 3000}});
+    CHECK(actual[0] == std::pair<int, int>{0, 0});
+    // 小圖不放大：倍率 1，不縮；開了「小圖放大」就放大
+    CHECK(screenHqTargets(ViewMode::FitWindow, 1000, 1000, false, maxSide, {{100, 100}})[0] == std::pair<int, int>{0, 0});
+    CHECK(screenHqTargets(ViewMode::FitWindow, 1000, 1000, true, maxSide, {{100, 100}})[0] == std::pair<int, int>{1000, 1000});
+    CHECK(screenHqTargets(ViewMode::FitWindow, 1000, 1000, false, maxSide, {}).empty());
+}

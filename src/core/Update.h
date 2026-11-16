@@ -4,24 +4,21 @@
 #include <string>
 #include <vector>
 
+#include "core/Http.h"
+#include "core/Install.h"
+#include "core/Sha256.h"
+#include "core/UpdateError.h"
+#include "core/Version.h"
+
 namespace mp {
 
 // 新版本檢查與自動更新：查 GitHub Releases 最新版 → 下載發佈包 zip → 核對 .sha256 → 解開 →
-// 把 exe 旁的檔案換掉（執行中的 exe / 已載入的 7z.dll 不能覆寫但能改名，所以舊檔先改名成 .old）→ 重啟。
-// 這裡只有不碰視窗的部分；對話框與重啟在 src/app。
+// 把 exe 旁的檔案換掉 → 重啟。這裡只有不碰視窗的部分；對話框與重啟在 src/app。
+// 零件各自一個檔：Version（版本比較）、Http（WinHTTP）、Sha256、Install（換檔、其他行程）。
+// 這個檔是 GitHub 的回應格式，以及把零件接起來的兩段流程（fetchLatestRelease、downloadUpdate）。
 
 // 預設的檢查網址（ini 的 updateUrl= 可以改，給測試用）。
 extern const wchar_t* const kDefaultUpdateUrl;
-
-// "1.2.3" 或 "v1.2.3" → 三段數字。格式不對回 false。
-struct Version {
-    int major = 0, minor = 0, patch = 0;
-};
-bool parseVersion(const std::wstring& s, Version& out);
-// a < b 回負數、相等 0、a > b 正數。
-int compareVersions(const Version& a, const Version& b);
-// latest 比 current 新。任一個解析不了回 false。
-bool isNewerVersion(const std::wstring& latest, const std::wstring& current);
 
 // GitHub「最新 release」API 回應裡用得到的部分。
 struct ReleaseInfo {
@@ -36,37 +33,20 @@ bool parseLatestRelease(const std::string& json, ReleaseInfo& out);
 // 發佈包 zip 的檔名。
 std::wstring packageZipName(const std::wstring& version);
 
-// .sha256 檔內容（"<64 位 hex>  檔名" 或只有 hex）→ 小寫 hex。找不到回空字串。
-std::string parseSha256Text(const std::string& text);
-// 檔案的 SHA-256（小寫 hex）。讀不到回空字串。
-std::string sha256OfFile(const std::wstring& path);
+// 查 url 的最新版。連不上回連線的錯誤；回應不是預期的格式回 BadResponse；cancel 被取消回 Cancelled。
+UpdateError fetchLatestRelease(const std::wstring& url, ReleaseInfo& out, HttpCancel* cancel = nullptr);
 
-// HTTP(S) GET（WinHTTP，會跟著轉址）。非 200 也算失敗，error 是給人看的英文訊息。
-bool httpGetText(const std::wstring& url, std::string& body, std::wstring& error);
-// 下載到檔案。progress(done, total) 回 false 取消（total 不知道時是 0）；取消時 error 為空字串。
-bool httpDownload(const std::wstring& url, const std::wstring& path,
-                  const std::function<bool(uint64_t done, uint64_t total)>& progress, std::wstring& error);
-
-// 資料夾能不能建檔、改名、刪檔（試建一個暫存檔再刪）。
-bool isDirWritable(const std::wstring& dir);
-
-// 正在跑同一個 exe（完整路徑相同，不分大小寫）的其他行程，不含 selfPid。更新前要先把它們關掉。
-std::vector<unsigned long> otherProcessesOfImage(const std::wstring& exePath, unsigned long selfPid);
-
-// 安裝：stagingDir 是發佈包解開的地方，appDir 是 exe 所在資料夾。
-// 發佈包裡的 mpainter.exe 對應到 exeName（使用者可能把 exe 改了名）；其他照相對路徑放。
-struct InstallStep {
-    std::wstring src; // staging 裡的檔
-    std::wstring dst; // 要放到的位置
-    std::wstring old; // 執行時填：dst 原本的檔改名成什麼（原本沒有就空）
-    bool placed = false;
+// downloadUpdate 做到哪了。
+enum class DownloadStage { Downloading, Verifying, Unpacking };
+struct DownloadHooks {
+    std::function<void(DownloadStage)> onStage;                  // 換階段時呼叫
+    std::function<void(uint64_t done, uint64_t total)> progress; // 下載進度（total 不知道時是 0）
+    HttpCancel* cancel = nullptr;                                // 取消用；階段之間也會看
 };
-std::vector<InstallStep> planInstall(const std::wstring& stagingDir, const std::wstring& appDir, const std::wstring& exeName);
-// 逐一：dst 已存在就改名成 dst.old（被占住就 .old2、.old3…），再把 src 複製過去。
-// 任何一步失敗就整批還原（新放的刪掉、舊檔改回原名）並回 false。
-bool applyInstall(std::vector<InstallStep>& steps, std::wstring& error);
-// 刪掉 dir（含 lang\）裡上次更新留下的 X.old / X.oldN；只刪 X 本身還在的那些（確定是換掉的舊檔）。
-// 回傳刪不掉的數量（舊程式還沒結束時刪不掉，下次再試）。
-int removeOldFiles(const std::wstring& dir);
+// 下載 release 的發佈包到 workDir、核對 .sha256、解到 workDir\pkg，並確認裡面有 mpainter.exe。
+// 成功時 stagingDir 是解開的資料夾（接著交給 planInstall）。workDir 要先建好；失敗時裡面可能留著下載到一半的東西，呼叫端整個刪掉。
+// 回呼都在呼叫的那條執行緒上。
+UpdateError downloadUpdate(const ReleaseInfo& release, const std::wstring& workDir, std::wstring& stagingDir,
+                           const DownloadHooks& hooks = {});
 
 } // namespace mp

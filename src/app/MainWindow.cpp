@@ -10,9 +10,12 @@
 #include <algorithm>
 #include <cmath>
 
+#include "app/AboutDialog.h"
+#include "app/ArchiveDialogs.h"
 #include "app/Popups.h"
 #include "app/SettingsDialog.h"
 #include "app/UiText.h"
+#include "app/UpdateDialogs.h"
 #include "app/resource.h"
 #include "app/version.h"
 #include "core/ImageIO.h"
@@ -87,6 +90,10 @@ constexpr UINT kPrefetchDelayMs = 300; // 拖曳改視窗大小時，停下來�
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
 constexpr float kToolbarH = 44, kMarkupH = 40, kNameH = 26, kInfoW = 320, kBtnW = 36, kBtnH = 30;
 constexpr float kHandleR = 5.0f;
+constexpr float kHandleHitExtra = 3.0f; // 控制點比畫出來的圓多幾個像素也算點到
+constexpr float kDrawStepPx = 0.5f;     // 塗鴉：滑鼠離上一點至少這麼多螢幕像素才記下一點
+constexpr int kClickSlopPx = 2;         // 滑鼠按下後移動超過這麼多像素才算拖曳（不是手抖）
+constexpr float kNudgePx = 1.0f, kNudgeLargePx = 10.0f; // 方向鍵微移選取的物件（圖片像素）；按著 Shift 用大的
 // 裁切框（DIP）：邊的命中容差、角的命中範圍（沿邊從角算起）、L 形把手的長度
 constexpr float kCropTol = 8.0f, kCropCorner = 30.0f, kCropHandleLen = 26.0f;
 constexpr UINT_PTR kEditSubclass = 1;
@@ -134,6 +141,7 @@ bool openDefaultAppsSettings() {
 bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCmdShow) {
     inst_ = inst;
     if (!renderer_.init()) return false;
+    editor_.setTextMeasurer([this](const Annotation& a) { return textHeight(renderer_.device(), a); });
     loadSettingsAndRegister();
     {
         // 清掉當掉的執行個體留下的壓縮檔暫存（lock 沒人持有的子資料夾）：設定的位置、exe 旁的 temp、退路的 %TEMP%。
@@ -252,7 +260,13 @@ LRESULT CALLBACK MainWindow::editProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 
 LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     if (msg == closeForUpdateMessage()) {
-        // 另一個 mpainter 要裝更新。有沒存的修改先問（拉到前面讓使用者看得到），按取消就回 0，那邊會取消更新。
+        // 另一個 mpainter 要裝更新。這邊正忙（對話框或進度框開著、選單開著、拖曳中）就不關，回 0，那邊會取消更新：
+        // 這時關視窗，堆疊上還沒做完的流程回來之後會在已經銷毀的視窗上繼續跑。
+        if (!canInterrupt()) {
+            AllowSetForegroundWindow(static_cast<DWORD>(wp));
+            return 0;
+        }
+        // 有沒存的修改先問（拉到前面讓使用者看得到），按取消就回 0。
         if (doc_.image() && doc_.dirty() && !readOnly()) {
             if (IsIconic(hwnd_)) ShowWindow(hwnd_, SW_RESTORE);
             SetForegroundWindow(hwnd_);
@@ -261,6 +275,8 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
             AllowSetForegroundWindow(static_cast<DWORD>(wp)); // wParam = 要更新的那個行程，讓它能跳到前面說「已取消」
             return 0;
         }
+        // 使用者回答存檔詢問的期間，那邊可能已經按取消、不更新了（lParam 是那邊的進度框，取消後就不在了）：那就不關。
+        if (lp && !IsWindow(reinterpret_cast<HWND>(lp))) return 0;
         updating_ = true; // WM_CLOSE 不再問
         PostMessageW(hwnd_, WM_CLOSE, 0, 0);
         return 1;
@@ -300,7 +316,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: onMouseMove({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}, wp); return 0;
     case WM_LBUTTONUP: onLButtonUp({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}); return 0;
     case WM_CAPTURECHANGED:
-        // 拖到一半滑鼠被別的視窗拿走（跳出對話框、切到別的程式）：這次拖曳不算，不然 drag_ 會一直卡著。
+        // 拖到一半滑鼠被別的視窗拿走（跳出對話框、切到別的程式）：這次拖曳不算，不然會一直卡在拖曳中。
         if (reinterpret_cast<HWND>(lp) != hwnd_) endDrag(false);
         return 0;
     case WM_MOUSELEAVE:
@@ -317,7 +333,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
             POINT p;
             GetCursorPos(&p);
             ScreenToClient(hwnd_, &p);
-            if (drag_ == Drag::None && hoverItem_ && hitItemBox(p) == hoverItem_ && settings_.tipShown < kTipMaxShown) showTip(p);
+            if (!editor_.dragging() && hoverItem_ && hitItemBox(p) == hoverItem_ && settings_.tipShown < kTipMaxShown) showTip(p);
             return 0;
         }
         if (wp == kTipHideTimer) { hideTip(); return 0; }
@@ -333,7 +349,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         if (wp == kBtnTipTimer) {
             KillTimer(hwnd_, kBtnTipTimer);
-            if (drag_ == Drag::None && pressBtn_ == BTN_NONE && hoverBtn_ != BTN_NONE) showButtonTip(hoverBtn_);
+            if (!editor_.dragging() && pressBtn_ == BTN_NONE && hoverBtn_ != BTN_NONE) showButtonTip(hoverBtn_);
             return 0;
         }
         break;
@@ -379,7 +395,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_CTLCOLOREDIT:
         if (reinterpret_cast<HWND>(lp) == edit_) {
-            const Annotation* item = doc_.findItem(editingId_);
+            const Annotation* item = doc_.findItem(editor_.editingId());
             Color bg = item && !item->stroke.fill.none() ? item->stroke.fill : Color::rgb(255, 255, 255);
             Color fg = item ? item->text.color : Color::rgb(0, 0, 0);
             HDC dc = reinterpret_cast<HDC>(wp);
@@ -402,6 +418,8 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_INITMENUPOPUP: updateMenu(); return 0;
     case WM_CLOSE:
+        // 模態對話框或進度框開著（主視窗被停用）時不關：別的程式送來的 WM_CLOSE（例如 taskkill）也會走到這裡。
+        if (!IsWindowEnabled(hwnd_)) return 0;
         if (!updating_ && !confirmDiscard()) return 0; // 更新前已經問過存檔
         closePopup();
         closeColorAdjustPanel();
@@ -494,7 +512,7 @@ void MainWindow::buildButtons() {
         x = add(BTN_LINECOLOR, x, y, true);
         x = add(BTN_FILL, x, y, true);
         x = add(BTN_FORMAT, x, y, true);
-        if (cropping_) {
+        if (editor_.cropping()) {
             Button b;
             b.id = BTN_CROP_APPLY;
             float w = renderer_.measureUiText(tr(L"Crop"), px(13)) + px(28);
@@ -510,9 +528,9 @@ void MainWindow::buildButtons() {
         case BTN_ZOOM100: b.enabled = std::abs(zoom_ - 1.0f) > 1e-4f; break;
         case BTN_MARKUP: b.pressed = showMarkup_; break;
         case BTN_INFO: b.pressed = showInfo_; break;
-        case BTN_FREEHAND: b.pressed = freehandMode_; break;
-        case BTN_ADJCOLOR: b.pressed = adjusting_; break;
-        case BTN_CROP: b.pressed = cropping_; break;
+        case BTN_FREEHAND: b.pressed = editor_.freehand(); break;
+        case BTN_ADJCOLOR: b.pressed = editor_.adjusting(); break;
+        case BTN_CROP: b.pressed = editor_.cropping(); break;
         default: break;
         }
         // 對應到指令的按鈕用指令的可用條件（和選單、快捷鍵同一份）；其他的工具按鈕要有圖才能按。
@@ -529,12 +547,12 @@ CommandState MainWindow::commandState() const {
     st.dirty = doc_.dirty();
     st.canUndo = doc_.canUndo();
     st.canRedo = doc_.canRedo();
-    st.hasSelection = selected_ != 0;
+    st.hasSelection = editor_.selected() != 0;
     st.twoPage = twoPage();
     st.hasPages = nav_.count() > 0;
-    st.cropping = cropping_;
+    st.cropping = editor_.cropping();
     st.profileModified = profileModified(settings_) && findProfile(settings_, settings_.profileName) != nullptr;
-    st.dragging = drag_ != Drag::None;
+    st.dragging = editor_.dragging();
     return st;
 }
 
@@ -709,13 +727,12 @@ void MainWindow::onCommand(int id) {
     case IDM_EXIT: PostMessageW(hwnd_, WM_CLOSE, 0, 0); break;
     case IDM_UNDO:
     case IDM_REDO: {
-        if (cropping_) { cancelCrop(); break; } // 裁切模式中只取消裁切，不動編輯歷史
+        if (editor_.cropping()) { cancelCrop(); break; } // 裁切模式中只取消裁切，不動編輯歷史
         // 調整顏色的面板也要收：它拿著復原前那張圖當底，之後按「好」會把那張圖換回來。
         endInteraction(true);
         if (id == IDM_UNDO ? !doc_.canUndo() : !doc_.canRedo()) break;
         auto before = doc_.image();
-        if (id == IDM_UNDO) doc_.undo(); else doc_.redo();
-        if (!selectedItem()) selected_ = 0;
+        if (id == IDM_UNDO) editor_.undo(); else editor_.redo();
         auto after = doc_.image();
         // 底圖尺寸變了（旋轉、調整尺寸）就重新符合視窗。
         if (before && after && (before->width != after->width || before->height != after->height)) {
@@ -808,7 +825,7 @@ void MainWindow::showLoadError(const std::wstring& path, const std::wstring& mes
         infoData_ = {};
     }
     loadError_ = message;
-    doc_.reset(nullptr);
+    editor_.reset(nullptr);
     second_.reset();
     secondPath_.clear();
     updateTitle();
@@ -822,7 +839,7 @@ bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
     hideTip();
     disarmJump();
     hoverItem_ = 0;
-    selected_ = 0;
+    editor_.select(0);
     // 先決定要開的是什麼（core/Shelf.h）：壓縮檔交給 openArchive；資料夾換成裡面的第一張圖或第一本書。
     const PathKind kind = classifyPath(path);
     if (kind == PathKind::Archive) return openArchive(path);
@@ -858,7 +875,7 @@ bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
         PostMessageW(hwnd_, WM_MP_ASK_DEFAULT, 0, 0);
     }
     loadError_.clear();
-    doc_.reset(r.image);
+    editor_.reset(r.image, r.dpi);
     second_.reset();
     secondPath_.clear();
     if (viewMode_ == ViewMode::TwoPage) {
@@ -873,8 +890,8 @@ bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
     infoData_.info = r.info;
     infoData_.width = r.image->width;
     infoData_.height = r.image->height;
-    infoData_.dpiX = r.image->dpiX;
-    infoData_.dpiY = r.image->dpiY;
+    infoData_.dpiX = r.dpi.x;
+    infoData_.dpiY = r.dpi.y;
     fit_ = true;
     fitToView();
     if (landAtBottom) {
@@ -889,7 +906,7 @@ bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
 }
 
 LoadResult MainWindow::loadPage(const std::wstring& path) {
-    if (auto r = prefetch_.take(path)) return *r;
+    if (auto r = prefetch_.get(path)) return *r;
     LoadResult r = loadImage(path);
     if (settings_.prefetchMB > 0) prefetch_.put(path, r);
     return r;
@@ -932,19 +949,9 @@ void MainWindow::schedulePrefetch() {
         ViewMode mode = viewMode_;
         bool upscale = settings_.view.upscaleSmall;
         unsigned maxSide = renderer_.rt() ? renderer_.rt()->GetMaximumBitmapSize() : 16384;
+        // 以值捕捉：這個函式在背景執行緒被呼叫。算法和畫面同一份（core/ViewFit 的 screenHqTargets）。
         target = [mode, upscale, maxSide, cw, ch](const std::vector<Size2>& pages) {
-            float vw = 0, vh = 0; // 和 viewW / viewH 一樣：並排時寬相加、高取大的
-            for (auto [w, h] : pages) {
-                vw += static_cast<float>(w);
-                vh = std::max(vh, static_cast<float>(h));
-            }
-            float z = fitZoom(mode, cw, ch, vw, vh, upscale);
-            std::vector<Size2> out;
-            for (auto [w, h] : pages) {
-                int tw = 0, th = 0;
-                out.push_back(hqTargetSize(w, h, z, maxSide, tw, th) ? Size2{tw, th} : Size2{0, 0});
-            }
-            return out;
+            return screenHqTargets(mode, cw, ch, upscale, maxSide, pages);
         };
     }
     prefetch_.setWanted(std::move(current), std::move(others), std::move(book), std::move(target), limit);
@@ -957,7 +964,20 @@ std::wstring MainWindow::prefetchArchiveRoot() {
 }
 
 // 7z.dll 放在 exe 旁邊，第一次用到壓縮檔時才載入。
-bool MainWindow::ensureArchiveLibrary() { return archiveLibraryLoaded() || loadArchiveLibrary(exeDir() + L"7z.dll"); }
+bool MainWindow::ensureArchiveLibrary() {
+    archiveLoad_ = loadArchiveLibrary(exeDir() + L"7z.dll"); // 載過就直接回 Ok
+    return archiveLoad_.ok();
+}
+
+std::wstring MainWindow::archiveLibraryProblem() const {
+    if (archiveLoad_.status == LibraryLoad::LoadFailed) {
+        // 系統的說明裡有 %1（「%1 不是有效的 Win32 應用程式」）：填上檔名。
+        std::wstring why = systemErrorText(archiveLoad_.systemError);
+        if (size_t pos = why.find(L"%1"); pos != std::wstring::npos) why.replace(pos, 2, L"7z.dll");
+        return fmt1(L"7z.dll next to mpainter.exe could not be loaded: %s", why);
+    }
+    return tr(L"7z.dll was not found next to mpainter.exe, so archives cannot be opened.");
+}
 
 // 這個執行個體的解壓暫存資料夾：照設定的位置建，建不了（exe 在唯讀的地方）退到 %TEMP%。
 bool MainWindow::ensureTempDir() {
@@ -1007,11 +1027,11 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
         if (failMsg) { *failMsg = msg; return false; }
         closeArchive();
         showMarkup_ = false;
-        freehandMode_ = false;
+        editor_.leaveFreehand();
         showLoadError(path, msg, true);
         return false;
     };
-    if (!ensureArchiveLibrary()) return fail(tr(L"7z.dll was not found next to mpainter.exe, so archives cannot be opened."));
+    if (!ensureArchiveLibrary()) return fail(archiveLibraryProblem());
     if (tempDirStale_ && archivePath_.empty()) { tempDir_.release(); tempDirStale_ = false; }
     if (!ensureTempDir()) return fail(tr(L"Cannot create the temp folder for unpacking archives."));
     // 換本預備：背景預開過這一本就等它解完直接用（含密碼列表試出來的密碼），不再解一次。
@@ -1024,23 +1044,20 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
     if (pre && !adopted && !pre->dest.empty()) removeDirectoryRecursive(pre->dest);
     std::wstring dest = adopted ? pre->dest : tempDir_.path() + L"\\" + std::to_wstring(++archiveSeq_);
     ExtractOptions opt;
+    ArchiveResult r;
+    bool fromList = false; // 用的是密碼列表裡的密碼：它解不開時不算使用者打錯
     if (adopted) {
         opt.password = pre->password;
         for (const auto& [f, wide] : pre->wide) spreadCache_.remember(f, wide); // 每頁寬高讀過了，updateSpreads 不用再讀檔頭
-    }
-    ArchiveResult r = adopted ? pre->extracted : extractWithProgress(hwnd_, path, dest, opt);
-    bool fromList = false;
-    if (r.status == ArchiveStatus::NeedPassword && !settings_.passwords.empty()) {
-        // 先把密碼列表試一輪，都不對才問。
-        removeDirectoryRecursive(dest);
-        bool cancelled = false;
-        int hit = tryPasswordsWithProgress(hwnd_, path, settings_.passwords, cancelled);
-        if (cancelled) r.status = ArchiveStatus::Cancelled;
-        else if (hit >= 0) {
-            opt.password = settings_.passwords[static_cast<size_t>(hit)];
-            fromList = true;
-            r = extractWithProgress(hwnd_, path, dest, opt);
-        }
+        r = pre->extracted;
+    } else {
+        // 先不帶密碼解，要密碼就把密碼列表試一輪（core 的 extractWithPasswords）。背景預開時已經試過、都不對的話不再試一次。
+        static const std::vector<std::wstring> kNoList;
+        const bool listTried = pre && pre->passwordsTried;
+        PasswordExtract x = extractWithProgress(hwnd_, path, dest, opt, listTried ? kNoList : settings_.passwords);
+        r = std::move(x.result);
+        opt.password = x.password;
+        fromList = !x.password.empty();
     }
     while (r.status == ArchiveStatus::NeedPassword || r.status == ArchiveStatus::WrongPassword) {
         removeDirectoryRecursive(dest);
@@ -1050,7 +1067,7 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
         std::wstring pw;
         if (!showPasswordDialog(hwnd_, fileNameOf(path), retry, pw)) { r.status = ArchiveStatus::Cancelled; break; }
         opt.password = pw;
-        r = extractWithProgress(hwnd_, path, dest, opt);
+        r = extractWithProgress(hwnd_, path, dest, opt).result;
     }
     if (r.status != ArchiveStatus::Ok && r.status != ArchiveStatus::Incomplete) {
         removeDirectoryRecursive(dest);
@@ -1059,8 +1076,9 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
         case ArchiveStatus::NoImages: return fail(tr(L"This archive has no supported images"));
         case ArchiveStatus::TooLarge: return fail(fmt1(L"The images in this archive are too large to unpack (limit %s).", fileSizeText(kArchiveMaxTotalBytes)));
         case ArchiveStatus::NoSpace: return fail(tr(L"Not enough free disk space in the temp folder to unpack this archive."));
-        case ArchiveStatus::NotArchive: return fail(fmt1(L"Cannot open: %s", r.error.empty() ? tr(L"not a supported archive") : r.error));
-        default: return fail(fmt1(L"Cannot unpack: %s", r.error));
+        case ArchiveStatus::NotArchive:
+            return fail(fmt1(L"Cannot open: %s", r.error.empty() ? tr(L"not a supported archive") : archiveErrorText(r.error)));
+        default: return fail(fmt1(L"Cannot unpack: %s", archiveErrorText(r.error)));
         }
     }
     if (!opt.password.empty() &&
@@ -1079,7 +1097,7 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
     movePinnedFirst(r.files, r.names, settings_.pinnedNames);
     closeArchive();
     showMarkup_ = false;
-    freehandMode_ = false;
+    editor_.leaveFreehand();
     archivePath_ = path;
     archiveDir_ = dest;
     archiveFiles_ = r.files;
@@ -1128,17 +1146,23 @@ bool MainWindow::save() {
 }
 
 bool MainWindow::writeFlattened(const std::wstring& target) {
-    Image flat;
-    if (!renderer_.flatten(doc_.state(), flat)) {
-        // 標註畫不上去（多半是圖太大、記憶體不夠）：不能把少了標註的圖當成存好了。
-        MessageBoxW(hwnd_, fmt1(L"Save failed: %s", tr(L"Could not draw the annotations onto the image")).c_str(), kAppName,
-                    MB_ICONERROR);
-        return false;
-    }
-    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
     SaveOptions opt;
     opt.metadataSource = loadedFrom_; // 全部照抄，只改與像素不符的欄位
-    SaveResult saved = saveImage(flat, target, opt);
+    opt.dpi = doc_.dpi();
+    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    SaveResult saved;
+    if (doc_.items().empty()) {
+        saved = saveImage(*doc_.image(), target, opt); // 沒有標註：底圖就是要存的像素
+    } else {
+        Image flat;
+        if (!flatten(renderer_.device(), doc_.state(), flat)) {
+            // 標註畫不上去（多半是圖太大、記憶體不夠）：不能把少了標註的圖當成存好了。
+            MessageBoxW(hwnd_, fmt1(L"Save failed: %s", tr(L"Could not draw the annotations onto the image")).c_str(), kAppName,
+                        MB_ICONERROR);
+            return false;
+        }
+        saved = saveImage(std::move(flat), target, opt);
+    }
     if (!saved) {
         MessageBoxW(hwnd_, fmt1(L"Save failed: %s", ioErrorText(saved.error)).c_str(), kAppName, MB_ICONERROR);
         return false;
@@ -1398,7 +1422,7 @@ void MainWindow::drawToast() {
     D2D1_RECT_F box = {cx - w / 2 - padX, cy - h / 2 - padY, cx + w / 2 + padX, cy + h / 2 + padY};
     rt->FillRoundedRectangle(D2D1::RoundedRect(box, px(8), px(8)), renderer_.brush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.88f)));
     D2D1_RECT_F textRc = {box.left + padX, box.top + padY, box.right - padX, box.bottom - padY};
-    renderer_.drawUiText(rt, toast_, textRc, size, D2D1::ColorF(D2D1::ColorF::White), DWRITE_TEXT_ALIGNMENT_CENTER, true,
+    renderer_.drawUiText(toast_, textRc, size, D2D1::ColorF(D2D1::ColorF::White), DWRITE_TEXT_ALIGNMENT_CENTER, true,
                          DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false, true);
 }
 
@@ -1406,10 +1430,7 @@ void MainWindow::drawToast() {
 // 兩頁並排
 
 void MainWindow::updateSpreads() {
-    spreadCache_.get(nav_.files(), settings_.view.firstPageAlone, shiftOne_, [](const std::wstring& f) {
-        int w = 0, h = 0;
-        return readImageSize(f, w, h) && w > h;
-    });
+    spreadCache_.get(nav_.files(), settings_.view.firstPageAlone, shiftOne_, isWidePage);
 }
 
 int MainWindow::currentSpread() const { return spreadIndexOf(spreads(), nav_.index()); }
@@ -1486,10 +1507,7 @@ void MainWindow::updateTitle() {
 // ---------------------------------------------------------------------------
 // 檢視
 
-ImagePtr MainWindow::currentImage() const {
-    if (adjusting_ && adjustPreview_) return adjustPreview_;
-    return doc_.image();
-}
+ImagePtr MainWindow::currentImage() const { return editor_.displayImage(); }
 
 POINT MainWindow::canvasCenter() const {
     return {static_cast<LONG>((canvasRc_.left + canvasRc_.right) / 2), static_cast<LONG>((canvasRc_.top + canvasRc_.bottom) / 2)};
@@ -1510,8 +1528,8 @@ bool MainWindow::setViewMode(ViewMode m) {
         // 只看不編：收掉編輯狀態與標示工具列。
         endInteraction(true);
         closePopup();
-        selected_ = 0;
-        freehandMode_ = false;
+        editor_.select(0);
+        editor_.leaveFreehand();
         showMarkup_ = false;
         layout();
         if (doc_.image()) {
@@ -1539,7 +1557,7 @@ void MainWindow::fitToView(bool resetOffset) {
     if (!img) return;
     float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
     // 裁切模式剛進入時整張圖放進畫布（不改檢視模式設定）
-    ViewMode mode = cropping_ && cropFit_ ? ViewMode::FitWindow : viewMode_;
+    ViewMode mode = editor_.cropping() && cropFit_ ? ViewMode::FitWindow : viewMode_;
     zoom_ = fitZoom(mode, cw, ch, viewW(), viewH(), settings_.view.upscaleSmall);
     if (resetOffset) offset_ = {0, 0}; // 從左上開始，放得下的方向由 clampOffset 置中
     clampOffset();
@@ -1622,10 +1640,10 @@ void MainWindow::paint() {
         if (auto img = doc_.image()) {
             infoData_.width = img->width;
             infoData_.height = img->height;
-            infoData_.dpiX = img->dpiX;
-            infoData_.dpiY = img->dpiY;
+            infoData_.dpiX = doc_.dpi().x;
+            infoData_.dpiY = doc_.dpi().y;
         }
-        drawInfoPanel(renderer_, rt, infoRc_, infoData_, infoState_, ui_);
+        drawInfoPanel(renderer_.surface(), infoRc_, infoData_, infoState_, ui_);
     }
     HRESULT hr = rt->EndDraw();
     renderer_.endFrame(); // 這一幀沒畫到的點陣圖（翻走的圖、undo 歷史、舊預覽）連同來源圖一起放掉
@@ -1654,7 +1672,7 @@ void MainWindow::drawChrome() {
         std::wstring a = displayName(path_), b = displayName(secondPath_);
         name = settings_.view.rightToLeft ? b + L"   |   " + a : a + L"   |   " + b;
     }
-    renderer_.drawUiText(rt, name, nameRc_, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+    renderer_.drawUiText(name, nameRc_, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
     for (const auto& b : buttons_) drawButton(b);
 }
 
@@ -1666,7 +1684,7 @@ void MainWindow::drawButton(const Button& b) {
         bool hot = hoverBtn_ == b.id || pressBtn_ == b.id;
         rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, px(6), px(6)),
                                  renderer_.brush(hot ? D2D1::ColorF(0.78f, 0.78f, 0.78f) : D2D1::ColorF(0.85f, 0.85f, 0.85f)));
-        renderer_.drawUiText(rt, tr(L"Crop"), b.rect, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+        renderer_.drawUiText(tr(L"Crop"), b.rect, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
         return;
     }
     if (b.pressed) rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, r, r), renderer_.brush(kBtnOn));
@@ -1699,38 +1717,32 @@ void MainWindow::drawIcon(const Button& b) {
         break;
     }
     case BTN_ZOOM100:
-        renderer_.drawUiText(rt, L"1:1", b.rect, px(12), c, DWRITE_TEXT_ALIGNMENT_CENTER, true);
+        renderer_.drawUiText(L"1:1", b.rect, px(12), c, DWRITE_TEXT_ALIGNMENT_CENTER, true);
         break;
     case BTN_ROTATE: {
         // 逆時針的弧加箭頭
-        ComPtr<ID2D1PathGeometry> geo;
-        renderer_.d2d()->CreatePathGeometry(&geo);
-        ComPtr<ID2D1GeometrySink> sink;
-        geo->Open(&sink);
         float r = px(7);
-        sink->BeginFigure(P(cx + r * 0.0f, cy - r), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddArc(D2D1::ArcSegment(P(cx - r * 0.7f, cy + r * 0.7f), D2D1::SizeF(r, r), 0, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->Close();
-        rt->DrawGeometry(geo.Get(), br, s);
+        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
+            sink.BeginFigure(P(cx + r * 0.0f, cy - r), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddArc(D2D1::ArcSegment(P(cx - r * 0.7f, cy + r * 0.7f), D2D1::SizeF(r, r), 0, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        });
+        if (geo) rt->DrawGeometry(geo.Get(), br, s);
         rt->DrawLine(P(cx, cy - r), P(cx - px(4), cy - r - px(3)), br, s);
         rt->DrawLine(P(cx, cy - r), P(cx - px(4), cy - r + px(3)), br, s);
         break;
     }
     case BTN_MARKUP: {
         // 筆頭
-        ComPtr<ID2D1PathGeometry> geo;
-        renderer_.d2d()->CreatePathGeometry(&geo);
-        ComPtr<ID2D1GeometrySink> sink;
-        geo->Open(&sink);
-        sink->BeginFigure(P(cx + px(6), cy - px(7)), D2D1_FIGURE_BEGIN_FILLED);
-        sink->AddLine(P(cx + px(8), cy - px(5)));
-        sink->AddLine(P(cx - px(4), cy + px(7)));
-        sink->AddLine(P(cx - px(8), cy + px(8)));
-        sink->AddLine(P(cx - px(7), cy + px(4)));
-        sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-        sink->Close();
-        rt->DrawGeometry(geo.Get(), br, s);
+        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
+            sink.BeginFigure(P(cx + px(6), cy - px(7)), D2D1_FIGURE_BEGIN_FILLED);
+            sink.AddLine(P(cx + px(8), cy - px(5)));
+            sink.AddLine(P(cx - px(4), cy + px(7)));
+            sink.AddLine(P(cx - px(8), cy + px(8)));
+            sink.AddLine(P(cx - px(7), cy + px(4)));
+            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+        });
+        if (geo) rt->DrawGeometry(geo.Get(), br, s);
         break;
     }
     case BTN_INFO: {
@@ -1741,16 +1753,13 @@ void MainWindow::drawIcon(const Button& b) {
         break;
     }
     case BTN_FREEHAND: {
-        ComPtr<ID2D1PathGeometry> geo;
-        renderer_.d2d()->CreatePathGeometry(&geo);
-        ComPtr<ID2D1GeometrySink> sink;
-        geo->Open(&sink);
-        sink->BeginFigure(P(cx - px(9), cy + px(5)), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddBezier(D2D1::BezierSegment(P(cx - px(6), cy - px(12)), P(cx - px(2), cy + px(12)), P(cx + px(1), cy - px(2))));
-        sink->AddBezier(D2D1::BezierSegment(P(cx + px(3), cy - px(10)), P(cx + px(5), cy + px(8)), P(cx + px(9), cy - px(4))));
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->Close();
-        rt->DrawGeometry(geo.Get(), br, s);
+        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
+            sink.BeginFigure(P(cx - px(9), cy + px(5)), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddBezier(D2D1::BezierSegment(P(cx - px(6), cy - px(12)), P(cx - px(2), cy + px(12)), P(cx + px(1), cy - px(2))));
+            sink.AddBezier(D2D1::BezierSegment(P(cx + px(3), cy - px(10)), P(cx + px(5), cy + px(8)), P(cx + px(9), cy - px(4))));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        });
+        if (geo) rt->DrawGeometry(geo.Get(), br, s);
         break;
     }
     case BTN_SHAPES:
@@ -1758,7 +1767,7 @@ void MainWindow::drawIcon(const Button& b) {
         rt->DrawEllipse(D2D1::Ellipse(P(cx + px(4), cy + px(1)), px(5), px(5)), br, s);
         break;
     case BTN_TEXT:
-        renderer_.drawUiText(rt, L"A", b.rect, px(18), c, DWRITE_TEXT_ALIGNMENT_CENTER, false);
+        renderer_.drawUiText(L"A", b.rect, px(18), c, DWRITE_TEXT_ALIGNMENT_CENTER, false);
         break;
     case BTN_ADJCOLOR: {
         for (int i = 0; i < 3; ++i) {
@@ -1771,20 +1780,17 @@ void MainWindow::drawIcon(const Button& b) {
     }
     case BTN_CROP: {
         // 兩個交錯的 L
-        ComPtr<ID2D1PathGeometry> geo;
-        renderer_.d2d()->CreatePathGeometry(&geo);
-        ComPtr<ID2D1GeometrySink> sink;
-        geo->Open(&sink);
-        sink->BeginFigure(P(cx - px(5), cy - px(9)), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddLine(P(cx - px(5), cy + px(5)));
-        sink->AddLine(P(cx + px(9), cy + px(5)));
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->BeginFigure(P(cx - px(9), cy - px(5)), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddLine(P(cx + px(5), cy - px(5)));
-        sink->AddLine(P(cx + px(5), cy + px(9)));
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-        sink->Close();
-        rt->DrawGeometry(geo.Get(), br, s);
+        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
+            sink.BeginFigure(P(cx - px(5), cy - px(9)), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddLine(P(cx - px(5), cy + px(5)));
+            sink.AddLine(P(cx + px(9), cy + px(5)));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            sink.BeginFigure(P(cx - px(9), cy - px(5)), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddLine(P(cx + px(5), cy - px(5)));
+            sink.AddLine(P(cx + px(5), cy + px(9)));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        });
+        if (geo) rt->DrawGeometry(geo.Get(), br, s);
         break;
     }
     case BTN_ADJSIZE:
@@ -1801,7 +1807,7 @@ void MainWindow::drawIcon(const Button& b) {
         break;
     case BTN_LINECOLOR: {
         float r = px(7);
-        Color sc = currentStroke().stroke;
+        Color sc = editor_.currentStroke().stroke;
         if (sc.none()) {
             rt->DrawEllipse(D2D1::Ellipse(P(cx - px(1), cy), r, r), br, s);
             rt->DrawLine(P(cx - px(1) - r * 0.7f, cy + r * 0.7f), P(cx - px(1) + r * 0.7f, cy - r * 0.7f), renderer_.brush(D2D1::ColorF(0.85f, 0.1f, 0.1f)), s);
@@ -1812,7 +1818,7 @@ void MainWindow::drawIcon(const Button& b) {
     }
     case BTN_FILL: {
         D2D1_RECT_F box = D2D1::RectF(cx - px(8), cy - px(7), cx + px(6), cy + px(7));
-        Color fc = currentStroke().fill;
+        Color fc = editor_.currentStroke().fill;
         if (fc.none()) {
             rt->DrawRectangle(box, br, s);
             rt->DrawLine(P(box.left, box.bottom), P(box.right, box.top), renderer_.brush(D2D1::ColorF(0.85f, 0.1f, 0.1f)), s);
@@ -1823,15 +1829,11 @@ void MainWindow::drawIcon(const Button& b) {
         break;
     }
     case BTN_FORMAT:
-        renderer_.drawUiText(rt, L"Aa", D2D1::RectF(b.rect.left, b.rect.top, b.rect.right - px(5), b.rect.bottom), px(14), c,
+        renderer_.drawUiText(L"Aa", D2D1::RectF(b.rect.left, b.rect.top, b.rect.right - px(5), b.rect.bottom), px(14), c,
                              DWRITE_TEXT_ALIGNMENT_CENTER, true);
         break;
     default: break;
     }
-}
-
-const std::vector<Annotation>& MainWindow::visibleItems() const {
-    return drag_ == Drag::Move || drag_ == Drag::Handle ? liveItems_ : doc_.items();
 }
 
 void MainWindow::drawCanvas() {
@@ -1841,7 +1843,7 @@ void MainWindow::drawCanvas() {
     auto img = currentImage();
     if (!img) {
         if (!loadError_.empty())
-            renderer_.drawUiText(rt, loadError_, canvasRc_, px(14), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+            renderer_.drawUiText(loadError_, canvasRc_, px(14), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
         return;
     }
     rt->PushAxisAlignedClip(canvasRc_, D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1849,7 +1851,7 @@ void MainWindow::drawCanvas() {
     auto bitmapFor = [&](const ImagePtr& im) {
         const ImageBitmap* b = nullptr;
         int tw = 0, th = 0;
-        if (settings_.view.highQuality && !hqBusy_ && !adjusting_ &&
+        if (settings_.view.highQuality && !hqBusy_ && !editor_.adjusting() &&
             hqTargetSize(im->width, im->height, zoom_, renderer_.rt()->GetMaximumBitmapSize(), tw, th))
             b = renderer_.scaledBitmap(im, tw, th, prefetch_.scaled(im, tw, th)); // 預先解碼時背景縮好的就直接用
         if (!b) b = renderer_.imageBitmap(im);
@@ -1860,31 +1862,31 @@ void MainWindow::drawCanvas() {
         POINT tl = toClient({r.left, r.top}), brp = toClient({r.right, r.bottom});
         rt->DrawRectangle(D2D1::RectF(tl.x - 0.5f, tl.y - 0.5f, brp.x + 0.5f, brp.y + 0.5f), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.25f)), 1.0f);
     };
-    const ImageBitmap* bmp = bitmapFor(img);
-    DrawCtx ctx{rt, img.get(), bmp, &renderer_.mosaicCache()};
+    PaintCtx ctx = renderer_.paintCtx(img, bitmapFor(img));
     // 兩頁並排：第二頁先畫（它不帶標註），再畫第一頁與它的標註。第一頁的位置由 pageRect 決定。
     Rc r1 = pageRect(false);
     if (twoPage() && second_) {
         Rc r2 = pageRect(true);
         shadow(r2);
         rt->SetTransform(D2D1::Matrix3x2F::Translation(r2.left, r2.top) * viewMatrix());
-        DrawCtx ctx2{rt, second_.get(), bitmapFor(second_), nullptr};
-        renderer_.drawImage(ctx2);
+        PaintCtx ctx2 = renderer_.paintCtx(second_, bitmapFor(second_));
+        ctx2.mosaic = nullptr; // 第二頁不帶標註
+        drawImage(ctx2);
     }
     shadow(r1);
     rt->SetTransform(D2D1::Matrix3x2F::Translation(r1.left, r1.top) * viewMatrix());
-    renderer_.drawImage(ctx);
-    const auto& items = visibleItems();
-    for (const auto& a : items) {
-        if (a.id == editingId_) {
+    drawImage(ctx);
+    for (const auto& a : editor_.visibleItems()) {
+        if (a.id == editor_.editingId()) {
             Annotation copy = a;
             copy.textValue.clear();
-            renderer_.drawAnnotation(ctx, copy);
+            drawAnnotation(ctx, copy);
         } else {
-            renderer_.drawAnnotation(ctx, a);
+            drawAnnotation(ctx, a);
         }
     }
-    if (drag_ == Drag::Draw && !drawPath_.empty()) renderer_.drawAnnotation(ctx, makeFreehand(drawPath_, stroke_));
+    if (editor_.drag() == DragKind::Draw && !editor_.drawPath().empty())
+        drawAnnotation(ctx, makeFreehand(editor_.drawPath(), editor_.stroke()));
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
     drawSelection();
     drawCrop();
@@ -1892,13 +1894,13 @@ void MainWindow::drawCanvas() {
 }
 
 void MainWindow::drawSelection() {
-    const Annotation* a = selectedItem();
-    if (!a || drag_ == Drag::Draw) return;
+    const Annotation* a = editor_.selectedItem();
+    if (!a || editor_.drag() == DragKind::Draw) return;
     auto* rt = renderer_.rt();
     float r = px(kHandleR);
-    if (drag_ == Drag::Handle) {
+    if (editor_.drag() == DragKind::Handle) {
         // 綠點按下時畫它的可動軌跡：繞圈的畫圈，直線的畫線。
-        HandleGuide g = handleGuide(*a, dragHandle_);
+        HandleGuide g = handleGuide(*a, editor_.dragHandleId());
         auto* gb = renderer_.brush(D2D1::ColorF(0.04f, 0.52f, 1.0f, 0.40f));
         if (g.kind == GuideKind::Circle) {
             POINT tl = toClient({g.ellipse.left, g.ellipse.top}), br = toClient({g.ellipse.right, g.ellipse.bottom});
@@ -1927,7 +1929,7 @@ void MainWindow::onButton(int id) {
     if (id == popupBtn_ && GetTickCount64() - lastPopupCloseTick() < 300) { popupBtn_ = BTN_NONE; return; }
     auto anchor = [&]() { popupBtn_ = id; return buttonScreenRect(id); };
     // 裁切模式中按了縮放、資訊、裁切以外的按鈕：先取消裁切，再做那顆按鈕的事。
-    if (cropping_ && id != BTN_CROP && id != BTN_CROP_APPLY && id != BTN_ZOOMOUT && id != BTN_ZOOM100 && id != BTN_ZOOMIN &&
+    if (editor_.cropping() && id != BTN_CROP && id != BTN_CROP_APPLY && id != BTN_ZOOMOUT && id != BTN_ZOOM100 && id != BTN_ZOOMIN &&
         id != BTN_INFO)
         cancelCrop();
     switch (id) {
@@ -1938,7 +1940,7 @@ void MainWindow::onButton(int id) {
     case BTN_MARKUP:
         if (!editGuard()) break;
         showMarkup_ = !showMarkup_;
-        if (!showMarkup_) freehandMode_ = false;
+        if (!showMarkup_) editor_.leaveFreehand();
         layout();
         if (fit_) fitToView(); else clampOffset();
         positionEdit();
@@ -1954,53 +1956,49 @@ void MainWindow::onButton(int id) {
     case BTN_FREEHAND:
         if (!editGuard()) break;
         endTextEdit(true);
-        freehandMode_ = !freehandMode_;
-        if (freehandMode_) selected_ = 0;
+        editor_.toggleFreehand();
         buildButtons();
         repaint();
         break;
     case BTN_SHAPES:
-        showShapesPopup(hwnd_, renderer_, anchor(), ui_, [this](Kind k) { addShape(k); });
+        showShapesPopup(hwnd_, renderer_.device(), anchor(), ui_, [this](Kind k) { addShape(k); });
         break;
     case BTN_TEXT: addText(); break;
     case BTN_ADJCOLOR:
         if (!editGuard()) break;
-        if (!adjusting_ && doc_.image()) {
+        if (!editor_.adjusting() && doc_.image()) {
             endTextEdit(true);
-            adjusting_ = true;
-            adjustBase_ = doc_.image();
-            adjustParams_ = {};
-            adjustPreview_.reset();
+            editor_.beginAdjust();
             buildButtons();
-            showColorAdjustPanel(hwnd_, this, ui_);
+            showColorAdjustPanel(hwnd_, this);
             repaint();
         }
         break;
     case BTN_ADJSIZE: adjustSize(); break;
     case BTN_CROP:
-        if (cropping_) cancelCrop();
+        if (editor_.cropping()) cancelCrop();
         else beginCrop();
         break;
     case BTN_CROP_APPLY: applyCrop(); break;
     case BTN_LINESTYLE:
-        showLineStylePopup(hwnd_, renderer_, anchor(), ui_, currentStroke(), [this](const StrokeStyle& s) { applyStrokeStyle(s); });
+        showLineStylePopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentStroke(), [this](const StrokeStyle& s) { applyStrokeStyle(s); });
         break;
     case BTN_LINECOLOR:
-        showColorPopup(hwnd_, renderer_, anchor(), ui_, currentStroke().stroke, true, [this](Color c) {
-            StrokeStyle s = currentStroke();
+        showColorPopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentStroke().stroke, true, [this](Color c) {
+            StrokeStyle s = editor_.currentStroke();
             s.stroke = c;
             applyStrokeStyle(s);
         });
         break;
     case BTN_FILL:
-        showColorPopup(hwnd_, renderer_, anchor(), ui_, currentStroke().fill, true, [this](Color c) {
-            StrokeStyle s = currentStroke();
+        showColorPopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentStroke().fill, true, [this](Color c) {
+            StrokeStyle s = editor_.currentStroke();
             s.fill = c;
             applyStrokeStyle(s);
         });
         break;
     case BTN_FORMAT:
-        showFormatPopup(hwnd_, renderer_, anchor(), ui_, currentText(), [this](const TextStyle& t) { applyTextStyle(t); });
+        showFormatPopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentText(), [this](const TextStyle& t) { applyTextStyle(t); });
         break;
     default: break;
     }
@@ -2008,6 +2006,17 @@ void MainWindow::onButton(int id) {
 
 // ---------------------------------------------------------------------------
 // 滑鼠
+
+Pointer MainWindow::pointerAt(POINT client) const {
+    Pointer p;
+    p.pos = toImage(client);
+    p.tol = imageTol();
+    p.handleTol = px(kHandleR + kHandleHitExtra) / zoom_;
+    p.cropTol = px(kCropTol) / zoom_;
+    p.cropCorner = px(kCropCorner) / zoom_;
+    p.drawStep = kDrawStepPx / zoom_;
+    return p;
+}
 
 void MainWindow::onLButtonDown(POINT pt) {
     const Button* b = nullptr;
@@ -2029,84 +2038,25 @@ void MainWindow::onLButtonDown(POINT pt) {
     if (!inRect(canvasRc_, pt) || !doc_.image()) return;
     if (edit_) endTextEdit(true);
 
-    Pt ip = toImage(pt);
-    if (twoPage()) {
-        dragStartClient_ = pt;
-        dragMoved_ = false;
-        drag_ = Drag::Pan;
-        dragOffsetStart_ = offset_;
-        SetCapture(hwnd_);
-        return;
-    }
-    if (pickingWhite_ && adjustBase_) {
-        pickingWhite_ = false;
-        setWhiteBalanceFrom(adjustParams_, *adjustBase_, static_cast<int>(ip.x), static_cast<int>(ip.y));
-        colorAdjustPanelSetParams(adjustParams_);
-        previewChanged(adjustParams_);
-        return;
-    }
-    dragStartImg_ = ip;
+    // 這一下做什麼（平移、取白點、拖裁切框、畫塗鴉、選物件）由 Editor 依目前的狀態決定。
     dragStartClient_ = pt;
-    dragMoved_ = false;
-    if (cropping_) {
-        // 裁切模式：按在框的角、邊、框內就拖框，框外就平移畫面；物件不能點選。
-        cropPart_ = cropPartAt(pt);
-        if (cropPart_ != CropPart::None) {
-            drag_ = Drag::Crop;
-            cropStart_ = cropBox_;
-        } else {
-            drag_ = Drag::Pan;
-            dragOffsetStart_ = offset_;
-        }
-        SetCapture(hwnd_);
+    if (editor_.press(pointerAt(pt), twoPage()) == Editor::Press::PickedWhite) {
+        colorAdjustPanelSetParams(editor_.adjustParams());
+        repaint();
         return;
     }
-    if (freehandMode_) {
-        drag_ = Drag::Draw;
-        drawPath_ = {ip};
-        SetCapture(hwnd_);
-        return;
-    }
-    // 控制點
-    if (const Annotation* sel = selectedItem()) {
-        for (const auto& h : handles(*sel)) {
-            POINT c = toClient(h.pos);
-            if (std::hypot(static_cast<float>(c.x - pt.x), static_cast<float>(c.y - pt.y)) <= px(kHandleR + 3)) {
-                drag_ = Drag::Handle;
-                dragHandle_ = h.id;
-                liveItems_ = doc_.items();
-                SetCapture(hwnd_);
-                return;
-            }
-        }
-    }
-    // 物件（上層優先）
-    const auto& items = doc_.items();
-    for (int i = static_cast<int>(items.size()) - 1; i >= 0; --i) {
-        if (hitTest(items[i], ip, imageTol())) {
-            select(items[i].id);
-            drag_ = Drag::Move;
-            liveItems_ = items;
-            SetCapture(hwnd_);
-            return;
-        }
-    }
-    if (selected_) { selected_ = 0; repaint(); }
-    drag_ = Drag::Pan;
-    dragOffsetStart_ = offset_;
+    if (editor_.drag() == DragKind::Pan) dragOffsetStart_ = offset_;
     SetCapture(hwnd_);
+    buildButtons(); // 選取可能變了
+    repaint();
 }
 
 void MainWindow::onLButtonDblClk(POINT pt) {
-    if (!inRect(canvasRc_, pt) || !doc_.image() || freehandMode_ || twoPage() || cropping_) { onLButtonDown(pt); return; }
-    Pt ip = toImage(pt);
-    const auto& items = doc_.items();
-    for (int i = static_cast<int>(items.size()) - 1; i >= 0; --i) {
-        if (items[i].kind == Kind::Text && hitTest(items[i], ip, imageTol())) {
-            select(items[i].id);
-            beginTextEdit(items[i].id, false);
-            return;
-        }
+    if (!inRect(canvasRc_, pt) || !doc_.image() || editor_.freehand() || twoPage() || editor_.cropping()) { onLButtonDown(pt); return; }
+    if (uint32_t id = editor_.textItemAt(pointerAt(pt))) {
+        select(id);
+        beginTextEdit(id, false);
+        return;
     }
     onLButtonDown(pt);
 }
@@ -2117,7 +2067,7 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
         TrackMouseEvent(&tme);
         trackingMouse_ = true;
     }
-    if (drag_ == Drag::None) {
+    if (!editor_.dragging()) {
         int id = hitButton(pt);
         if (id != hoverBtn_) {
             hoverBtn_ = id;
@@ -2128,7 +2078,7 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
             else KillTimer(hwnd_, kBtnTipTimer);
         }
         // 教學提示：游標在物件方框裡停住半秒才出現，離開就收。
-        uint32_t item = (edit_ || freehandMode_ || pickingWhite_ || twoPage() || cropping_) ? 0 : hitItemBox(pt);
+        uint32_t item = inRect(canvasRc_, pt) && doc_.image() ? editor_.tipItemAt(toImage(pt), twoPage()) : 0;
         if (item != hoverItem_) {
             hoverItem_ = item;
             hideTip();
@@ -2137,39 +2087,13 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
         else KillTimer(hwnd_, kTipTimer);
         return;
     }
-    Pt ip = toImage(pt);
-    if (std::abs(pt.x - dragStartClient_.x) > 2 || std::abs(pt.y - dragStartClient_.y) > 2) dragMoved_ = true;
-    switch (drag_) {
-    case Drag::Pan:
+    if (editor_.drag() == DragKind::Pan) {
         offset_ = dragOffsetStart_ + Pt{static_cast<float>(pt.x - dragStartClient_.x), static_cast<float>(pt.y - dragStartClient_.y)};
         clampOffset();
         positionEdit();
-        break;
-    case Drag::Draw:
-        if (drawPath_.empty() || dist(drawPath_.back(), ip) >= 0.5f / zoom_) drawPath_.push_back(ip);
-        break;
-    case Drag::Crop:
-        if (auto img = doc_.image())
-            cropBox_ = dragCropBox(cropStart_, cropPart_, ip.x - dragStartImg_.x, ip.y - dragStartImg_.y, img->width, img->height);
-        break;
-    case Drag::Move: {
-        int i = doc_.indexOf(selected_);
-        if (i >= 0) {
-            liveItems_[i] = doc_.items()[i];
-            moveBy(liveItems_[i], ip.x - dragStartImg_.x, ip.y - dragStartImg_.y);
-        }
-        break;
-    }
-    case Drag::Handle: {
-        int i = doc_.indexOf(selected_);
-        if (i >= 0) {
-            dragHandle(liveItems_[i], dragHandle_, ip);
-            if (liveItems_[i].kind == Kind::Text)
-                liveItems_[i].rect.bottom = liveItems_[i].rect.top + renderer_.textHeight(liveItems_[i]);
-        }
-        break;
-    }
-    default: break;
+    } else {
+        const bool pastClickSlop = std::abs(pt.x - dragStartClient_.x) > kClickSlopPx || std::abs(pt.y - dragStartClient_.y) > kClickSlopPx;
+        editor_.move(pointerAt(pt), pastClickSlop);
     }
     repaint();
 }
@@ -2186,18 +2110,14 @@ void MainWindow::onLButtonUp(POINT pt) {
 }
 
 void MainWindow::endDrag(bool apply) {
-    if (drag_ == Drag::None) return;
+    if (!editor_.dragging()) return;
     if (apply) {
-        finishDrag(); // 把 drag_ 設回 None
+        if (editor_.release()) updateTitle();
     } else {
-        // 丟掉拖到一半的東西：物件回到拖之前的樣子（文件沒動過），裁切框回到拖之前，畫到一半的筆跡不留。
-        if (drag_ == Drag::Crop) cropBox_ = cropStart_;
-        drag_ = Drag::None;
-        liveItems_.clear();
-        drawPath_.clear();
-        repaint();
+        editor_.cancelDrag();
     }
-    // 最後才放掉滑鼠：ReleaseCapture 會立刻送 WM_CAPTURECHANGED 進來，那時 drag_ 已經是 None。
+    repaint();
+    // 最後才放掉滑鼠：ReleaseCapture 會立刻送 WM_CAPTURECHANGED 進來，那時已經不在拖曳中。
     if (GetCapture() == hwnd_) ReleaseCapture();
 }
 
@@ -2205,37 +2125,7 @@ void MainWindow::endInteraction(bool commitText) {
     endDrag(false);
     endTextEdit(commitText);
     cancelCrop();
-    if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
-    pickingWhite_ = false;
-}
-
-void MainWindow::finishDrag() {
-    Drag d = drag_;
-    drag_ = Drag::None;
-    switch (d) {
-    case Drag::Draw: {
-        if (!drawPath_.empty()) {
-            Annotation a = makeFreehand(drawPath_, stroke_);
-            a.id = doc_.nextId();
-            auto items = doc_.items();
-            items.push_back(a);
-            doc_.commitItems(std::move(items));
-            updateTitle();
-        }
-        drawPath_.clear();
-        break;
-    }
-    case Drag::Move:
-    case Drag::Handle:
-        if (dragMoved_) {
-            doc_.commitItems(liveItems_);
-            updateTitle();
-        }
-        liveItems_.clear();
-        break;
-    default: break;
-    }
-    repaint();
+    if (editor_.adjusting()) { closeColorAdjustPanel(); cancelAdjust(); }
 }
 
 void MainWindow::onMouseWheel(POINT ptScreen, int delta, WPARAM keys) {
@@ -2262,44 +2152,24 @@ bool MainWindow::onSetCursor() {
     GetCursorPos(&pt);
     ScreenToClient(hwnd_, &pt);
     if (!inRect(canvasRc_, pt) || !doc_.image()) return false;
-    if (pickingWhite_) { SetCursor(LoadCursorW(nullptr, IDC_CROSS)); return true; }
-    if (cropping_ && drag_ != Drag::Pan) {
-        LPCWSTR c = nullptr;
-        switch (drag_ == Drag::Crop ? cropPart_ : cropPartAt(pt)) {
-        case CropPart::TopLeft: case CropPart::BottomRight: c = IDC_SIZENWSE; break;
-        case CropPart::TopRight: case CropPart::BottomLeft: c = IDC_SIZENESW; break;
-        case CropPart::Left: case CropPart::Right: c = IDC_SIZEWE; break;
-        case CropPart::Top: case CropPart::Bottom: c = IDC_SIZENS; break;
-        case CropPart::Inside: c = IDC_SIZEALL; break;
-        default: return false;
-        }
-        SetCursor(LoadCursorW(nullptr, c));
-        return true;
+    LPCWSTR id = nullptr;
+    switch (editor_.cursorAt(pointerAt(pt), twoPage())) {
+    case CursorKind::Default: return false;
+    case CursorKind::Cross: id = IDC_CROSS; break;
+    case CursorKind::Move: id = IDC_SIZEALL; break;
+    case CursorKind::SizeNWSE: id = IDC_SIZENWSE; break;
+    case CursorKind::SizeNESW: id = IDC_SIZENESW; break;
+    case CursorKind::SizeWE: id = IDC_SIZEWE; break;
+    case CursorKind::SizeNS: id = IDC_SIZENS; break;
+    case CursorKind::Hand: id = IDC_HAND; break;
     }
-    if (freehandMode_ || drag_ == Drag::Draw) { SetCursor(LoadCursorW(nullptr, IDC_CROSS)); return true; }
-    if (drag_ == Drag::Pan) { SetCursor(LoadCursorW(nullptr, IDC_SIZEALL)); return true; }
-    if (drag_ == Drag::Move || drag_ == Drag::Handle) { SetCursor(LoadCursorW(nullptr, IDC_SIZEALL)); return true; }
-    if (const Annotation* sel = selectedItem()) {
-        for (const auto& h : handles(*sel)) {
-            POINT c = toClient(h.pos);
-            if (std::hypot(static_cast<float>(c.x - pt.x), static_cast<float>(c.y - pt.y)) <= px(kHandleR + 3)) {
-                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
-                return true;
-            }
-        }
-    }
-    // 物件的外框方框內：手指，告訴使用者這裡是物件。
-    if (!edit_ && !twoPage() && hitItemBox(pt)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return true; }
-    return false;
+    SetCursor(LoadCursorW(nullptr, id));
+    return true;
 }
 
 uint32_t MainWindow::hitItemBox(POINT pt) const {
     if (!inRect(canvasRc_, pt) || !doc_.image()) return 0;
-    Pt ip = toImage(pt);
-    const auto& items = doc_.items();
-    for (int i = static_cast<int>(items.size()) - 1; i >= 0; --i)
-        if (bounds(items[i]).contains(ip)) return items[i].id;
-    return 0;
+    return editor_.itemBoxAt(toImage(pt));
 }
 
 // 共用一個 TTF_TRACK 的 tooltip 視窗：物件教學提示和按鈕名稱都用它。
@@ -2591,15 +2461,14 @@ void MainWindow::applyPinnedNow() {
 bool MainWindow::onKeyDown(WPARAM vk) {
     const bool ctrl = ctrlDown(), shift = shiftDown();
     // 滑鼠正拖著東西時不接受鍵盤：這時復原、刪除會讓拖曳手上那份物件清單和文件對不上。
-    if (drag_ != Drag::None) return true;
+    if (editor_.dragging()) return true;
     const bool arrow = vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN;
     if (!ctrl && arrow) {
         // 有選取物件：方向鍵微移（Shift 一次 10 像素）。沒有：← → 翻頁（照下面的指令表），↑ ↓ 捲動。
-        if (const Annotation* sel = selectedItem()) {
-            float step = shift ? 10.0f : 1.0f;
-            Annotation a = *sel;
-            moveBy(a, vk == VK_LEFT ? -step : vk == VK_RIGHT ? step : 0, vk == VK_UP ? -step : vk == VK_DOWN ? step : 0);
-            commitSelectedChange(a);
+        if (editor_.selectedItem()) {
+            float step = shift ? kNudgeLargePx : kNudgePx;
+            if (editor_.nudgeSelected(vk == VK_LEFT ? -step : vk == VK_RIGHT ? step : 0, vk == VK_UP ? -step : vk == VK_DOWN ? step : 0))
+                afterItemChange();
             return true;
         }
         if (vk == VK_UP || vk == VK_DOWN) { scrollKey(static_cast<int>(vk)); return true; }
@@ -2613,13 +2482,12 @@ bool MainWindow::onKeyDown(WPARAM vk) {
     disarmJump(); // 待命中的跳本：按了翻頁以外的鍵就取消
     switch (vk) {
     case VK_ESCAPE:
-        if (cropping_) { cancelCrop(); return true; }
-        if (pickingWhite_) { pickingWhite_ = false; return true; }
-        if (selected_) { selected_ = 0; repaint(); return true; }
-        if (freehandMode_) { freehandMode_ = false; buildButtons(); repaint(); return true; }
+        // 取消什麼由 Editor 決定（裁切、取白點、選取、塗鴉，一次一個）。
+        if (editor_.cropping()) cancelCrop(); // 還要把檢視還原成進入裁切前的樣子
+        else if (editor_.escape() != Editor::Escape::Nothing) { buildButtons(); repaint(); }
         return true;
     case VK_RETURN:
-        if (const Annotation* sel = selectedItem()) {
+        if (const Annotation* sel = editor_.selectedItem()) {
             if (sel->kind == Kind::Text) { beginTextEdit(sel->id, false); return true; }
         }
         return false;
@@ -2630,97 +2498,53 @@ bool MainWindow::onKeyDown(WPARAM vk) {
 // ---------------------------------------------------------------------------
 // 標註
 
-const Annotation* MainWindow::selectedItem() const {
-    if (!selected_) return nullptr;
-    const auto& items = visibleItems();
-    for (const auto& a : items)
-        if (a.id == selected_) return &a;
-    return nullptr;
-}
-
 void MainWindow::select(uint32_t id) {
-    selected_ = id;
+    editor_.select(id);
     buildButtons();
     repaint();
 }
 
-StrokeStyle MainWindow::currentStroke() const {
-    if (const Annotation* a = doc_.findItem(selected_)) return a->stroke;
-    return stroke_;
-}
-
-TextStyle MainWindow::currentText() const {
-    if (const Annotation* a = doc_.findItem(selected_)) {
-        if (a->kind == Kind::Text) return a->text;
-    }
-    return text_;
-}
-
-void MainWindow::commitSelectedChange(const Annotation& updated) {
-    int i = doc_.indexOf(updated.id);
-    if (i < 0) return;
-    auto items = doc_.items();
-    items[i] = updated;
-    if (items[i].kind == Kind::Text) items[i].rect.bottom = items[i].rect.top + renderer_.textHeight(items[i]);
-    doc_.commitItems(std::move(items));
+void MainWindow::afterItemChange() {
     updateTitle();
     positionEdit();
     repaint();
 }
 
 void MainWindow::deleteSelected() {
-    if (edit_) return;
-    int i = doc_.indexOf(selected_);
-    if (i < 0) return;
-    auto items = doc_.items();
-    items.erase(items.begin() + i);
-    doc_.commitItems(std::move(items));
-    selected_ = 0;
+    if (!editor_.deleteSelected()) return;
     updateTitle();
     repaint();
+}
+
+// 新物件放在畫布中央；看得到的範圍的短邊（圖片像素）決定預設大小。
+float MainWindow::visibleShortSide() const {
+    float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
+    return std::min(cw, ch) / zoom_;
 }
 
 void MainWindow::addShape(Kind kind) {
     if (!doc_.image() || !editGuard()) return;
     endTextEdit(true);
-    freehandMode_ = false;
-    Pt c = toImage(canvasCenter());
-    float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
-    float size = std::min(cw, ch) / zoom_;
-    Annotation a = makeShape(kind, c, size, stroke_);
-    a.id = doc_.nextId();
-    auto items = doc_.items();
-    items.push_back(a);
-    doc_.commitItems(std::move(items));
-    select(a.id);
+    if (!editor_.addShape(kind, toImage(canvasCenter()), visibleShortSide())) return;
+    buildButtons();
+    repaint();
     updateTitle();
 }
 
 void MainWindow::addText() {
     if (!doc_.image() || !editGuard()) return;
     endTextEdit(true);
-    freehandMode_ = false;
-    Pt c = toImage(canvasCenter());
-    float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
-    Annotation a = makeText(c, std::min(cw, ch) / zoom_, stroke_, text_, tr(L"Text"));
-    a.id = doc_.nextId();
-    a.rect.bottom = a.rect.top + renderer_.textHeight(a);
-    auto items = doc_.items();
-    items.push_back(a);
-    doc_.commitItems(std::move(items));
-    select(a.id);
+    uint32_t id = editor_.addText(toImage(canvasCenter()), visibleShortSide(), tr(L"Text"));
+    if (!id) return;
+    buildButtons();
+    repaint();
     updateTitle();
-    beginTextEdit(a.id, true);
+    beginTextEdit(id, true);
 }
 
 void MainWindow::applyStrokeStyle(const StrokeStyle& s) {
-    const Annotation* sel = doc_.findItem(selected_);
-    // 文字方塊的外框預設無色，改它的外框不要影響之後新畫的形狀。
-    if (!sel || sel->kind != Kind::Text) stroke_ = s;
-    if (sel) {
-        Annotation a = *sel;
-        a.stroke = s;
-        commitSelectedChange(a);
+    if (editor_.applyStrokeStyle(s)) {
+        afterItemChange();
         if (edit_) InvalidateRect(edit_, nullptr, TRUE);
     }
     buildButtons();
@@ -2728,30 +2552,17 @@ void MainWindow::applyStrokeStyle(const StrokeStyle& s) {
 }
 
 void MainWindow::applyTextStyle(const TextStyle& t) {
-    text_ = t;
-    if (const Annotation* sel = doc_.findItem(selected_)) {
-        if (sel->kind == Kind::Text) {
-            Annotation a = *sel;
-            a.text = t;
-            commitSelectedChange(a);
-            updateEditFont();
-        }
+    if (editor_.applyTextStyle(t)) {
+        afterItemChange();
+        updateEditFont();
     }
     repaint();
 }
 
 void MainWindow::rotateImage() {
-    auto img = doc_.image();
-    if (!img) return; // 壓縮檔內也能轉：當成檢視動作，翻頁就重置
+    if (!doc_.image()) return; // 壓縮檔內也能轉：當成檢視動作，翻頁就重置
     endInteraction(true);
-    DocState next;
-    next.image = std::make_shared<Image>(rotateCCW90(*img));
-    next.items = doc_.items();
-    for (auto& a : next.items) {
-        rotateCCW90(a, img->width);
-        if (a.kind == Kind::Text) a.rect.bottom = a.rect.top + renderer_.textHeight(a);
-    }
-    doc_.commit(std::move(next));
+    editor_.rotateCCW();
     if (readOnly()) doc_.markSaved(); // 唯讀：旋轉不算修改，標題不加 *
     infoData_.width = doc_.image()->width;
     infoData_.height = doc_.image()->height;
@@ -2767,24 +2578,8 @@ void MainWindow::adjustSize() {
     // 調整顏色的面板與裁切框都是照現在的尺寸算的：尺寸要變了，先收掉。
     endInteraction(true);
     ResizeResult r;
-    if (!showResizeDialog(hwnd_, img->width, img->height, img->dpiX, r)) return;
-    DocState next;
-    next.items = doc_.items();
-    if (r.resample && (r.width != img->width || r.height != img->height)) {
-        auto out = std::make_shared<Image>(resample(*img, r.width, r.height));
-        out->dpiX = out->dpiY = r.dpi;
-        float sx = static_cast<float>(r.width) / img->width, sy = static_cast<float>(r.height) / img->height;
-        for (auto& a : next.items) {
-            scaleBy(a, sx, sy);
-            if (a.kind == Kind::Text) a.rect.bottom = a.rect.top + renderer_.textHeight(a);
-        }
-        next.image = out;
-    } else {
-        auto out = std::make_shared<Image>(*img);
-        out->dpiX = out->dpiY = r.dpi;
-        next.image = out;
-    }
-    doc_.commit(std::move(next));
+    if (!showResizeDialog(hwnd_, img->width, img->height, doc_.dpi().x, r)) return;
+    editor_.resize(r.width, r.height, r.dpi, r.resample);
     infoData_.width = doc_.image()->width;
     infoData_.height = doc_.image()->height;
     infoData_.dpiX = infoData_.dpiY = r.dpi;
@@ -2798,15 +2593,12 @@ void MainWindow::adjustSize() {
 // 裁切
 
 void MainWindow::beginCrop() {
-    auto img = doc_.image();
-    if (!img || twoPage() || !editGuard()) return;
+    if (!doc_.image() || twoPage() || !editGuard()) return;
     endTextEdit(true);
-    if (adjusting_) { closeColorAdjustPanel(); cancelAdjust(); }
+    if (editor_.adjusting()) { closeColorAdjustPanel(); cancelAdjust(); }
     hideTip();
-    freehandMode_ = false;
-    selected_ = 0;
-    cropping_ = true;
-    cropBox_ = {0, 0, img->width, img->height};
+    if (!editor_.beginCrop()) return;
+    // 整張圖放進畫布；原本的檢視記下來，取消時還原。
     cropSavedZoom_ = zoom_;
     cropSavedOffset_ = offset_;
     cropSavedFit_ = fit_;
@@ -2817,9 +2609,9 @@ void MainWindow::beginCrop() {
 }
 
 void MainWindow::cancelCrop() {
-    if (!cropping_) return;
-    if (drag_ == Drag::Crop) { ReleaseCapture(); drag_ = Drag::None; }
-    cropping_ = false;
+    const bool wasDraggingBox = editor_.drag() == DragKind::Crop;
+    if (!editor_.cancelCrop()) return;
+    if (wasDraggingBox && GetCapture() == hwnd_) ReleaseCapture();
     cropFit_ = false;
     zoom_ = cropSavedZoom_;
     offset_ = cropSavedOffset_;
@@ -2830,16 +2622,12 @@ void MainWindow::cancelCrop() {
 }
 
 void MainWindow::applyCrop() {
-    auto img = doc_.image();
-    if (!cropping_ || !img) return;
-    CropBox box = cropBox_;
-    if (box == CropBox{0, 0, img->width, img->height}) { cancelCrop(); return; }
-    cropping_ = false;
+    if (!editor_.cropping() || !doc_.image()) return;
+    // 框就是整張圖：等於取消，檢視也要還原。先用同一個框比，再決定走哪一邊。
+    const CropBox box = editor_.cropBox();
+    if (box == CropBox{0, 0, doc_.image()->width, doc_.image()->height}) { cancelCrop(); return; }
+    if (editor_.applyCrop() != Editor::CropResult::Applied) return;
     cropFit_ = false;
-    DocState next;
-    next.image = std::make_shared<Image>(cropImage(*img, box.left, box.top, box.width(), box.height()));
-    next.items = cropAnnotations(doc_.items(), box);
-    doc_.commit(std::move(next));
     infoData_.width = doc_.image()->width;
     infoData_.height = doc_.image()->height;
     fit_ = true;
@@ -2848,13 +2636,10 @@ void MainWindow::applyCrop() {
     repaint();
 }
 
-CropPart MainWindow::cropPartAt(POINT client) const {
-    return cropHitTest(cropBox_, toImage(client), px(kCropTol) / zoom_, px(kCropCorner) / zoom_);
-}
-
 void MainWindow::drawCrop() {
     auto img = doc_.image();
-    if (!cropping_ || !img) return;
+    if (!editor_.cropping() || !img) return;
+    const CropBox& cropBox_ = editor_.cropBox();
     auto* rt = renderer_.rt();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
     POINT i0 = toClient({0, 0});
@@ -2873,33 +2658,32 @@ void MainWindow::drawCrop() {
     // 四個角的 L 形把手畫在框內；深色底再疊白色，淺色、深色的圖上都看得到
     float len = std::min({px(kCropHandleLen), (br - bl) / 2, (bb - bt) / 2});
     float w = px(4), inset = w / 2;
-    ComPtr<ID2D1PathGeometry> geo;
-    renderer_.d2d()->CreatePathGeometry(&geo);
-    ComPtr<ID2D1GeometrySink> sink;
-    geo->Open(&sink);
-    auto corner = [&](float x, float y, float sx, float sy) { // (sx, sy)：往框內的方向
-        float cx = x + sx * inset, cy = y + sy * inset;
-        sink->BeginFigure(D2D1::Point2F(cx, y + sy * len), D2D1_FIGURE_BEGIN_HOLLOW);
-        sink->AddLine(D2D1::Point2F(cx, cy));
-        sink->AddLine(D2D1::Point2F(x + sx * len, cy));
-        sink->EndFigure(D2D1_FIGURE_END_OPEN);
-    };
-    corner(bl, bt, 1, 1);
-    corner(br, bt, -1, 1);
-    corner(bl, bb, 1, -1);
-    corner(br, bb, -1, -1);
-    sink->Close();
-    rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.55f)), w + px(2));
-    rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(1, 1, 1)), w);
+    auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
+        auto corner = [&](float x, float y, float sx, float sy) { // (sx, sy)：往框內的方向
+            float cx = x + sx * inset, cy = y + sy * inset;
+            sink.BeginFigure(D2D1::Point2F(cx, y + sy * len), D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddLine(D2D1::Point2F(cx, cy));
+            sink.AddLine(D2D1::Point2F(x + sx * len, cy));
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+        };
+        corner(bl, bt, 1, 1);
+        corner(br, bt, -1, 1);
+        corner(bl, bb, 1, -1);
+        corner(br, bb, -1, -1);
+    });
+    if (geo) {
+        rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.55f)), w + px(2));
+        rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(1, 1, 1)), w);
+    }
     // 拖曳中：框中央顯示裁切後的像素尺寸
-    if (drag_ == Drag::Crop) {
+    if (editor_.drag() == DragKind::Crop) {
         std::wstring s = std::to_wstring(cropBox_.width()) + L" × " + std::to_wstring(cropBox_.height());
         float h = 0;
         float tw = renderer_.measureUiText(s, px(12), true, 1e6f, &h);
         float cx = (bl + br) / 2, cy = (bt + bb) / 2;
         D2D1_RECT_F pill = D2D1::RectF(cx - tw / 2 - px(8), cy - h / 2 - px(4), cx + tw / 2 + px(8), cy + h / 2 + px(4));
         rt->FillRoundedRectangle(D2D1::RoundedRect(pill, px(4), px(4)), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.6f)));
-        renderer_.drawUiText(rt, s, pill, px(12), D2D1::ColorF(D2D1::ColorF::White), DWRITE_TEXT_ALIGNMENT_CENTER, true);
+        renderer_.drawUiText(s, pill, px(12), D2D1::ColorF(D2D1::ColorF::White), DWRITE_TEXT_ALIGNMENT_CENTER, true);
     }
 }
 
@@ -2907,14 +2691,12 @@ void MainWindow::drawCrop() {
 // 文字編輯（用系統 EDIT 控制項蓋在文字方塊上）
 
 void MainWindow::beginTextEdit(uint32_t id, bool selectAll) {
-    const Annotation* a = doc_.findItem(id);
-    if (!a || a->kind != Kind::Text) return;
     if (edit_) endTextEdit(true);
-    editingId_ = id;
-    editOriginal_ = a->textValue;
-    editText_ = a->textValue;
+    if (!editor_.beginTextEdit(id)) return;
+    const Annotation* a = doc_.findItem(id);
+    const std::wstring& text = editor_.editText();
     DWORD align = a->text.align == TextAlign::Center ? ES_CENTER : a->text.align == TextAlign::Right ? ES_RIGHT : ES_LEFT;
-    edit_ = CreateWindowExW(0, L"EDIT", a->textValue.c_str(),
+    edit_ = CreateWindowExW(0, L"EDIT", text.c_str(),
                             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | align, 0, 0, 10, 10,
                             hwnd_, nullptr, inst_, nullptr);
     SetWindowSubclass(edit_, editProc, kEditSubclass, reinterpret_cast<DWORD_PTR>(this));
@@ -2922,13 +2704,13 @@ void MainWindow::beginTextEdit(uint32_t id, bool selectAll) {
     positionEdit();
     SetFocus(edit_);
     if (selectAll) SendMessageW(edit_, EM_SETSEL, 0, -1);
-    else SendMessageW(edit_, EM_SETSEL, static_cast<WPARAM>(editText_.size()), static_cast<LPARAM>(editText_.size()));
+    else SendMessageW(edit_, EM_SETSEL, static_cast<WPARAM>(text.size()), static_cast<LPARAM>(text.size()));
     repaint();
 }
 
 void MainWindow::updateEditFont() {
     if (!edit_) return;
-    const Annotation* a = doc_.findItem(editingId_);
+    const Annotation* a = doc_.findItem(editor_.editingId());
     if (!a) return;
     if (editFont_) DeleteObject(editFont_);
     int h = -static_cast<int>(std::lround(a->text.size * zoom_));
@@ -2945,13 +2727,12 @@ void MainWindow::updateEditFont() {
 
 void MainWindow::positionEdit() {
     if (!edit_) return;
-    const Annotation* a = doc_.findItem(editingId_);
+    const Annotation* a = doc_.findItem(editor_.editingId());
     if (!a) return;
-    float pad = 4.0f;
+    float pad = 4.0f; // 和畫文字時的留白一樣（render/AnnotationPainter.cpp 的 kTextPad）
     POINT tl = toClient({a->rect.left + pad, a->rect.top + pad});
     POINT brp = toClient({a->rect.right - pad, a->rect.bottom - pad});
     int w = std::max(10l, brp.x - tl.x), h = std::max(10l, brp.y - tl.y);
-    // 不超出畫布
     SetWindowPos(edit_, HWND_TOP, tl.x, tl.y, w, h, SWP_NOACTIVATE);
 }
 
@@ -2960,19 +2741,8 @@ void MainWindow::onEditChanged() {
     int n = GetWindowTextLengthW(edit_);
     std::wstring text(static_cast<size_t>(n), L'\0');
     GetWindowTextW(edit_, text.data(), n + 1);
-    // 把 CRLF 換成 LF，DirectWrite 兩種都認得，但統一比較好比對。
-    std::wstring clean;
-    clean.reserve(text.size());
-    for (wchar_t ch : text) if (ch != L'\r') clean += ch;
-    editText_ = clean;
-    // 高度跟著內容長：直接更新文件裡的物件（不進 undo，結束編輯時才一次 commit）。
-    const Annotation* a = doc_.findItem(editingId_);
-    if (!a) return;
-    Annotation tmp = *a;
-    tmp.textValue = editText_;
-    float newBottom = tmp.rect.top + renderer_.textHeight(tmp);
-    if (std::abs(newBottom - a->rect.bottom) > 0.5f) {
-        doc_.itemsMutable()[doc_.indexOf(editingId_)].rect.bottom = newBottom;
+    // 方塊的高度跟著內容長。
+    if (editor_.setEditText(text)) {
         positionEdit();
         repaint();
     }
@@ -2982,25 +2752,10 @@ void MainWindow::endTextEdit(bool commit) {
     if (!edit_) return;
     HWND e = edit_;
     edit_ = nullptr;
-    uint32_t id = editingId_;
-    editingId_ = 0;
     RemoveWindowSubclass(e, editProc, kEditSubclass);
     DestroyWindow(e);
     SetFocus(hwnd_);
-    int i = doc_.indexOf(id);
-    if (i < 0) { repaint(); return; }
-    if (commit) {
-        auto items = doc_.items();
-        if (editText_.empty()) {
-            items.erase(items.begin() + i);
-            if (selected_ == id) selected_ = 0;
-            doc_.commitItems(std::move(items));
-        } else if (editText_ != editOriginal_) {
-            items[i].textValue = editText_;
-            items[i].rect.bottom = items[i].rect.top + renderer_.textHeight(items[i]);
-            doc_.commitItems(std::move(items));
-        }
-    }
+    editor_.endTextEdit(commit);
     updateTitle();
     repaint();
 }
@@ -3008,43 +2763,28 @@ void MainWindow::endTextEdit(bool commit) {
 // ---------------------------------------------------------------------------
 // 調整顏色（ColorAdjustHost）
 
-const Image& MainWindow::baseImage() { return *adjustBase_; }
+const Image& MainWindow::baseImage() { return *editor_.adjustBase(); }
 
 void MainWindow::previewChanged(const ColorAdjustParams& p) {
-    adjustParams_ = p;
-    if (!adjustBase_) return;
-    SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-    adjustPreview_ = p.isIdentity() ? adjustBase_ : std::make_shared<Image>(applyColorAdjust(*adjustBase_, p));
+    if (editor_.adjustBase()) SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+    editor_.previewAdjust(p);
     repaint();
 }
 
 void MainWindow::commitAdjust(const ColorAdjustParams& p) {
-    adjustParams_ = p;
-    if (adjustBase_ && !p.isIdentity()) {
-        ImagePtr out = adjustPreview_ && adjustPreview_ != adjustBase_ ? adjustPreview_
-                                                                        : std::make_shared<Image>(applyColorAdjust(*adjustBase_, p));
-        doc_.commitImage(out);
-        updateTitle();
-    }
-    adjusting_ = false;
-    pickingWhite_ = false;
-    adjustPreview_.reset();
-    adjustBase_.reset();
+    if (editor_.commitAdjust(p)) updateTitle();
     buildButtons();
     repaint();
 }
 
 void MainWindow::cancelAdjust() {
-    adjusting_ = false;
-    pickingWhite_ = false;
-    adjustPreview_.reset();
-    adjustBase_.reset();
+    editor_.cancelAdjust();
     buildButtons();
     repaint();
 }
 
 void MainWindow::beginPickWhite() {
-    pickingWhite_ = true;
+    editor_.beginPickWhite();
     SetFocus(hwnd_);
 }
 
@@ -3056,21 +2796,22 @@ void MainWindow::startAutoUpdateCheck() {
     std::wstring url = settings_.updateUrl.empty() ? kDefaultUpdateUrl : settings_.updateUrl;
     HWND hwnd = hwnd_;
     std::thread([url, hwnd] {
-        std::string body;
-        std::wstring err;
         ReleaseInfo r;
-        if (!httpGetText(url, body, err) || !parseLatestRelease(body, r)) return; // 自動檢查失敗不吭聲
+        if (!fetchLatestRelease(url, r).ok()) return; // 自動檢查失敗不吭聲
         if (!isNewerVersion(r.version, MP_VERSION_WSTRING)) return;
         auto* p = new ReleaseInfo(std::move(r));
         if (!PostMessageW(hwnd, WM_MP_UPDATE_FOUND, 0, reinterpret_cast<LPARAM>(p))) delete p;
     }).detach();
 }
 
+bool MainWindow::canInterrupt() const {
+    return IsWindowEnabled(hwnd_) && !menuLoop_ && !editor_.dragging() && GetCapture() != hwnd_;
+}
+
 void MainWindow::offerPendingUpdate() {
     if (!pendingUpdate_) return;
-    // 使用者正在做事（對話框、選單、彈出選單、調色面板、文字編輯、拖曳）就晚點再問。
-    if (!IsWindowEnabled(hwnd_) || menuLoop_ || isPopupOpen() || isColorAdjustPanelOpen() || edit_ ||
-        drag_ != Drag::None || GetCapture()) {
+    // 使用者正在做事（對話框、選單、拖曳，加上彈出選單、調色面板、文字編輯）就晚點再問。
+    if (!canInterrupt() || isPopupOpen() || isColorAdjustPanelOpen() || edit_) {
         SetTimer(hwnd_, kUpdateTimer, 3000, nullptr);
         return;
     }
@@ -3082,10 +2823,10 @@ void MainWindow::offerPendingUpdate() {
 void MainWindow::checkForUpdatesNow() {
     std::wstring url = settings_.updateUrl.empty() ? kDefaultUpdateUrl : settings_.updateUrl;
     ReleaseInfo r;
-    std::wstring err;
-    bool cancelled = false;
-    if (!checkUpdateWithProgress(hwnd_, url, r, err, cancelled)) {
-        if (!cancelled) MessageBoxW(hwnd_, fmt1(L"Could not check for updates: %s", err).c_str(), kAppName, MB_ICONWARNING);
+    UpdateError err = checkUpdateWithProgress(hwnd_, url, r);
+    if (!err.ok()) {
+        if (!err.cancelled())
+            MessageBoxW(hwnd_, fmt1(L"Could not check for updates: %s", updateErrorText(err)).c_str(), kAppName, MB_ICONWARNING);
         return;
     }
     if (!isNewerVersion(r.version, MP_VERSION_WSTRING)) {
@@ -3137,9 +2878,8 @@ void MainWindow::installUpdate(const ReleaseInfo& r) {
         manualDownloadFallback(tr(L"7z.dll is missing next to mpainter.exe, so the update cannot be unpacked."), r.pageUrl);
         return;
     }
-    DWORD langAttr = GetFileAttributesW((app + L"lang").c_str());
-    bool langOk = langAttr == INVALID_FILE_ATTRIBUTES || !(langAttr & FILE_ATTRIBUTE_DIRECTORY) || isDirWritable(app + L"lang");
-    if (!isDirWritable(app) || !langOk) {
+    // 下載之前就能知道的先看：exe 所在的資料夾能不能寫。發佈包解開之後再照實際要放的每個資料夾檢查一次。
+    if (!isDirWritable(app)) {
         manualDownloadFallback(fmt1(L"mpainter cannot write to its folder:\n%s", app), r.pageUrl);
         return;
     }
@@ -3157,15 +2897,22 @@ void MainWindow::installUpdate(const ReleaseInfo& r) {
     GetTempPathW(MAX_PATH, tmp);
     std::wstring work = std::wstring(tmp) + L"mpainter\\update-" + std::to_wstring(GetCurrentProcessId());
     removeDirectoryRecursive(work);
-    std::wstring staging, err;
-    bool cancelled = false;
     if (!createDirectories(work)) {
         MessageBoxW(hwnd_, fmt1(L"Update failed: %s", L"cannot create " + work).c_str(), kAppName, MB_ICONWARNING);
         return;
     }
-    if (!downloadUpdateWithProgress(hwnd_, r, work, staging, err, cancelled)) {
+    std::wstring staging;
+    UpdateError err = downloadUpdateWithProgress(hwnd_, r, work, staging);
+    if (!err.ok()) {
         removeDirectoryRecursive(work);
-        if (!cancelled) MessageBoxW(hwnd_, fmt1(L"Update failed: %s", err).c_str(), kAppName, MB_ICONWARNING);
+        if (!err.cancelled()) MessageBoxW(hwnd_, fmt1(L"Update failed: %s", updateFailureText(err)).c_str(), kAppName, MB_ICONWARNING);
+        return;
+    }
+    const std::wstring exeName = fileNameOf(exePath_);
+    auto steps = planInstall(staging, app, exeName);
+    if (UpdateError blocked = installTargetsWritable(steps); !blocked.ok()) {
+        removeDirectoryRecursive(work);
+        manualDownloadFallback(updateErrorText(blocked), r.pageUrl);
         return;
     }
     // 換檔前把其他 mpainter 關掉（下載期間新開的也算）；有一個沒關就整個取消。
@@ -3176,12 +2923,10 @@ void MainWindow::installUpdate(const ReleaseInfo& r) {
               TD_WARNING_ICON, false);
         return;
     }
-    std::wstring exeName = exePath_.substr(exePath_.find_last_of(L"\\/") + 1);
-    auto steps = planInstall(staging, app, exeName);
-    bool installed = applyInstall(steps, err);
+    err = applyInstall(steps);
     removeDirectoryRecursive(work);
-    if (!installed) {
-        MessageBoxW(hwnd_, fmt1(L"Update failed: %s", err + L"\n\n" + tr(L"Nothing was changed.")).c_str(), kAppName,
+    if (!err.ok()) {
+        MessageBoxW(hwnd_, fmt1(L"Update failed: %s", updateErrorText(err) + L"\n\n" + tr(L"Nothing was changed.")).c_str(), kAppName,
                     MB_ICONWARNING);
         return;
     }

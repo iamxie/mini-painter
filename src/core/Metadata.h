@@ -61,7 +61,5 @@ const wchar_t* exifTagName(unsigned tag);
 // EXIF（TIFF 結構的位元組）裡 IFD0 的 Orientation。沒有、結構不合法、或值不在 1～8 回 1。
 int exifOrientation(const unsigned char* tiff, size_t size);
 
-// 把檔案大小格式化成「1.2 MB」這類字串。bytesFormat 是不到 1 KB 時用的格式（一個 %llu），給 app 傳翻譯過的。
-std::wstring formatFileSize(unsigned long long bytes, const wchar_t* bytesFormat = L"%llu bytes");
 
 } // namespace mp

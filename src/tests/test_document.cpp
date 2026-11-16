@@ -382,3 +382,38 @@ TEST_CASE("Document：步數上限與記憶體上限同時生效，取先到的"
     for (int i = 0; i < 30; ++i) d.commitImage(mib());
     CHECK(d.undoCount() == 16);
 }
+
+TEST_CASE("Document：解析度跟著狀態走；只改解析度的步驟共用底圖，不佔 undo 的記憶體") {
+    Document doc;
+    auto base = std::make_shared<Image>(100, 100);
+    doc.reset(base, Dpi{300, 150});
+    CHECK(doc.dpi() == Dpi{300, 150});
+    CHECK(doc.state().dpi == Dpi{300, 150});
+
+    // 只改標註、只換底圖：解析度維持
+    doc.commitItems({makeShape(Kind::Rect, {10, 10}, 20, StrokeStyle{})});
+    CHECK(doc.dpi() == Dpi{300, 150});
+    auto second = std::make_shared<Image>(100, 100);
+    doc.commitImage(second);
+    CHECK(doc.dpi() == Dpi{300, 150});
+    CHECK(doc.items().size() == 1);
+
+    // 只改解析度：同一張底圖
+    const size_t bytesBefore = doc.historyBytes();
+    DocState next = doc.state();
+    next.dpi = {72, 72};
+    doc.commit(std::move(next));
+    CHECK(doc.dpi() == Dpi{72, 72});
+    CHECK(doc.image() == second);
+    CHECK(doc.historyBytes() == bytesBefore); // 沒有多握一張圖
+    CHECK(doc.dirty());
+
+    doc.undo();
+    CHECK(doc.dpi() == Dpi{300, 150});
+    CHECK(doc.image() == second);
+    doc.redo();
+    CHECK(doc.dpi() == Dpi{72, 72});
+
+    doc.reset(base); // 沒給：96
+    CHECK(doc.dpi() == Dpi{});
+}

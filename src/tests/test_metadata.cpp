@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "core/Metadata.h"
+#include "core/TextUtil.h"
 
 using namespace mp;
 

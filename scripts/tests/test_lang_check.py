@@ -48,10 +48,30 @@ BEGIN
     LTEXT           "",IDC_EMPTY,7,7,40,8
     PUSHBUTTON      "Say ""hi""",IDC_B,1,1,1,1
     EDITTEXT        IDC_EDIT,1,1,1,1
-    CONTROL         "ignored",IDC_C,"Button",0,1,1,1,1
+    CONTROL         "Generic control",IDC_C,"Button",0,1,1,1,1
+    CONTROL         "",IDC_T,"msctls_trackbar32",0,1,1,1,1
+    CTEXT           "Centered",IDC_CT,1,1,1,1
+    AUTO3STATE      "Three",IDC_3,1,1,1,1
+    COMBOBOX        IDC_COMBO,1,1,1,1,CBS_DROPDOWNLIST
 END
 '''
-    assert lc.rc_keys(rc) == {'Settings', 'Name:', 'Say "hi"'}
+    assert lc.rc_keys(rc) == {'Settings', 'Name:', 'Say "hi"', 'Generic control', 'Centered', 'Three'}
+
+
+def test_source_keys_scans_headers_too(tmp_path, monkeypatch):
+    (tmp_path / 'src' / 'app').mkdir(parents=True)
+    (tmp_path / 'src' / 'tests').mkdir()
+    (tmp_path / 'src' / 'app' / 'a.cpp').write_text('tr(L"From cpp");', encoding='utf-8')
+    (tmp_path / 'src' / 'app' / 'a.h').write_text('inline auto x = trKey(L"From header");', encoding='utf-8')
+    (tmp_path / 'src' / 'tests' / 't.cpp').write_text('tr(L"From a test");', encoding='utf-8')
+    (tmp_path / 'src' / 'app' / 'app.rc').write_text('CAPTION "From rc"\n', encoding='utf-8')
+    monkeypatch.setattr(lc, 'ROOT', str(tmp_path))
+    assert lc.source_keys() == {'From cpp', 'From header', 'From rc'}
+
+
+def test_empty_translations():
+    entries = {'Open': '開啟', 'Save': '', 'Close': '   ', 'Zero %d': '0'}
+    assert lc.empty_translations(entries) == ['Close', 'Save']
 
 
 def test_parse_lang_line():
@@ -108,3 +128,4 @@ def test_shipped_language_files_cover_every_key_and_match_placeholders():
         entries = lc.lang_entries(os.path.join(lc.ROOT, 'src', 'lang', name))
         assert sorted(src - set(entries)) == [], name
         assert lc.placeholder_mismatches(entries) == [], name
+        assert lc.empty_translations(entries) == [], name

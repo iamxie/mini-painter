@@ -305,29 +305,44 @@ SettingsLoad loadSettings(const std::wstring& path, Settings& out) {
     return SettingsLoad::Loaded;
 }
 
-bool saveSettings(const std::wstring& path, const Settings& s) {
+bool saveSettings(const std::wstring& path, const Settings& s, unsigned long* systemError) {
+    DWORD why = 0; // 失敗的那一步的 GetLastError
+    if (systemError) *systemError = 0;
+    auto fail = [&] {
+        if (systemError) *systemError = why;
+        return false;
+    };
     std::string bytes = wideToUtf8(serializeSettings(s));
     DWORD attr = GetFileAttributesW(path.c_str());
-    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) return false;
+    if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY)) {
+        why = ERROR_ACCESS_DENIED;
+        return fail();
+    }
     std::wstring tmp = path + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
     HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return false;
+    if (h == INVALID_HANDLE_VALUE) {
+        why = GetLastError();
+        return fail();
+    }
     DWORD written = 0;
     bool ok = WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) && written == bytes.size() &&
               FlushFileBuffers(h);
+    if (!ok) why = GetLastError();
     CloseHandle(h);
     // 取代原檔。原檔剛好被別人開著（另一個 mpainter 正在讀、防毒掃描）時會暫時失敗，等一下再試，最多約 0.25 秒。
     for (int attempt = 0; ok; ++attempt) {
         if (MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
-        DWORD e = GetLastError();
-        if ((e != ERROR_SHARING_VIOLATION && e != ERROR_ACCESS_DENIED) || attempt >= kSaveRetries) break;
+        why = GetLastError();
+        if ((why != ERROR_SHARING_VIOLATION && why != ERROR_ACCESS_DENIED) || attempt >= kSaveRetries) break;
         Sleep(kSaveRetryMs);
     }
     DeleteFileW(tmp.c_str());
-    return false;
+    return fail();
 }
 
-bool saveSettingsMerged(const std::wstring& path, const Settings& base, const Settings& mine, Settings& written) {
+bool saveSettingsMerged(const std::wstring& path, const Settings& base, const Settings& mine, Settings& written,
+                        unsigned long* systemError) {
+    if (systemError) *systemError = 0;
     // 「讀 → 合併 → 寫」要一口氣做完：兩個視窗同時做的話，後寫的會蓋掉先寫的。用路徑當名字的 mutex 排隊。
     wchar_t full[MAX_PATH * 2];
     DWORD n = GetFullPathNameW(path.c_str(), MAX_PATH * 2, full, nullptr);
@@ -342,7 +357,7 @@ bool saveSettingsMerged(const std::wstring& path, const Settings& base, const Se
     SettingsLoad loaded = loadSettings(path, disk);
     if (loaded != SettingsLoad::Unreadable) { // 讀不到時不寫：不知道裡面有什麼，寫了可能蓋掉別人的
         written = loaded == SettingsLoad::Loaded ? mergeSettings(base, mine, disk) : mine;
-        ok = saveSettings(path, written);
+        ok = saveSettings(path, written, systemError);
     }
     if (locked) ReleaseMutex(mutex);
     if (mutex) CloseHandle(mutex);

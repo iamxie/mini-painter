@@ -1,0 +1,8 @@
+# 發佈包根目錄裡、從 repo 根目錄照抄的檔案，一行一個。scripts/package.sh 與 CI（.github/workflows/build.yml）都讀這份。
+# 另外放進發佈包的（不在這份清單）：建置出來的 mpainter.exe、scripts/7zip.lock 釘住的 7z.dll、
+# lang\ 底下是 src/lang/ 的每個 .txt（檔名以 _ 開頭的不放）。
+readme.txt
+readme_en.txt
+LICENSE
+NOTICE
+THIRD-PARTY-NOTICES.txt

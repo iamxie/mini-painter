@@ -1,6 +1,9 @@
-# 檢查語系檔是否涵蓋程式裡所有要翻譯的字串，以及每一行翻譯的佔位符（%s、%d…）和英文原文一樣。
+# 檢查語系檔是否涵蓋程式裡所有要翻譯的字串，每一行翻譯的佔位符（%s、%d…）和英文原文一樣，而且翻譯不是空的。
 # 用法：uv run scripts/lang_check.py [src/lang/zh-TW.txt ...]
-# 不給參數時檢查 src/lang 底下每個 txt。輸出缺少與多餘的 key、佔位符對不上的行；有缺或有對不上的就以非 0 結束。
+# 不給參數時檢查 src/lang 底下每個 txt。輸出缺少與多餘的 key、佔位符對不上的行、翻譯是空的行；
+# 有缺、有對不上、有空的就以非 0 結束（多餘的 key 只列出來）。
+# 看得到的 key：src 底下 .cpp / .h（測試除外）裡字串常值緊接在 tr( / trs( / trKey( / fmt1( / fmt2( 後面的，
+# 與 app.rc 對話框範本裡控制項的文字。key 放在表裡、之後才 tr(變數) 的，表裡要用 trKey(L"...") 標記，不然這裡看不到。
 # 加 --template 會把全部 key 寫成 src/lang/_template.txt（值留空），給翻譯者起手用。
 # 測試：uv run --with pytest pytest scripts/tests/test_lang_check.py
 import io, re, sys, glob, os
@@ -9,6 +12,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIT = r'L"((?:[^"\\]|\\.)*)"'
 # 第一個引數是翻譯 key 的函式。trKey 只是標記（core 回傳英文 key，由 app 顯示時翻譯）。
 KEY_FUNCTIONS = r'trs?|trKey|fmt1|fmt2'
+# rc 檔裡第一個參數是顯示文字的敘述：對話框標題與各種控制項（CONTROL 是通用寫法，文字是空的就不算）。
+RC_TEXT_STATEMENTS = ('CAPTION|LTEXT|RTEXT|CTEXT|PUSHBUTTON|DEFPUSHBUTTON|PUSHBOX|GROUPBOX|CHECKBOX|AUTOCHECKBOX|'
+                      'RADIOBUTTON|AUTORADIOBUTTON|STATE3|AUTO3STATE|CONTROL')
 
 
 def c_unescape(s):
@@ -26,7 +32,7 @@ def c_unescape(s):
 
 
 def cpp_keys(text):
-    """一個 .cpp 的內容裡的翻譯 key。只認字串常值緊接在括號後的寫法。"""
+    """一個 .cpp / .h 的內容裡的翻譯 key。只認字串常值緊接在括號後的寫法。"""
     keys = set()
     # tr(L"..." L"...") / trs(...) / trKey(...)：相鄰字串常值會接起來
     for m in re.finditer(r'\b(?:' + KEY_FUNCTIONS + r')\(\s*((?:' + LIT + r'\s*)+)[),]', text):
@@ -38,9 +44,9 @@ def cpp_keys(text):
 
 
 def rc_keys(text):
-    """app.rc 的對話框範本裡要翻譯的字串。"""
+    """app.rc 的對話框範本裡要翻譯的字串：標題與每一種「第一個參數是文字」的控制項（translateDialog 會逐一翻譯）。"""
     keys = set()
-    for m in re.finditer(r'^\s*(?:CAPTION|LTEXT|RTEXT|AUTOCHECKBOX|PUSHBUTTON|DEFPUSHBUTTON|GROUPBOX|AUTORADIOBUTTON)\s+"((?:[^"]|"")*)"', text, re.M):
+    for m in re.finditer(r'^\s*(?:' + RC_TEXT_STATEMENTS + r')\s+"((?:[^"]|"")*)"', text, re.M):
         if m.group(1):
             keys.add(m.group(1).replace('""', '"'))
     return keys
@@ -48,7 +54,7 @@ def rc_keys(text):
 
 def source_keys():
     keys = set()
-    for f in glob.glob(ROOT + '/src/**/*.cpp', recursive=True):
+    for f in glob.glob(ROOT + '/src/**/*.cpp', recursive=True) + glob.glob(ROOT + '/src/**/*.h', recursive=True):
         if '/tests/' in f.replace('\\', '/'):
             continue
         keys |= cpp_keys(io.open(f, encoding='utf-8').read())
@@ -152,6 +158,11 @@ def placeholder_mismatches(entries):
     return sorted(bad)
 
 
+def empty_translations(entries):
+    """翻譯是空的 key（寫了 key= 卻沒填）：程式會顯示成空白，不會退回英文。"""
+    return sorted(k for k, v in entries.items() if not v.strip())
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     src = source_keys()
@@ -172,15 +183,18 @@ def main():
         entries = lang_entries(p)
         have = set(entries)
         missing, extra, mismatched = sorted(src - have), sorted(have - src), placeholder_mismatches(entries)
+        empty = empty_translations(entries)
         print(f'{os.path.relpath(p, ROOT)}: {len(have)} keys, missing {len(missing)}, unused {len(extra)}, '
-              f'placeholder mismatch {len(mismatched)}')
+              f'placeholder mismatch {len(mismatched)}, empty {len(empty)}')
         for k in missing:
             print('  MISSING:', repr(k))
         for k in extra:
             print('  UNUSED: ', repr(k))
         for k in mismatched:
             print('  PLACEHOLDER:', repr(k), '->', repr(entries[k]))
-        bad = bad or bool(missing) or bool(mismatched)
+        for k in empty:
+            print('  EMPTY:  ', repr(k))
+        bad = bad or bool(missing) or bool(mismatched) or bool(empty)
     sys.exit(1 if bad else 0)
 
 

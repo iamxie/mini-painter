@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cstdlib>
+#include <cstring>
 
 #include "core/ColorAdjust.h"
 
@@ -47,6 +48,21 @@ TEST_CASE("isIdentity only for defaults") {
     ColorAdjustParams q;
     q.wbGainB = 1.1f;
     CHECK_FALSE(q.isIdentity());
+}
+
+TEST_CASE("isIdentity：每一個參數單獨改，都不算「沒調整」") {
+    // 參數全是 float：當成陣列逐一改。加了參數而 isIdentity 沒補，這裡會抓到。
+    static_assert(sizeof(ColorAdjustParams) % sizeof(float) == 0);
+    const size_t count = sizeof(ColorAdjustParams) / sizeof(float);
+    for (size_t i = 0; i < count; ++i) {
+        ColorAdjustParams p;
+        float fields[sizeof(ColorAdjustParams) / sizeof(float)];
+        std::memcpy(fields, &p, sizeof(p));
+        fields[i] += 0.25f;
+        std::memcpy(&p, fields, sizeof(p));
+        INFO("field " << i);
+        CHECK_FALSE(p.isIdentity());
+    }
 }
 
 TEST_CASE("identity params keep pixels byte-identical") {

@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
@@ -66,9 +67,93 @@ void writeStoredZip(const std::wstring& out, const std::vector<std::pair<std::st
     writeBytes(out, local + central + eocd);
 }
 
+// 每個項目在檔頭宣稱解開後有 claimed 個位元組，實際的壓縮資料只有兩個位元組（空的 deflate 區塊）。
+// 只給「開始解之前看大小」的檢查用：真的去解會失敗。
+constexpr uint32_t kHugeClaim = 0xFFFFFFF0u; // 不能是 0xFFFFFFFF：那是 zip64 的記號
+void writeHugeClaimZip(const std::wstring& out, int count) {
+    const std::string data("\x03\x00", 2);
+    const uint32_t csize = static_cast<uint32_t>(data.size());
+    constexpr uint32_t kDeflate = 8;
+    std::string local, central;
+    for (int i = 0; i < count; ++i) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%05d.png", i);
+        const std::string name = buf;
+        const uint32_t offset = static_cast<uint32_t>(local.size());
+        put32(local, 0x04034b50); put16(local, 20); put16(local, 0); put16(local, kDeflate); put16(local, 0); put16(local, 0);
+        put32(local, 0); put32(local, csize); put32(local, kHugeClaim); put16(local, static_cast<uint32_t>(name.size())); put16(local, 0);
+        local += name + data;
+        put32(central, 0x02014b50); put16(central, 20); put16(central, 20); put16(central, 0); put16(central, kDeflate);
+        put16(central, 0); put16(central, 0); put32(central, 0); put32(central, csize); put32(central, kHugeClaim);
+        put16(central, static_cast<uint32_t>(name.size())); put16(central, 0); put16(central, 0); put16(central, 0);
+        put16(central, 0); put32(central, 0); put32(central, offset);
+        central += name;
+    }
+    std::string eocd;
+    put32(eocd, 0x06054b50); put16(eocd, 0); put16(eocd, 0);
+    put16(eocd, static_cast<uint32_t>(count)); put16(eocd, static_cast<uint32_t>(count));
+    put32(eocd, static_cast<uint32_t>(central.size())); put32(eocd, static_cast<uint32_t>(local.size())); put16(eocd, 0);
+    writeBytes(out, local + central + eocd);
+}
+
 void ensureLib() { mp::test::requireArchiveLibrary(); }
 
 } // namespace
+
+TEST_CASE("extractImages：宣稱的大小超過暫存磁碟的剩餘空間就回 NoSpace，一個檔都不寫") {
+    ensureLib();
+    std::wstring root = testRoot(L"nospace");
+    ULARGE_INTEGER freeBytes{};
+    REQUIRE(GetDiskFreeSpaceExW(root.c_str(), &freeBytes, nullptr, nullptr));
+    // 項目數照現在的剩餘空間算：總和一定比剩餘空間多（多兩個項目，約 8 GB 的餘裕）。
+    const uint64_t count = freeBytes.QuadPart / kHugeClaim + 2;
+    REQUIRE(count < 60000); // 一般 zip 的項目數上限是 65535
+    const std::wstring zip = root + L"\\huge.zip";
+    writeHugeClaimZip(zip, static_cast<int>(count));
+    ExtractOptions opt;
+    opt.maxTotalBytes = UINT64_MAX; // 不讓總量上限先擋下來
+    ArchiveResult r = extractImages(zip, root + L"\\out", opt);
+    CHECK(r.status == ArchiveStatus::NoSpace);
+    CHECK(r.totalBytes == count * kHugeClaim);
+    CHECK(r.files.empty());
+    CHECK(mp::test::listImagesRecursive(root + L"\\out").empty());
+    // 同一個檔、預設的總量上限：先被上限擋下來，是 TooLarge。
+    REQUIRE(count * kHugeClaim > kArchiveMaxTotalBytes);
+    CHECK(extractImages(zip, root + L"\\out2", {}).status == ArchiveStatus::TooLarge);
+    removeDirectoryRecursive(root);
+}
+
+// 7z.dll 還沒載入時的行為。載入之後這個行程就一直是載入的，所以平常不跑；由下面那個測試另開一個行程跑它。
+TEST_CASE("nolib：還沒載入 7z.dll 時，要用它的函式都回 NoLibrary，不碰磁碟", "[.nolib]") {
+    REQUIRE_FALSE(archiveLibraryLoaded());
+    std::wstring root = testRoot(L"nolib");
+    const std::wstring zip = root + L"\\a.zip";
+    writeStoredZip(zip, {{"a.png", pngBytes(2, 2)}});
+    CHECK(extractImages(zip, root + L"\\out", {}).status == ArchiveStatus::NoLibrary);
+    CHECK_FALSE(mp::test::exists(root + L"\\out"));
+    CHECK(testPassword(zip, L"") == ArchiveStatus::NoLibrary);
+    CHECK(extractAll(zip, root + L"\\all").reason == ArchiveFailure::NoLibrary);
+    CHECK_FALSE(mp::test::exists(root + L"\\all"));
+    CHECK_FALSE(archiveLibraryLoaded()); // 這些函式不會自己去載
+    removeDirectoryRecursive(root);
+}
+
+TEST_CASE("7z.dll 沒載入：另開一個沒載過的行程，確認回的是 NoLibrary") {
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\" \"[nolib]\"";
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    REQUIRE(CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi));
+    const DWORD waited = WaitForSingleObject(pi.hProcess, 60000);
+    DWORD code = 99;
+    GetExitCodeProcess(pi.hProcess, &code);
+    if (waited != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 1);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    REQUIRE(waited == WAIT_OBJECT_0);
+    CHECK(code == 0); // 0 = 那個行程裡的測試全過
+}
 
 TEST_CASE("isArchiveEntrySkipped") {
     CHECK(isArchiveEntrySkipped(L"__MACOSX/a/001.jpg"));

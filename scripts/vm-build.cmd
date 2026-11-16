@@ -16,7 +16,9 @@ rem Forward slashes: the \t in C:\tools would be read as an escape inside CMake 
 set VCPKG_ROOT=C:/tools/vcpkg
 if not defined MP_7Z_DLL set MP_7Z_DLL=C:/work/7zip/7z.dll
 cd /d C:\work\mini-painter || exit /b 1
-cmake --preset release %* || exit /b 1
+rem The build folder is reused between runs, so a -D passed once stays in the CMake cache.
+rem Options people pass here are reset to their defaults first; anything in %* still wins.
+cmake --preset release -DMP_BUILD_APP=ON %* || exit /b 1
 rem -k 0: keep going after a failed file, so one round shows every compile error.
 cmake --build --preset release -- -k 0 || exit /b 1
 echo === tests ===

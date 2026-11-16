@@ -92,6 +92,28 @@ TEST_CASE("AppSettings：設定檔被別的程式獨佔時算讀不到，整次�
     CHECK(readBytes(iniOf(exe)) == "[mpainter]\nundoLimit=7\n");
 }
 
+TEST_CASE("AppSettings：設定檔唯讀時存不進去，saveError 是原因；改回可寫之後存得進去、原因清掉") {
+    LangGuard guard;
+    const std::wstring exe = appFolder(L"appset_readonly");
+    writeBytes(iniOf(exe), "[mpainter]\nundoLimit=7\n");
+    AppSettings s;
+    s.load(exe, nullptr);
+    CHECK(s.saveError() == 0);
+    SetFileAttributesW(iniOf(exe).c_str(), FILE_ATTRIBUTE_READONLY);
+    s.values.undoLimit = 33;
+    CHECK_FALSE(s.save());
+    CHECK_FALSE(s.unreadable()); // 讀得到，只是寫不進去
+    CHECK_FALSE(s.writable());
+    CHECK(s.saveError() == ERROR_ACCESS_DENIED);
+    CHECK(s.values.undoLimit == 33); // 這次執行內的值還在
+    SetFileAttributesW(iniOf(exe).c_str(), FILE_ATTRIBUTE_NORMAL);
+    CHECK(s.save());
+    CHECK(s.saveError() == 0);
+    AppSettings again;
+    again.load(exe, nullptr);
+    CHECK(again.values.undoLimit == 33);
+}
+
 TEST_CASE("AppSettings：lang\\ 裡的語系檔加進清單，設定指定的那個會啟用") {
     LangGuard guard;
     const std::wstring exe = appFolder(L"appset_lang");

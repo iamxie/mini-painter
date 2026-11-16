@@ -40,8 +40,8 @@ No file open — drop an image here, or use File > Open=沒有開啟的檔案 �
 Drag the blue dots to resize, drag the object to move, Delete to remove=拖曳藍點縮放，拖曳物件本身移動，Delete 刪除
 The language takes effect the next time mpainter starts.\n\nRestart now?=語言會在下次啟動 mpainter 時生效。\n\n要現在重新啟動嗎？
 Make mpainter the default app for opening images?\n\nDouble-clicking an image in Explorer will then open it in mpainter.\nChoose “No” and it will not ask again; you can change this later in Edit > Settings.=要把 mpainter 設為圖片的預設開啟程式嗎？\n\n之後在檔案總管雙擊圖片就會用 mpainter 開啟。\n選「否」以後不會再問；想改可以到「編輯 > 設定」。
-Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n“OK” opens the mpainter page under Settings > Apps > Default apps:\n1. The page lists file types such as .jpg and .png.\n2. Click each file type, pick mpainter from the list and press “Set default”.\n\nIf the page does not open on mpainter, type mpainter in the search box.=Windows 不允許程式自己設定預設值，要由你在系統設定裡選。\n\n按「確定」會開啟「設定 > 應用程式 > 預設應用程式」的 mpainter 頁面：\n1. 頁面會列出 .jpg、.png 等副檔名。\n2. 逐一點每個副檔名，在清單裡選 mpainter，按「設定預設值」。\n\n如果沒有直接開到 mpainter 的頁面，在搜尋框輸入 mpainter。
-Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n“OK” opens Settings > Apps > Default apps:\n1. Scroll to the bottom and click “Set defaults by app”.\n2. Find mpainter in the list and click “Manage”.\n3. Change the app next to each image format to mpainter.=Windows 不允許程式自己設定預設值，要由你在系統設定裡選。\n\n按「確定」會開啟「設定 > 應用程式 > 預設應用程式」：\n1. 捲到最下面，點「依應用程式設定預設值」。\n2. 在清單裡找到 mpainter，點「管理」。\n3. 把每個圖片格式旁的程式改成 mpainter。
+Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n“OK” opens the mpainter page under Settings > Apps > Default apps:\n1. The page lists file types such as .jpg and .png.\n2. Click each file type, pick mpainter from the list and press “Set default”.\n\nIf the page does not open on mpainter, type mpainter in the search box.=Windows 不允許程式自己設定預設值，要由你在系統設定裡選。\n\n按「好」會開啟「設定 > 應用程式 > 預設應用程式」的 mpainter 頁面：\n1. 頁面會列出 .jpg、.png 等副檔名。\n2. 逐一點每個副檔名，在清單裡選 mpainter，按「設定預設值」。\n\n如果沒有直接開到 mpainter 的頁面，在搜尋框輸入 mpainter。
+Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n“OK” opens Settings > Apps > Default apps:\n1. Scroll to the bottom and click “Set defaults by app”.\n2. Find mpainter in the list and click “Manage”.\n3. Change the app next to each image format to mpainter.=Windows 不允許程式自己設定預設值，要由你在系統設定裡選。\n\n按「好」會開啟「設定 > 應用程式 > 預設應用程式」：\n1. 捲到最下面，點「依應用程式設定預設值」。\n2. 在清單裡找到 mpainter，點「管理」。\n3. 把每個圖片格式旁的程式改成 mpainter。
 Shown %d times; it will not appear again.=已顯示 %d 次，不再出現。
 Hint shown when the mouse rests on an annotation. Will be shown %d more times.=滑鼠移到標註物件上時的操作提示，還會顯示 %d 次。
 Windows 11: this item is under “Show more options” in the context menu (or press Shift+F10).=Windows 11：這個項目在右鍵選單的「顯示其他選項」裡（或按 Shift+F10）。
@@ -423,6 +423,8 @@ Updated to mpainter %s.=已更新到 mpainter %s。
 # --- v0.9.5 ---
 Could not draw the annotations onto the image=無法把標註畫到圖上
 Could not read mpainter.ini. Default settings are used this time, and settings will not be saved.=讀不到 mpainter.ini。這次先用預設設定，而且不會存回設定檔。
+Settings could not be saved to mpainter.ini (%s). They are kept only until mpainter closes.=設定存不進 mpainter.ini（%s）。這次改的設定只留到 mpainter 關閉為止。
+Settings could not be saved to mpainter.ini. They are kept only until mpainter closes.=設定存不進 mpainter.ini。這次改的設定只留到 mpainter 關閉為止。
 
 # --- v0.9.6 ---
 Saved, but some of the original metadata could not be written to the file.=已儲存，但原檔的部分 metadata 沒有寫進檔案。

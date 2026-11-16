@@ -62,6 +62,4 @@ inline Pt quadBezier(Pt p0, Pt c, Pt p1, float t) {
     return p0 * (u * u) + c * (2 * u * t) + p1 * (t * t);
 }
 
-inline float clampf(float v, float lo, float hi) { return std::clamp(v, lo, hi); }
-
 } // namespace mp

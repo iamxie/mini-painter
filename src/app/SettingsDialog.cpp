@@ -274,7 +274,7 @@ bool askUniqueName(HWND page, SheetState& st, const wchar_t* caption, std::wstri
         for (size_t i = 0; i < st.s.profiles.size(); ++i)
             if (static_cast<int>(i) != exceptIndex && _wcsicmp(st.s.profiles[i].name.c_str(), name.c_str()) == 0) dup = true;
         if (!dup) return true;
-        MessageBoxW(page, tr(L"A mode with this name already exists."), tr(L"Settings"), MB_OK | MB_ICONINFORMATION);
+        showMessage(page, tr(L"A mode with this name already exists."), TD_INFORMATION_ICON);
     }
 }
 
@@ -361,11 +361,11 @@ INT_PTR CALLBACK modesPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         if (id == IDC_PROF_DELETE && st->selProfile >= 0) {
             const Profile& p = st->s.profiles[static_cast<size_t>(st->selProfile)];
             if (_wcsicmp(p.name.c_str(), st->s.profileName.c_str()) == 0) {
-                MessageBoxW(dlg, tr(L"This mode is in use. Switch to another mode first."), tr(L"Settings"), MB_OK | MB_ICONINFORMATION);
+                showMessage(dlg, tr(L"This mode is in use. Switch to another mode first."), TD_INFORMATION_ICON);
                 return TRUE;
             }
             if (st->s.profiles.size() <= 1) {
-                MessageBoxW(dlg, tr(L"At least one mode must remain."), tr(L"Settings"), MB_OK | MB_ICONINFORMATION);
+                showMessage(dlg, tr(L"At least one mode must remain."), TD_INFORMATION_ICON);
                 return TRUE;
             }
             st->s.profiles.erase(st->s.profiles.begin() + st->selProfile);
@@ -511,10 +511,10 @@ void showSettingsDialog(HWND owner, const Settings& s, const SettingsDialogInfo&
     HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
     struct PageDef { int id; DLGPROC proc; const wchar_t* title; };
     const PageDef defs[] = {
-        {IDD_SET_GENERAL, generalPageProc, L"General"},
-        {IDD_SET_MODES, modesPageProc, L"Modes"},
-        {IDD_SET_ARCHIVE, archivePageProc, L"Archives"},
-        {IDD_SET_WINDOWS, windowsPageProc, L"Windows Integration"},
+        {IDD_SET_GENERAL, generalPageProc, trKey(L"General")},
+        {IDD_SET_MODES, modesPageProc, trKey(L"Modes")},
+        {IDD_SET_ARCHIVE, archivePageProc, trKey(L"Archives")},
+        {IDD_SET_WINDOWS, windowsPageProc, trKey(L"Windows Integration")},
     };
     PROPSHEETPAGEW pages[4] = {};
     for (int i = 0; i < 4; ++i) {

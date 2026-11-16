@@ -367,72 +367,80 @@ TEST_CASE("downloadUpdate：下載、核對 .sha256、解開，並確認裡面�
     rel.zipUrl = srv.url("/pkg.zip");
     rel.shaUrl = srv.url("/pkg.zip.sha256");
 
-    // 成功：階段依序回報，解開的內容在 staging
-    std::vector<DownloadStage> stages;
-    uint64_t lastDone = 0;
-    DownloadHooks hooks;
-    hooks.onStage = [&](DownloadStage st) { stages.push_back(st); };
-    hooks.progress = [&](uint64_t done, uint64_t) { lastDone = done; };
-    std::wstring work = root + L"\\w1", staging;
-    REQUIRE(createDirectories(work));
-    REQUIRE(downloadUpdate(rel, work, staging, hooks).ok());
-    CHECK(stages == std::vector<DownloadStage>{DownloadStage::Downloading, DownloadStage::Verifying, DownloadStage::Unpacking});
-    CHECK(lastDone == zip.size());
-    CHECK(staging == work + L"\\pkg");
-    CHECK(readBytes(staging + L"\\mpainter.exe") == "new exe");
-    CHECK(readBytes(staging + L"\\lang\\zh-TW.txt") == "zh");
-    CHECK(readBytes(work + L"\\mini-painter-9.9.9-win64.zip") == zip);
-
-    auto run = [&](const ReleaseInfo& r, const wchar_t* dir) {
-        std::wstring w = root + L"\\" + dir, st;
+    // 失敗的情況：跑一次，確認沒有給 staging，回傳錯誤。
+    auto run = [&](const ReleaseInfo& r) {
+        std::wstring w = root + L"\\fail", st;
         REQUIRE(createDirectories(w));
         UpdateError e = downloadUpdate(r, w, st);
         CHECK(st.empty()); // 失敗時不給 staging
         return e;
     };
-    // 檢查碼對不上：不解開
     ReleaseInfo bad = rel;
-    bad.shaUrl = srv.url("/wrong.sha256");
-    CHECK(run(bad, L"w2").code == UpdateErrorCode::ChecksumMismatch);
-    CHECK_FALSE(exists(root + L"\\w2\\pkg\\mpainter.exe"));
-    // .sha256 抓不到
-    bad.shaUrl = srv.url("/nope.sha256");
-    UpdateError e = run(bad, L"w3");
-    CHECK(e.code == UpdateErrorCode::HttpStatus);
-    CHECK(e.httpStatus == 404);
-    // zip 抓不到
-    bad = rel;
-    bad.zipUrl = srv.url("/nope.zip");
-    CHECK(run(bad, L"w4").code == UpdateErrorCode::HttpStatus);
-    // 包裡沒有 exe
-    bad.zipUrl = srv.url("/noexe.zip");
-    bad.shaUrl = srv.url("/noexe.zip.sha256");
-    CHECK(run(bad, L"w5").code == UpdateErrorCode::NoExeInPackage);
-    // 檢查碼對、但不是壓縮檔
-    bad.zipUrl = srv.url("/garbage.zip");
-    bad.shaUrl = srv.url("/garbage.zip.sha256");
-    e = run(bad, L"w6");
-    CHECK(e.code == UpdateErrorCode::UnpackFailed);
-    CHECK_FALSE(e.archive.empty());
 
-    // 取消：一開始就取消、下載完之後才取消（階段之間也會看）
-    HttpCancel cancelled;
-    cancelled.cancel();
-    DownloadHooks ch;
-    ch.cancel = &cancelled;
-    std::wstring w7 = root + L"\\w7";
-    REQUIRE(createDirectories(w7));
-    CHECK(downloadUpdate(rel, w7, staging = L"", ch).cancelled());
-    HttpCancel late;
-    DownloadHooks lh;
-    lh.cancel = &late;
-    lh.onStage = [&](DownloadStage st) {
-        if (st == DownloadStage::Verifying) late.cancel();
-    };
-    std::wstring w8 = root + L"\\w8";
-    REQUIRE(createDirectories(w8));
-    CHECK(downloadUpdate(rel, w8, staging = L"", lh).cancelled());
-    CHECK_FALSE(exists(w8 + L"\\pkg\\mpainter.exe"));
+    SECTION("成功：階段依序回報，解開的內容在 staging") {
+        std::vector<DownloadStage> stages;
+        uint64_t lastDone = 0;
+        DownloadHooks hooks;
+        hooks.onStage = [&](DownloadStage st) { stages.push_back(st); };
+        hooks.progress = [&](uint64_t done, uint64_t) { lastDone = done; };
+        std::wstring work = root + L"\\w1", staging;
+        REQUIRE(createDirectories(work));
+        REQUIRE(downloadUpdate(rel, work, staging, hooks).ok());
+        CHECK(stages == std::vector<DownloadStage>{DownloadStage::Downloading, DownloadStage::Verifying, DownloadStage::Unpacking});
+        CHECK(lastDone == zip.size());
+        CHECK(staging == work + L"\\pkg");
+        CHECK(readBytes(staging + L"\\mpainter.exe") == "new exe");
+        CHECK(readBytes(staging + L"\\lang\\zh-TW.txt") == "zh");
+        CHECK(readBytes(work + L"\\mini-painter-9.9.9-win64.zip") == zip);
+    }
+    SECTION("檢查碼對不上：不解開") {
+        bad.shaUrl = srv.url("/wrong.sha256");
+        CHECK(run(bad).code == UpdateErrorCode::ChecksumMismatch);
+        CHECK_FALSE(exists(root + L"\\fail\\pkg\\mpainter.exe"));
+    }
+    SECTION(".sha256 抓不到") {
+        bad.shaUrl = srv.url("/nope.sha256");
+        UpdateError e = run(bad);
+        CHECK(e.code == UpdateErrorCode::HttpStatus);
+        CHECK(e.httpStatus == 404);
+    }
+    SECTION("zip 抓不到") {
+        bad.zipUrl = srv.url("/nope.zip");
+        CHECK(run(bad).code == UpdateErrorCode::HttpStatus);
+    }
+    SECTION("包裡沒有 exe") {
+        bad.zipUrl = srv.url("/noexe.zip");
+        bad.shaUrl = srv.url("/noexe.zip.sha256");
+        CHECK(run(bad).code == UpdateErrorCode::NoExeInPackage);
+    }
+    SECTION("檢查碼對、但不是壓縮檔") {
+        bad.zipUrl = srv.url("/garbage.zip");
+        bad.shaUrl = srv.url("/garbage.zip.sha256");
+        UpdateError e = run(bad);
+        CHECK(e.code == UpdateErrorCode::UnpackFailed);
+        CHECK_FALSE(e.archive.empty());
+    }
+    SECTION("一開始就取消") {
+        HttpCancel cancelled;
+        cancelled.cancel();
+        DownloadHooks ch;
+        ch.cancel = &cancelled;
+        std::wstring work = root + L"\\w7", staging;
+        REQUIRE(createDirectories(work));
+        CHECK(downloadUpdate(rel, work, staging, ch).cancelled());
+    }
+    SECTION("下載完之後才取消：階段之間也會看，不解開") {
+        HttpCancel late;
+        DownloadHooks lh;
+        lh.cancel = &late;
+        lh.onStage = [&](DownloadStage st) {
+            if (st == DownloadStage::Verifying) late.cancel();
+        };
+        std::wstring work = root + L"\\w8", staging;
+        REQUIRE(createDirectories(work));
+        CHECK(downloadUpdate(rel, work, staging, lh).cancelled());
+        CHECK_FALSE(exists(work + L"\\pkg\\mpainter.exe"));
+    }
 }
 
 TEST_CASE("updateErrorMessage：每個代碼都有說明，取消與沒有錯誤是空的") {

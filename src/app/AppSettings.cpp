@@ -49,13 +49,14 @@ void AppSettings::load(const std::wstring& exePath, HMODULE module) {
 void AppSettings::refreshWritable() { writable_ = isPathWritable(path_); }
 
 bool AppSettings::save() {
+    saveError_ = 0;
     if (unreadable_) {
         writable_ = false;
         return false;
     }
-    // 寫不進去（唯讀位置）就算了，本次執行內的狀態還在。
+    // 寫不進去（唯讀位置）時本次執行內的狀態還在；要不要告訴使用者由呼叫端決定（saveError 是原因）。
     Settings written;
-    writable_ = saveSettingsMerged(path_, base_, values, written);
+    writable_ = saveSettingsMerged(path_, base_, values, written, &saveError_);
     if (!writable_) return false;
     // 別的視窗記下的東西裡，這幾樣不影響這個視窗正在顯示的畫面，直接收下：新學到的密碼馬上能用，
     // 問過的事不再問一次。其他欄位（檢視值、模式、置頂、暫存位置…）這個視窗繼續用自己的。

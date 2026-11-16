@@ -94,19 +94,25 @@ void translateDialog(HWND dlg) {
     }, reinterpret_cast<LPARAM>(&translate));
 }
 
-bool askOk(HWND owner, const std::wstring& text, PCWSTR icon, bool withCancel) {
+void showMessage(HWND owner, const std::wstring& text, PCWSTR icon) { askOk(owner, text, icon, false); }
+
+bool askOk(HWND owner, const std::wstring& text, PCWSTR icon, bool withCancel, bool* dontAskAgain) {
     TASKDIALOG_BUTTON ok{IDOK, tr(L"OK")};
     TASKDIALOGCONFIG td{sizeof(td)};
     td.hwndParent = owner;
-    td.dwFlags = TDF_POSITION_RELATIVE_TO_WINDOW | (withCancel ? TDF_ALLOW_DIALOG_CANCELLATION : 0);
+    // TDF_SIZE_TO_CONTENT：寬度跟著內容走（和 MessageBox 一樣）。不設的話固定比較窄，長句會折在奇怪的地方。
+    td.dwFlags = TDF_POSITION_RELATIVE_TO_WINDOW | TDF_SIZE_TO_CONTENT | (withCancel ? TDF_ALLOW_DIALOG_CANCELLATION : 0);
     td.dwCommonButtons = withCancel ? TDCBF_CANCEL_BUTTON : 0;
     td.cButtons = 1;
     td.pButtons = &ok;
     td.pszWindowTitle = kAppName;
     td.pszMainIcon = icon;
     td.pszContent = text.c_str();
+    if (dontAskAgain) td.pszVerificationText = tr(L"Don't ask again");
     int pressed = IDCANCEL;
-    if (FAILED(TaskDialogIndirect(&td, &pressed, nullptr, nullptr))) return false;
+    BOOL checked = FALSE;
+    if (FAILED(TaskDialogIndirect(&td, &pressed, nullptr, dontAskAgain ? &checked : nullptr))) return false;
+    if (dontAskAgain) *dontAskAgain = checked != FALSE;
     return pressed == IDOK;
 }
 

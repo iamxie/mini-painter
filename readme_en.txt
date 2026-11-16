@@ -148,7 +148,8 @@ size and maximized state are kept there too (window=), and each mode is a [profi
 Leading and trailing spaces in a password= line are part of the password. Move the exe and
 the ini together and the settings move too. If the exe sits in a location that cannot be
 written (optical disc, folder without write permission), settings are not saved and every
-start returns to defaults; Edit > Settings says so.
+start returns to defaults. mpainter says so once, with the reason, the first time saving
+fails, and Edit > Settings shows it too.
 
 "Open with mpainter" in the Explorer context menu
 --------------------------------------------------

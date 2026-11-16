@@ -16,6 +16,7 @@
 #include "core/Archive.h"
 #include "core/FolderNav.h"
 #include "core/ImageIO.h"
+#include "core/PathUtil.h"
 #include "core/Prefetch.h"
 #include "core/TempDir.h"
 #include "test_archive_util.h"
@@ -31,6 +32,17 @@ using mp::test::readBytes;
 using mp::test::writePng;
 
 std::wstring testRoot(const wchar_t* name) { return mp::test::freshDir((std::wstring(L"prefetch_") + name).c_str()); }
+
+// 換本預備把壓縮檔解到暫存位置底下的一個子資料夾（名字是 BookPreparer 自己取的，測試不管它叫什麼）。
+// dir 底下現在有哪些子資料夾，完整路徑。
+std::vector<std::wstring> unpackDirs(const std::wstring& dir) {
+    std::vector<std::wstring> out;
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        if (e.directory) out.push_back(dir + L"\\" + e.name);
+        return true;
+    });
+    return out;
+}
 
 // zip：name → 內容（PNG bytes）。password 非空時加密內容。
 void makeZip(const std::wstring& out, const std::vector<std::pair<std::string, std::string>>& entries,
@@ -144,7 +156,7 @@ TEST_CASE("Prefetch：不在清單裡的立刻放掉；put 進來的 current 不
     CHECK(pf.heldBytes() == 0);
 }
 
-TEST_CASE("Prefetch：上限依優先順序，放不下的那一屏起都不留；單張就超過時連解都不解") {
+TEST_CASE("Prefetch：上限依優先順序，放不下的那一屏起都不留") {
     std::wstring root = testRoot(L"limit");
     for (int i = 1; i <= 4; ++i) writePng(root + L"\\" + std::to_wstring(i) + L".png", 100, 100); // 一張 40000 bytes
     std::wstring p1 = root + L"\\1.png", p2 = root + L"\\2.png", p3 = root + L"\\3.png", p4 = root + L"\\4.png";
@@ -175,17 +187,24 @@ TEST_CASE("Prefetch：上限依優先順序，放不下的那一屏起都不留�
     CHECK(pf.heldBytes() == 80000);
     CHECK(pf.get(p3));
     CHECK_FALSE(pf.get(p4));
-    // 單張就比上限大：看檔頭就停手
-    Counting c2;
-    Prefetcher pf2(c2.decoder());
-    pf2.setWanted({}, {{p2}}, std::nullopt, {}, 1000);
-    pf2.waitIdle();
-    CHECK(c2.count == 0);
-    CHECK(pf2.heldBytes() == 0);
+}
+
+TEST_CASE("Prefetch：單張就超過上限時看檔頭就停手，連解都不解；上限 0 是關閉") {
+    std::wstring root = testRoot(L"limit_single");
+    const std::wstring page = root + L"\\1.png";
+    writePng(page, 100, 100); // 40000 bytes
+    Counting c;
+    Prefetcher pf(c.decoder());
+    pf.setWanted({}, {{page}}, std::nullopt, {}, 1000);
+    pf.waitIdle();
+    CHECK(c.count == 0);
+    CHECK(pf.heldBytes() == 0);
+    CHECK_FALSE(pf.get(page));
     // 上限 0 = 關閉
-    pf2.setWanted({}, {{p2}}, std::nullopt, {}, 0);
-    pf2.waitIdle();
-    CHECK(c2.count == 0);
+    pf.setWanted({}, {{page}}, std::nullopt, {}, 0);
+    pf.waitIdle();
+    CHECK(c.count == 0);
+    CHECK_FALSE(pf.get(page));
 }
 
 TEST_CASE("Prefetch：背景正在解的那一頁，take 等它解完，不會解兩次") {
@@ -291,7 +310,7 @@ TEST_CASE("planBook：壓縮檔解到 dest；加密時試密碼列表；都不�
     makeZip(root + L"\\C.zip", {{"1.png", bytes}, {"2.png", bytes}}, "pw");
     BookRequest req;
     req.twoPage = true;
-    std::wstring dest = root + L"\\tmp\\pre1";
+    std::wstring dest = root + L"\\tmp\\first";
     BookPlan p = planBook(root + L"\\B.zip", req, dest, nullptr);
     REQUIRE(p.usable());
     CHECK(p.archive);
@@ -302,7 +321,7 @@ TEST_CASE("planBook：壓縮檔解到 dest；加密時試密碼列表；都不�
     CHECK(exists(p.files[0]));
 
     req.passwords = {L"nope", L"pw"};
-    std::wstring dest2 = root + L"\\tmp\\pre2";
+    std::wstring dest2 = root + L"\\tmp\\second";
     p = planBook(root + L"\\C.zip", req, dest2, nullptr);
     REQUIRE(p.usable());
     CHECK(p.password == L"pw");
@@ -394,16 +413,17 @@ TEST_CASE("Prefetch 換本：壓縮檔先解好；沒被接手的解壓資料夾
         Prefetcher pf;
         pf.setWanted({}, {}, req, {}, kBig);
         pf.waitIdle();
-        dest = tmp + L"\\pre1";
-        REQUIRE(exists(dest));
+        REQUIRE(unpackDirs(tmp).size() == 1);
+        dest = unpackDirs(tmp)[0];
         pf.setWanted({}, {}, std::nullopt, {}, kBig); // 不跳了
         pf.waitIdle();
         CHECK_FALSE(exists(dest));
+        CHECK(unpackDirs(tmp).empty());
 
         pf.setWanted({}, {}, req, {}, kBig);
         pf.waitIdle();
-        dest = tmp + L"\\pre2";
-        REQUIRE(exists(dest));
+        REQUIRE(unpackDirs(tmp).size() == 1);
+        dest = unpackDirs(tmp)[0];
     }
     CHECK_FALSE(exists(dest)); // 沒接手：解構時刪
 }
@@ -437,7 +457,7 @@ TEST_CASE("Prefetch 換本：等的時候第一次問進度就取消，回 Cance
     // 換本在另一條執行緒做：這一頁的解碼不必等它
     CHECK(pf.get(shelf + L"\\A\\2.png"));
     pf.waitIdle();
-    CHECK_FALSE(exists(tmp + L"\\pre1"));
+    CHECK(unpackDirs(tmp).empty());
     CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr)); // 同一個要求不再重做
     // 換一個要求（方向不同）再換回來：重新準備
     BookRequest other = req;
@@ -468,7 +488,7 @@ TEST_CASE("Prefetch 換本：解壓到一半取消，回 Cancelled，解到一�
     bool sawPartial = false;
     auto plan = pf.takeBook(shelf + L"\\B.zip", [&](uint64_t done, uint64_t) {
         if (done == 0) return true; // 還沒開始解
-        sawPartial = exists(tmp + L"\\pre1");
+        sawPartial = !unpackDirs(tmp).empty();
         return false;
     });
     REQUIRE(plan);
@@ -477,7 +497,7 @@ TEST_CASE("Prefetch 換本：解壓到一半取消，回 Cancelled，解到一�
     CHECK(sawPartial);
     CHECK_FALSE(plan->usable());
     pf.waitIdle();
-    CHECK_FALSE(exists(tmp + L"\\pre1"));
+    CHECK(unpackDirs(tmp).empty());
     CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr));
 }
 
@@ -494,10 +514,10 @@ TEST_CASE("Prefetch：dropBook 等背景停下來，沒被接手的解壓資料�
     req.archiveRoot = tmp;
     pf.setWanted({}, {}, req, {}, kBig);
     pf.waitIdle();
-    REQUIRE(exists(tmp + L"\\pre1"));
+    REQUIRE(unpackDirs(tmp).size() == 1);
     pf.dropBook();
     // 回來的時候已經刪完了：呼叫端接著刪整個暫存資料夾，不會兩邊同時刪。
-    CHECK_FALSE(exists(tmp + L"\\pre1"));
+    CHECK(unpackDirs(tmp).empty());
     CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr));
     CHECK(pf.heldBytes() == 0);
 }
@@ -613,14 +633,14 @@ TEST_CASE("BookPreparer：沒給解壓位置的壓縮檔不預開；資料夾照
     books.waitIdle();
     CHECK(ready == 2);
     REQUIRE(books.edge().size() == 1);
-    CHECK(exists(tmp + L"\\pre1"));
+    CHECK(unpackDirs(tmp).size() == 1);
     CHECK_FALSE(books.take(shelf + L"\\C", nullptr)); // 準備的不是這一本
 
     BookRequest fromB = req;
     fromB.fromBook = shelf + L"\\B.zip"; // 下一本是資料夾 C
     books.request(fromB);
     books.waitIdle();
-    CHECK_FALSE(exists(tmp + L"\\pre1")); // 上一個要求解好的沒人接手：刪掉
+    CHECK(unpackDirs(tmp).empty()); // 上一個要求解好的沒人接手：刪掉
     CHECK(books.edge() == std::vector<std::wstring>{shelf + L"\\C\\1.png"});
     auto c = books.take(shelf + L"\\C", nullptr);
     REQUIRE(c);

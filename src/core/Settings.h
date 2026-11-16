@@ -140,10 +140,13 @@ enum class SettingsLoad { Loaded, Missing, Unreadable };
 SettingsLoad loadSettings(const std::wstring& path, Settings& out);
 // 寫檔（UTF-8，無 BOM）。先寫到同資料夾的暫存檔（<path>.<pid>.tmp）再取代原檔：別人同時在讀的話，讀到的不是舊的就是新的，
 // 不會是半份；寫到一半當掉也不會留下截斷的設定檔。失敗回傳 false，原檔不動、暫存檔刪掉。
-bool saveSettings(const std::wstring& path, const Settings& s);
+// systemError 不是 nullptr：失敗時寫進失敗那一步的 Win32 錯誤碼（原檔唯讀是 ERROR_ACCESS_DENIED），成功時是 0。
+bool saveSettings(const std::wstring& path, const Settings& s, unsigned long* systemError = nullptr);
 // 讀檔 → mergeSettings(base, mine, 檔案裡的) → 寫檔，整段用具名 mutex 包住（別的 mpainter 不會同時做同一件事）。
 // 檔案不存在時直接寫 mine。檔案在但讀不到時不寫，回 false。成功時 written 是寫進檔案的內容。
-bool saveSettingsMerged(const std::wstring& path, const Settings& base, const Settings& mine, Settings& written);
+// systemError 同 saveSettings；檔案在但讀不到時是 0（不知道原因）。
+bool saveSettingsMerged(const std::wstring& path, const Settings& base, const Settings& mine, Settings& written,
+                        unsigned long* systemError = nullptr);
 // 這個路徑能不能寫（檔案存在就試開寫入，不存在就試在同資料夾建檔再刪）。
 bool isPathWritable(const std::wstring& path);
 // exe 路徑 -> 同資料夾的 mpainter.ini。

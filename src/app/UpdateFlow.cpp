@@ -83,11 +83,11 @@ void UpdateFlow::checkNow() {
     UpdateError err = checkUpdateWithProgress(hwnd, url, r);
     if (!err.ok()) {
         if (!err.cancelled())
-            MessageBoxW(hwnd, fmt1(L"Could not check for updates: %s", updateErrorText(err)).c_str(), kAppName, MB_ICONWARNING);
+            showMessage(hwnd, fmt1(L"Could not check for updates: %s", updateErrorText(err)), TD_WARNING_ICON);
         return;
     }
     if (!isNewerVersion(r.version, MP_VERSION_WSTRING)) {
-        MessageBoxW(hwnd, fmt1(L"mpainter %s is the latest version.", MP_VERSION_WSTRING).c_str(), kAppName, MB_ICONINFORMATION);
+        showMessage(hwnd, fmt1(L"mpainter %s is the latest version.", MP_VERSION_WSTRING), TD_INFORMATION_ICON);
         return;
     }
     offer(r);
@@ -154,14 +154,14 @@ void UpdateFlow::install(const ReleaseInfo& r) {
     std::wstring work = std::wstring(tmp) + L"mpainter\\update-" + std::to_wstring(GetCurrentProcessId());
     removeDirectoryRecursive(work);
     if (!createDirectories(work)) {
-        MessageBoxW(hwnd, fmt1(L"Update failed: %s", L"cannot create " + work).c_str(), kAppName, MB_ICONWARNING);
+        showMessage(hwnd, fmt1(L"Update failed: %s", L"cannot create " + work), TD_WARNING_ICON);
         return;
     }
     std::wstring staging;
     UpdateError err = downloadUpdateWithProgress(hwnd, r, work, staging);
     if (!err.ok()) {
         removeDirectoryRecursive(work);
-        if (!err.cancelled()) MessageBoxW(hwnd, fmt1(L"Update failed: %s", updateFailureText(err)).c_str(), kAppName, MB_ICONWARNING);
+        if (!err.cancelled()) showMessage(hwnd, fmt1(L"Update failed: %s", updateFailureText(err)), TD_WARNING_ICON);
         return;
     }
     auto steps = planInstall(staging, app, fileNameOf(exePath));
@@ -174,14 +174,13 @@ void UpdateFlow::install(const ReleaseInfo& r) {
     if (!closeOtherInstances()) {
         removeDirectoryRecursive(work);
         SetForegroundWindow(hwnd); // 使用者剛在別的視窗按了取消，焦點在那邊
-        askOk(hwnd, tr(L"Another mpainter window was not closed, so the update was cancelled. Nothing was changed."), TD_WARNING_ICON, false);
+        showMessage(hwnd, tr(L"Another mpainter window was not closed, so the update was cancelled. Nothing was changed."), TD_WARNING_ICON);
         return;
     }
     err = applyInstall(steps);
     removeDirectoryRecursive(work);
     if (!err.ok()) {
-        MessageBoxW(hwnd, fmt1(L"Update failed: %s", updateErrorText(err) + L"\n\n" + tr(L"Nothing was changed.")).c_str(), kAppName,
-                    MB_ICONWARNING);
+        showMessage(hwnd, fmt1(L"Update failed: %s", updateErrorText(err) + L"\n\n" + tr(L"Nothing was changed.")), TD_WARNING_ICON);
         return;
     }
     host_.closeForRelaunch(afterUpdateArgs(GetCurrentProcessId(), host_.reopenAfterUpdate()));

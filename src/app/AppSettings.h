@@ -33,6 +33,8 @@ public:
     // 設定檔寫不寫得進去（最近一次存檔或 refreshWritable 的結果）。
     bool writable() const { return writable_; }
     void refreshWritable();
+    // 最近一次 save() 寫不進去的原因（Win32 錯誤碼）。存成功、沒有存（unreadable）、或原因不明時是 0。
+    unsigned long saveError() const { return saveError_; }
     // 可選的語系，順序同語言選單：英文、內建的、lang\ 裡掃到的（同代碼的檔蓋掉內建的）。
     const std::vector<LangTable>& languages() const { return langs_; }
 
@@ -43,6 +45,7 @@ private:
     std::wstring exePath_, path_;
     bool writable_ = true;
     bool unreadable_ = false;
+    unsigned long saveError_ = 0;
     std::vector<LangTable> langs_;
 };
 

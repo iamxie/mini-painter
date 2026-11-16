@@ -115,6 +115,52 @@ TEST_CASE("loadSettings / saveSettings 檔案往返") {
     DeleteFileW(p.c_str());
 }
 
+TEST_CASE("saveSettings：失敗時回報是哪個系統錯誤，成功時是 0") {
+    std::wstring p = tempPath(L"save_error.ini");
+    DeleteFileW(p.c_str());
+    unsigned long why = 99;
+    REQUIRE(saveSettings(p, Settings{}, &why));
+    CHECK(why == 0);
+    // 原檔唯讀
+    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_READONLY);
+    why = 0;
+    CHECK_FALSE(saveSettings(p, Settings{}, &why));
+    CHECK(why == ERROR_ACCESS_DENIED);
+    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+    // 原檔被別的程式獨佔：暫存檔寫得出來，取代不了
+    HANDLE lock = CreateFileW(p.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    REQUIRE(lock != INVALID_HANDLE_VALUE);
+    why = 0;
+    CHECK_FALSE(saveSettings(p, Settings{}, &why));
+    CHECK((why == ERROR_SHARING_VIOLATION || why == ERROR_ACCESS_DENIED));
+    CloseHandle(lock);
+    DeleteFileW(p.c_str());
+    // 資料夾不存在：連暫存檔都建不出來
+    why = 0;
+    CHECK_FALSE(saveSettings(tempPath(L"no-such-dir\\mpainter.ini"), Settings{}, &why));
+    CHECK(why == ERROR_PATH_NOT_FOUND);
+}
+
+TEST_CASE("saveSettingsMerged：存不進去的原因傳得出來；檔案讀不到時原因是 0") {
+    std::wstring p = tempPath(L"merged_error.ini");
+    DeleteFileW(p.c_str());
+    Settings written;
+    unsigned long why = 99;
+    REQUIRE(saveSettingsMerged(p, Settings{}, Settings{}, written, &why));
+    CHECK(why == 0);
+    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_READONLY);
+    CHECK_FALSE(saveSettingsMerged(p, Settings{}, Settings{}, written, &why));
+    CHECK(why == ERROR_ACCESS_DENIED);
+    SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
+    HANDLE lock = CreateFileW(p.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    REQUIRE(lock != INVALID_HANDLE_VALUE);
+    why = 99;
+    CHECK_FALSE(saveSettingsMerged(p, Settings{}, Settings{}, written, &why)); // 讀不到就不寫
+    CHECK(why == 0);
+    CloseHandle(lock);
+    DeleteFileW(p.c_str());
+}
+
 TEST_CASE("loadSettings：檔案在但讀不到是 Unreadable，不是 Missing") {
     std::wstring p = tempPath(L"locked.ini");
     DeleteFileW(p.c_str());

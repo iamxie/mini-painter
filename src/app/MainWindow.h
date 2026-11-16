@@ -30,6 +30,7 @@
 #include "core/TempDir.h"
 #include "core/Update.h"
 #include "core/ViewFit.h"
+#include "core/ViewState.h"
 #include "core/Viewport.h"
 #include "render/Renderer.h"
 
@@ -40,7 +41,6 @@ public:
     // 剛被自動更新重啟（main 收到 --after-update）：開好視窗後提示「已更新」。create 前呼叫。
     void setJustUpdated(bool v) { justUpdated_ = v; }
     bool create(HINSTANCE inst, const std::wstring& initialPath, int nCmdShow);
-    HWND hwnd() const { return hwnd_; }
     bool preTranslate(MSG& msg);
 
     // ColorAdjustHost
@@ -121,7 +121,8 @@ private:
 
     // 設定與 shell 登錄
     void loadSettingsAndRegister();
-    void saveSettingsQuiet() { store_.save(); } // 存設定（和別的視窗寫的合併；寫不進去就算了）
+    // 存設定（和別的視窗寫的合併）。不跳對話框；寫不進去時在畫布中央提示，一次執行只提示第一次。
+    void saveSettingsQuiet();
     std::wstring exeDir() const { return store_.exeDir(); } // exe 所在資料夾，結尾帶反斜線
     void applyPinnedNow();              // 置頂檔名改了：正在看的資料夾 / 壓縮檔立刻重排
     void showMainWindow(int cmd);       // 第一次顯示主視窗：上次關閉時是最大化就最大化
@@ -176,9 +177,12 @@ private:
     float viewH() const;
     Rc pageRect(bool second) const; // 某頁在虛擬畫面裡的位置（底對齊；右到左時第一頁在右）
 
-    // 檢視
+    // 檢視。倍率、位移、跟不跟著檢視模式走在 view_（core/ViewState.h），這裡是視窗這一側：
+    // 給它當下的畫布與圖的大小（viewFrame），改完更新按鈕、文字框、畫面。
     ImagePtr currentImage() const;
-    void fitToView(bool resetOffset = true); // 依目前檢視模式算 zoom
+    ViewFrame viewFrame() const;             // view_ 的每個函式都要的外在條件：畫布大小、虛擬畫面大小、檢視模式
+    void fitToView(bool resetOffset = true); // 依目前檢視模式算 zoom，之後跟著模式走
+    void reflowView(bool resetOffset);       // 畫布或版面變了：跟著模式走的重新 fit，手動縮放過的只夾位移
     void setZoom(float z, POINT anchorClient);
     void zoomStep(int dir);
     void clampOffset();
@@ -229,7 +233,7 @@ private:
     // 收掉進行中的互動，回到閒置：拖到一半的丟掉、文字編輯結束（commitText：留下打的字）、裁切取消、
     // 調整顏色的面板關掉不套用。每個會換掉或改掉整張圖的入口都先呼叫這個，清理只寫在這一處。
     void endInteraction(bool commitText);
-    Viewport viewport() const { return {zoom_, offset_}; }
+    Viewport viewport() const { return view_.viewport(); }
 
     // 裁切模式：框預設整張圖，拖四角、四邊或框內調整，按「裁切」文字按鈕才真的裁。
     void beginCrop();
@@ -249,6 +253,7 @@ private:
     AppSettings store_;                  // 設定檔的讀寫、目前的值、可選的語系
     Settings& settings_ = store_.values; // 目前的設定值
     bool askPending_ = false;
+    bool saveFailWarned_ = false; // 這次執行已經提示過「設定存不進去」
     HWND tip_ = nullptr;
     TOOLINFOW tipInfo_{};
     uint32_t hoverItem_ = 0;
@@ -294,9 +299,7 @@ private:
     float prefetchCanvasW_ = 0, prefetchCanvasH_ = 0; // 上次 schedulePrefetch 用的畫布大小；變了就再排一次
 
     // 檢視
-    float zoom_ = 1.0f;
-    Pt offset_;        // 圖片原點在畫布裡的位置（畫布左上為 0）
-    bool fit_ = true;  // 跟著檢視模式走；手動縮放後 false，翻頁或改模式後又回 true
+    ViewState view_;   // 倍率、位移、跟不跟著檢視模式走、裁切模式存的檢視
     ViewMode viewMode_ = ViewMode::FitWindow;
     bool hqBusy_ = false;   // 連續縮放中：先畫 bilinear，停下來（timer）再換高品質
 
@@ -327,12 +330,6 @@ private:
     bool updating_ = false;     // 換檔完成、正在關閉：WM_CLOSE 不再問存檔（已經問過）
     bool justUpdated_ = false;
     std::wstring relaunchArgs_; // 非空：WM_DESTROY 時用這些參數重啟 exe
-
-    // 裁切模式的檢視（框本身在 editor_）
-    bool cropFit_ = false;     // 裁切模式的「整張圖放進畫布」還有效；手動縮放或改檢視模式後 false
-    float cropSavedZoom_ = 1.0f; // 進入裁切模式前的檢視，取消時還原
-    Pt cropSavedOffset_;
-    bool cropSavedFit_ = true;
 };
 
 } // namespace mp

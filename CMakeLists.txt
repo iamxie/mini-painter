@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 0.9.8 LANGUAGES CXX)
+project(mpainter VERSION 0.9.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -72,6 +72,7 @@ add_library(mp_core STATIC
     src/core/Prefetch.cpp
     src/core/Commands.cpp
     src/core/Viewport.cpp
+    src/core/ViewState.cpp
     src/core/Paging.cpp
     src/core/Launch.cpp
 )
@@ -162,6 +163,7 @@ add_executable(mp_tests
     src/tests/test_prefetch.cpp
     src/tests/test_commands.cpp
     src/tests/test_viewport.cpp
+    src/tests/test_view_state.cpp
     src/tests/test_paging.cpp
     # Renderer 的點陣圖快取（畫在記憶體裡的 render target）。src/app 仍然不測。
     src/tests/test_renderer.cpp

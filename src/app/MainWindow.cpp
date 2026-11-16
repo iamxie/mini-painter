@@ -36,6 +36,10 @@ constexpr UINT kToastMs = 2000, kArmMs = 3000;
 constexpr UINT kUndoToastMs = 6000; // 復原紀錄快滿的提示比較長，多留一點時間
 constexpr UINT kSettingsToastMs = 10000; // 設定檔讀不到的提示：影響整次執行，留久一點
 constexpr UINT kHqDelayMs = 200;
+constexpr UINT kUpdateRetryMs = 3000;      // 使用者正忙、新版本對話框先不跳：隔多久再看一次
+constexpr ULONGLONG kPopupReclickMs = 300; // 彈出選單關掉後這麼短的時間內又點同一顆按鈕：當成「收起」，不再開
+constexpr float kZoomStepFactor = 1.25f;   // 放大 / 縮小按一次的倍數
+constexpr float kWheelZoomFactor = 1.1f;   // Ctrl+滾輪一格的倍數
 constexpr UINT kPrefetchDelayMs = 300; // 拖曳改視窗大小時，停下來才重排預先縮圖
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
 // 以下的尺寸都是邏輯像素，用的時候過 px()。
@@ -43,13 +47,26 @@ constexpr float kDefaultWindowW = 1100, kDefaultWindowH = 760; // 沒有記住�
 constexpr float kMinWindowW = 520, kMinWindowH = 320;
 constexpr float kToolbarH = 44, kMarkupH = 40, kNameH = 26, kInfoW = 320;
 constexpr float kTipMaxW = 420;   // 提示最寬多少，超過就折行
+constexpr float kHitTol = 4;      // 點物件、點線的容差
 constexpr float kHandleR = 5.0f;
+constexpr float kHandleOutlineW = 1.5f; // 控制點的白邊
+constexpr float kGuideLineW = 2.0f;     // 拖綠點時畫的可動軌跡
 constexpr float kHandleHitExtra = 3.0f; // 控制點比畫出來的圓多幾個像素也算點到
 constexpr float kDrawStepPx = 0.5f;     // 塗鴉：滑鼠離上一點至少這麼多螢幕像素才記下一點
 constexpr float kClickSlop = 2;         // 滑鼠按下後移動超過這麼多才算拖曳（不是手抖）
 constexpr float kNudgePx = 1.0f, kNudgeLargePx = 10.0f; // 方向鍵微移選取的物件（圖片像素）；按著 Shift 用大的
 // 裁切框（DIP）：邊的命中容差、角的命中範圍（沿邊從角算起）、L 形把手的長度
 constexpr float kCropTol = 8.0f, kCropCorner = 30.0f, kCropHandleLen = 26.0f;
+constexpr float kCropHandleW = 4, kCropHandleShadowW = 2; // L 形把手的線寬；底下那層深色比它寬多少
+// 拖裁切框時框中央的「寬 × 高」：字級、字到底框的左右與上下留白、底框圓角
+constexpr float kCropSizeText = 12, kCropSizePadX = 8, kCropSizePadY = 4, kCropSizeRadius = 4;
+// 畫布中央的提示框：字級、字到框的留白、圓角；字最窄多少、框的左右離畫布邊緣合計至少多少
+constexpr float kToastText = 15, kToastPadX = 20, kToastPadY = 14, kToastRadius = 8;
+constexpr float kToastMinTextW = 120, kToastMarginX = 64;
+constexpr float kLoadErrorText = 14;                 // 圖開不了時畫在畫布上的訊息
+constexpr float kItemTipDx = 16, kItemTipDy = 22;    // 物件教學提示：出現在游標右下多遠
+constexpr float kButtonTipGap = 4;                   // 按鈕名稱提示：離按鈕下緣多遠
+constexpr float kInfoWheelScale = 0.5f;              // 資訊面板：滾輪一格（120）捲 60 個邏輯像素
 constexpr UINT_PTR kEditSubclass = 1;
 
 bool ctrlDown() { return (GetKeyState(VK_CONTROL) & 0x8000) != 0; }
@@ -224,7 +241,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_SIZE:
         renderer_.resize(LOWORD(lp), HIWORD(lp));
         layout();
-        if (fit_) fitToView(false); else clampOffset();
+        reflowView(false);
         positionEdit();
         return 0;
     case WM_DPICHANGED: onDpiChanged(HIWORD(wp), *reinterpret_cast<const RECT*>(lp)); return 0;
@@ -276,7 +293,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         disarmJump();
         POINT pt{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
         ScreenToClient(hwnd_, &pt);
-        if (inRect(canvasRc_, pt)) { offset_.x -= GET_WHEEL_DELTA_WPARAM(wp); clampOffset(); positionEdit(); repaint(); }
+        if (inRect(canvasRc_, pt)) { view_.scrollBy(viewFrame(), -static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)), 0); positionEdit(); repaint(); }
         return 0;
     }
     case WM_SETCURSOR:
@@ -418,7 +435,7 @@ void MainWindow::onDestroy() {
             CloseHandle(pi.hThread);
             CloseHandle(pi.hProcess);
         } else {
-            MessageBoxW(nullptr, tr(L"mpainter has been updated. Please start it again."), kAppName, MB_ICONINFORMATION);
+            showMessage(nullptr, tr(L"mpainter has been updated. Please start it again."), TD_INFORMATION_ICON);
         }
     }
     if (editFont_) DeleteObject(editFont_);
@@ -456,7 +473,7 @@ void MainWindow::buildButtons() {
     st.adjusting = editor_.adjusting();
     st.cropping = editor_.cropping();
     st.hasImage = doc_.image() != nullptr;
-    st.zoomIsActual = std::abs(zoom_ - 1.0f) <= 1e-4f;
+    st.zoomIsActual = view_.atActualSize();
     st.commands = commandState();
     const StrokeStyle stroke = editor_.currentStroke();
     st.stroke = stroke.stroke;
@@ -654,14 +671,14 @@ void MainWindow::onCommand(int id) {
     case IDM_UPSCALE:
         settings_.view.upscaleSmall = !settings_.view.upscaleSmall;
         saveSettingsQuiet();
-        if (fit_) { fitToView(); repaint(); }
+        if (view_.fitting()) { fitToView(); repaint(); }
         updateTitle();
         schedulePrefetch();
         break;
     case IDM_RTL:
         settings_.view.rightToLeft = !settings_.view.rightToLeft;
         saveSettingsQuiet();
-        if (twoPage()) { fit_ = true; fitToView(); }
+        if (twoPage()) fitToView();
         updateTitle();
         repaint();
         break;
@@ -699,10 +716,7 @@ void MainWindow::undoRedo(bool undo) {
     if (undo) editor_.undo(); else editor_.redo();
     auto after = doc_.image();
     // 底圖尺寸變了（旋轉、調整尺寸）就重新符合視窗。
-    if (before && after && (before->width != after->width || before->height != after->height)) {
-        fit_ = true;
-        fitToView();
-    }
+    if (before && after && (before->width != after->width || before->height != after->height)) fitToView();
     repaint();
     updateTitle();
 }
@@ -722,7 +736,7 @@ void MainWindow::togglePairing(bool& flag, bool saved) {
     if (saved) { saveSettingsQuiet(); updateTitle(); }
     if (twoPage()) {
         if (const int first = spreadStartIfSecond(); first >= 0) openPath(nav_.at(first));
-        else { loadSecond(); fit_ = true; fitToView(); updateTitle(); repaint(); }
+        else { loadSecond(); fitToView(); updateTitle(); repaint(); }
     }
     schedulePrefetch();
 }
@@ -817,12 +831,8 @@ bool MainWindow::showPage(const std::wstring& path, bool inArchive, bool landAtB
     facts.dpiX = r.dpi.x;
     facts.dpiY = r.dpi.y;
     info_.setData(std::move(facts));
-    fit_ = true;
     fitToView();
-    if (landAtBottom) {
-        offset_.y = -1e9f;
-        clampOffset();
-    }
+    if (landAtBottom) view_.scrollToBottom(viewFrame());
     updateTitle();
     layout();
     repaint();
@@ -939,8 +949,8 @@ void MainWindow::closeArchive() {
 bool MainWindow::editGuard() {
     if (!readOnly()) return true;
     endTextEdit(false);
-    MessageBoxW(hwnd_, tr(L"This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it."),
-                kAppName, MB_OK | MB_ICONINFORMATION);
+    showMessage(hwnd_, tr(L"This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it."),
+                TD_INFORMATION_ICON);
     return false;
 }
 
@@ -1016,7 +1026,7 @@ bool MainWindow::openArchive(const std::wstring& path, std::wstring* failMsg, bo
         wchar_t msg[512];
         swprintf(msg, 512, tr(L"Unpacking was incomplete: only %d of %d images were written. The missing ones are skipped."),
                  r.written, r.expected);
-        MessageBoxW(hwnd_, msg, kAppName, MB_OK | MB_ICONWARNING);
+        showMessage(hwnd_, msg, TD_WARNING_ICON);
         if (r.files.empty()) { removeDirectoryRecursive(dest); return fail(tr(L"This archive has no supported images")); }
     }
     movePinnedFirst(r.files, r.names, settings_.pinnedNames);
@@ -1082,14 +1092,13 @@ bool MainWindow::writeFlattened(const std::wstring& target) {
         Image flat;
         if (!flatten(renderer_.device(), doc_.state(), flat)) {
             // 標註畫不上去（多半是圖太大、記憶體不夠）：不能把少了標註的圖當成存好了。
-            MessageBoxW(hwnd_, fmt1(L"Save failed: %s", tr(L"Could not draw the annotations onto the image")).c_str(), kAppName,
-                        MB_ICONERROR);
+            showMessage(hwnd_, fmt1(L"Save failed: %s", tr(L"Could not draw the annotations onto the image")), TD_ERROR_ICON);
             return false;
         }
         saved = saveImage(std::move(flat), target, opt);
     }
     if (!saved) {
-        MessageBoxW(hwnd_, fmt1(L"Save failed: %s", ioErrorText(saved.error)).c_str(), kAppName, MB_ICONERROR);
+        showMessage(hwnd_, fmt1(L"Save failed: %s", ioErrorText(saved.error)), TD_ERROR_ICON);
         return false;
     }
     // 圖存好了，但原檔的 metadata 有一部分寫不進去：存檔不擋，事後說一聲。
@@ -1145,20 +1154,10 @@ bool MainWindow::pickSavePath(std::wstring& out, bool exporting) {
             for (size_t i = 0; i < lost.size(); ++i) list += (i ? L", " : L"") + trs(lost[i].c_str());
             wchar_t body[512];
             swprintf(body, 512, tr(L"Saving as %s will drop this metadata:\n%s\n\nThe pixels are kept. Continue?"), extUpper.c_str(), list.c_str());
-            TASKDIALOGCONFIG td{sizeof(td)};
-            td.hwndParent = hwnd_;
-            td.hInstance = inst_;
-            td.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-            td.dwCommonButtons = TDCBF_OK_BUTTON | TDCBF_CANCEL_BUTTON;
-            td.pszWindowTitle = kAppName;
-            td.pszMainIcon = TD_WARNING_ICON;
-            td.pszContent = body;
-            td.pszVerificationText = tr(L"Don't ask again");
-            int pressed = 0;
-            BOOL dontAsk = FALSE;
-            if (FAILED(TaskDialogIndirect(&td, &pressed, nullptr, &dontAsk))) pressed = IDOK;
+            bool dontAsk = false;
+            const bool go = askOk(hwnd_, body, TD_WARNING_ICON, true, &dontAsk);
             if (dontAsk) { settings_.view.warnMetadataLoss = false; saveSettingsQuiet(); updateTitle(); }
-            if (pressed != IDOK) return false;
+            if (!go) return false;
         }
     }
     out = newPath;
@@ -1338,14 +1337,14 @@ void MainWindow::hideToast() {
 void MainWindow::drawToast() {
     if (toast_.empty()) return;
     auto* rt = renderer_.rt();
-    float size = px(15);
-    float padX = px(20), padY = px(14);
-    float maxW = std::max(px(120), (canvasRc_.right - canvasRc_.left) - px(64) - 2 * padX);
+    float size = px(kToastText);
+    float padX = px(kToastPadX), padY = px(kToastPadY);
+    float maxW = std::max(px(kToastMinTextW), (canvasRc_.right - canvasRc_.left) - px(kToastMarginX) - 2 * padX);
     float h = 0;
     float w = renderer_.measureUiText(toast_, size, true, maxW, &h);
     float cx = (canvasRc_.left + canvasRc_.right) / 2, cy = (canvasRc_.top + canvasRc_.bottom) / 2;
     D2D1_RECT_F box = {cx - w / 2 - padX, cy - h / 2 - padY, cx + w / 2 + padX, cy + h / 2 + padY};
-    rt->FillRoundedRectangle(D2D1::RoundedRect(box, px(8), px(8)), renderer_.brush(theme::kToastBg));
+    rt->FillRoundedRectangle(D2D1::RoundedRect(box, px(kToastRadius), px(kToastRadius)), renderer_.brush(theme::kToastBg));
     D2D1_RECT_F textRc = {box.left + padX, box.top + padY, box.right - padX, box.bottom - padY};
     renderer_.drawUiText(toast_, textRc, size, theme::kWhite, DWRITE_TEXT_ALIGNMENT_CENTER, true,
                          DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false, true);
@@ -1448,7 +1447,7 @@ bool MainWindow::setViewMode(ViewMode m) {
     viewMode_ = m;
     settings_.view.viewMode = m;
     saveSettingsQuiet();
-    cropFit_ = false;
+    view_.endCropFit();
     if (m == ViewMode::TwoPage) {
         // 只看不編：收掉編輯狀態與標示工具列。
         endInteraction(true);
@@ -1467,7 +1466,6 @@ bool MainWindow::setViewMode(ViewMode m) {
         second_.reset();
         secondPath_.clear();
     }
-    fit_ = true;
     fitToView();
     positionEdit();
     updateTitle();
@@ -1476,30 +1474,34 @@ bool MainWindow::setViewMode(ViewMode m) {
     return true;
 }
 
+ViewFrame MainWindow::viewFrame() const {
+    ViewFrame f;
+    f.canvasW = canvasRc_.right - canvasRc_.left;
+    f.canvasH = canvasRc_.bottom - canvasRc_.top;
+    f.contentW = viewW(); // 沒有圖時是 0：view_ 就什麼都不做
+    f.contentH = viewH();
+    f.mode = viewMode_;
+    f.upscaleSmall = settings_.view.upscaleSmall;
+    f.cropping = editor_.cropping();
+    return f;
+}
+
 // 依檢視模式算 zoom。符合類模式預設不放大小圖，開了「小圖放大」才放大；1:1 永遠不放大。
 void MainWindow::fitToView(bool resetOffset) {
-    auto img = doc_.image();
-    if (!img) return;
-    float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
-    // 裁切模式剛進入時整張圖放進畫布（不改檢視模式設定）
-    ViewMode mode = editor_.cropping() && cropFit_ ? ViewMode::FitWindow : viewMode_;
-    zoom_ = fitZoom(mode, cw, ch, viewW(), viewH(), settings_.view.upscaleSmall);
-    if (resetOffset) offset_ = {0, 0}; // 從左上開始，放得下的方向由 clampOffset 置中
-    clampOffset();
+    if (!doc_.image()) return;
+    view_.fit(viewFrame(), resetOffset);
     buildButtons();
 }
 
-void MainWindow::clampOffset() {
-    if (!doc_.image()) return;
-    offset_ = mp::clampOffset(offset_, zoom_, viewW(), viewH(), canvasRc_.right - canvasRc_.left, canvasRc_.bottom - canvasRc_.top);
+void MainWindow::reflowView(bool resetOffset) {
+    if (view_.fitting()) fitToView(resetOffset);
+    else clampOffset();
 }
 
+void MainWindow::clampOffset() { view_.clamp(viewFrame()); }
+
 bool MainWindow::scrollBy(float dx, float dy) {
-    Pt before = offset_;
-    offset_.x += dx;
-    offset_.y += dy;
-    clampOffset();
-    bool moved = std::abs(offset_.x - before.x) > 0.5f || std::abs(offset_.y - before.y) > 0.5f;
+    const bool moved = view_.scrollBy(viewFrame(), dx, dy);
     if (moved) { positionEdit(); repaint(); }
     return moved;
 }
@@ -1517,12 +1519,7 @@ void MainWindow::scrollKey(int vk) {
 
 void MainWindow::setZoom(float z, POINT anchor) {
     if (!doc_.image()) return;
-    const Viewport v = zoomAbout(viewport(), z, {anchor.x - canvasRc_.left, anchor.y - canvasRc_.top});
-    zoom_ = v.zoom;
-    offset_ = v.offset;
-    fit_ = false;
-    cropFit_ = false;
-    clampOffset();
+    view_.zoomTo(viewFrame(), z, {anchor.x - canvasRc_.left, anchor.y - canvasRc_.top});
     buildButtons();
     positionEdit();
     // 連續縮放時先用快的畫，停下來再算高品質。
@@ -1531,8 +1528,8 @@ void MainWindow::setZoom(float z, POINT anchor) {
 }
 
 void MainWindow::zoomStep(int dir) {
-    float f = dir > 0 ? 1.25f : 1.0f / 1.25f;
-    setZoom(zoom_ * f, canvasCenter());
+    const float f = dir > 0 ? kZoomStepFactor : 1.0f / kZoomStepFactor;
+    setZoom(view_.zoom() * f, canvasCenter());
 }
 
 Pt MainWindow::toImage(POINT c) const { return canvasToImage(viewport(), {c.x - canvasRc_.left, c.y - canvasRc_.top}); }
@@ -1543,11 +1540,11 @@ POINT MainWindow::toClient(Pt p) const {
 }
 
 D2D1_MATRIX_3X2_F MainWindow::viewMatrix() const {
-    return D2D1::Matrix3x2F::Scale(zoom_, zoom_) *
-           D2D1::Matrix3x2F::Translation(canvasRc_.left + offset_.x, canvasRc_.top + offset_.y);
+    return D2D1::Matrix3x2F::Scale(view_.zoom(), view_.zoom()) *
+           D2D1::Matrix3x2F::Translation(canvasRc_.left + view_.offset().x, canvasRc_.top + view_.offset().y);
 }
 
-float MainWindow::imageTol() const { return px(4) / zoom_; }
+float MainWindow::imageTol() const { return px(kHitTol) / view_.zoom(); }
 
 // ---------------------------------------------------------------------------
 // 繪製
@@ -1604,7 +1601,7 @@ void MainWindow::drawCanvas() {
     auto img = currentImage();
     if (!img) {
         if (!loadError_.empty())
-            renderer_.drawUiText(loadError_, canvasRc_, px(14), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+            renderer_.drawUiText(loadError_, canvasRc_, px(kLoadErrorText), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
         return;
     }
     rt->PushAxisAlignedClip(canvasRc_, D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1613,7 +1610,7 @@ void MainWindow::drawCanvas() {
         const ImageBitmap* b = nullptr;
         int tw = 0, th = 0;
         if (settings_.view.highQuality && !hqBusy_ && !editor_.adjusting() &&
-            hqTargetSize(im->width, im->height, zoom_, renderer_.rt()->GetMaximumBitmapSize(), tw, th))
+            hqTargetSize(im->width, im->height, view_.zoom(), renderer_.rt()->GetMaximumBitmapSize(), tw, th))
             b = renderer_.scaledBitmap(im, tw, th, prefetch_.scaled(im, tw, th)); // 預先解碼時背景縮好的就直接用
         if (!b) b = renderer_.imageBitmap(im);
         return b;
@@ -1667,18 +1664,18 @@ void MainWindow::drawSelection() {
             POINT tl = toClient({g.ellipse.left, g.ellipse.top}), br = toClient({g.ellipse.right, g.ellipse.bottom});
             D2D1_ELLIPSE e = D2D1::Ellipse(D2D1::Point2F((tl.x + br.x) * 0.5f, (tl.y + br.y) * 0.5f),
                                            (br.x - tl.x) * 0.5f, (br.y - tl.y) * 0.5f);
-            rt->DrawEllipse(e, gb, px(2.0f));
+            rt->DrawEllipse(e, gb, px(kGuideLineW));
         } else if (g.kind == GuideKind::Line) {
             POINT p0 = toClient(g.a), p1 = toClient(g.b);
             rt->DrawLine(D2D1::Point2F(static_cast<float>(p0.x), static_cast<float>(p0.y)),
-                         D2D1::Point2F(static_cast<float>(p1.x), static_cast<float>(p1.y)), gb, px(2.0f));
+                         D2D1::Point2F(static_cast<float>(p1.x), static_cast<float>(p1.y)), gb, px(kGuideLineW));
         }
     }
     for (const auto& h : handles(*a)) {
         POINT c = toClient(h.pos);
         D2D1_ELLIPSE e = D2D1::Ellipse(D2D1::Point2F(static_cast<float>(c.x), static_cast<float>(c.y)), r, r);
         rt->FillEllipse(e, renderer_.brush(h.kind == HandleKind::Blue ? theme::kAccent : theme::kHandleGreen));
-        rt->DrawEllipse(e, renderer_.brush(theme::kWhite), px(1.5f));
+        rt->DrawEllipse(e, renderer_.brush(theme::kWhite), px(kHandleOutlineW));
     }
 }
 
@@ -1687,7 +1684,7 @@ void MainWindow::drawSelection() {
 
 void MainWindow::onButton(int id) {
     // 彈出選單開著時再點同一顆按鈕：選單已因失去焦點關閉，這一下視為「收起」，不要再開。
-    if (id == popupBtn_ && GetTickCount64() - popups_.lastCloseTick() < 300) { popupBtn_ = BTN_NONE; return; }
+    if (id == popupBtn_ && GetTickCount64() - popups_.lastCloseTick() < kPopupReclickMs) { popupBtn_ = BTN_NONE; return; }
     auto anchor = [&]() { popupBtn_ = id; return buttonScreenRect(id); };
     // 裁切模式中按了縮放、資訊、裁切以外的按鈕：先取消裁切，再做那顆按鈕的事。
     if (editor_.cropping() && id != BTN_CROP && id != BTN_CROP_APPLY && id != BTN_ZOOMOUT && id != BTN_ZOOM100 && id != BTN_ZOOMIN &&
@@ -1703,14 +1700,14 @@ void MainWindow::onButton(int id) {
         showMarkup_ = !showMarkup_;
         if (!showMarkup_) editor_.leaveFreehand();
         layout();
-        if (fit_) fitToView(); else clampOffset();
+        reflowView(true);
         positionEdit();
         repaint();
         break;
     case BTN_INFO:
         showInfo_ = !showInfo_;
         layout();
-        if (fit_) fitToView(); else clampOffset();
+        reflowView(true);
         positionEdit();
         repaint();
         break;
@@ -1772,10 +1769,11 @@ Pointer MainWindow::pointerAt(POINT client) const {
     Pointer p;
     p.pos = toImage(client);
     p.tol = imageTol();
-    p.handleTol = px(kHandleR + kHandleHitExtra) / zoom_;
-    p.cropTol = px(kCropTol) / zoom_;
-    p.cropCorner = px(kCropCorner) / zoom_;
-    p.drawStep = kDrawStepPx / zoom_;
+    const float zoom = view_.zoom();
+    p.handleTol = px(kHandleR + kHandleHitExtra) / zoom;
+    p.cropTol = px(kCropTol) / zoom;
+    p.cropCorner = px(kCropCorner) / zoom;
+    p.drawStep = kDrawStepPx / zoom;
     return p;
 }
 
@@ -1806,7 +1804,7 @@ void MainWindow::onLButtonDown(POINT pt) {
         repaint();
         return;
     }
-    if (editor_.drag() == DragKind::Pan) dragOffsetStart_ = offset_;
+    if (editor_.drag() == DragKind::Pan) dragOffsetStart_ = view_.offset();
     SetCapture(hwnd_);
     buildButtons(); // 選取可能變了
     repaint();
@@ -1849,8 +1847,7 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
         return;
     }
     if (editor_.drag() == DragKind::Pan) {
-        offset_ = dragOffsetStart_ + Pt{static_cast<float>(pt.x - dragStartClient_.x), static_cast<float>(pt.y - dragStartClient_.y)};
-        clampOffset();
+        view_.panTo(viewFrame(), dragOffsetStart_ + Pt{static_cast<float>(pt.x - dragStartClient_.x), static_cast<float>(pt.y - dragStartClient_.y)});
         positionEdit();
     } else {
         const bool pastClickSlop = std::abs(pt.x - dragStartClient_.x) > px(kClickSlop) || std::abs(pt.y - dragStartClient_.y) > px(kClickSlop);
@@ -1893,17 +1890,17 @@ void MainWindow::onMouseWheel(POINT ptScreen, int delta, WPARAM keys) {
     POINT pt = ptScreen;
     ScreenToClient(hwnd_, &pt);
     if (showInfo_ && inRect(infoRc_, pt)) {
-        if (info_.scroll(-delta * px(0.5f))) repaint();
+        if (info_.scroll(-delta * px(kInfoWheelScale))) repaint();
         return;
     }
     if (!inRect(canvasRc_, pt) || !doc_.image()) return;
     if (keys & MK_CONTROL) {
-        setZoom(zoom_ * std::pow(1.1f, delta / 120.0f), pt);
+        setZoom(view_.zoom() * std::pow(kWheelZoomFactor, delta / static_cast<float>(WHEEL_DELTA)), pt);
         return;
     }
-    if (keys & MK_SHIFT) offset_.x += delta;
-    else offset_.y += delta;
-    clampOffset();
+    const float d = static_cast<float>(delta);
+    const bool horizontal = (keys & MK_SHIFT) != 0;
+    view_.scrollBy(viewFrame(), horizontal ? d : 0.0f, horizontal ? 0.0f : d);
     positionEdit();
     repaint();
 }
@@ -1970,7 +1967,7 @@ void MainWindow::showTip(POINT pt) {
     POINT sp = pt;
     ClientToScreen(hwnd_, &sp);
     showTipAt(tr(L"Drag the blue dots to resize, drag the object to move, Delete to remove"),
-              {sp.x + static_cast<int>(px(16)), sp.y + static_cast<int>(px(22))});
+              {sp.x + static_cast<int>(px(kItemTipDx)), sp.y + static_cast<int>(px(kItemTipDy))});
     if (!tipVisible_) return;
     tipShownFor_ = hoverItem_; // 同一個物件只提示一次，拖完控制點不再跳
     settings_.tipShown++;
@@ -1982,7 +1979,7 @@ void MainWindow::showButtonTip(int id) {
     const Button* b = toolbar_.find(id);
     if (!b || !*Toolbar::name(id)) return; // 文字按鈕本身就寫了名字，不另外提示
     // 放在按鈕正下方，不跟著游標跑。
-    POINT sp{static_cast<LONG>(b->rect.left), static_cast<LONG>(b->rect.bottom + px(4))};
+    POINT sp{static_cast<LONG>(b->rect.left), static_cast<LONG>(b->rect.bottom + px(kButtonTipGap))};
     ClientToScreen(hwnd_, &sp);
     showTipAt(Toolbar::name(id), sp);
 }
@@ -2012,6 +2009,18 @@ void MainWindow::loadSettingsAndRegister() {
     const ShellRegOptions reg = shellRegOptions();
     if (settings_.contextMenu && !contextMenuUpToDate(store_.exePath(), reg)) registerContextMenu(store_.exePath(), reg);
     if (!progIdExePath(reg).empty() && !progIdUpToDate(store_.exePath(), reg)) registerProgId(store_.exePath(), reg);
+}
+
+void MainWindow::saveSettingsQuiet() {
+    // 啟動時讀不到設定檔的那種（unreadable）整次執行都不存，開視窗時已經提示過。
+    if (store_.save() || store_.unreadable()) return;
+    // 視窗還沒顯示（啟動時補內建模式的那一次）不提示：exe 放在唯讀的地方時每次啟動都會跳。之後第一次存不進去才說。
+    if (saveFailWarned_ || !hwnd_ || !IsWindowVisible(hwnd_)) return;
+    saveFailWarned_ = true;
+    const unsigned long why = store_.saveError();
+    showToast(why ? fmt1(L"Settings could not be saved to mpainter.ini (%s). They are kept only until mpainter closes.", systemErrorText(why))
+                  : trs(L"Settings could not be saved to mpainter.ini. They are kept only until mpainter closes."),
+              false, kSettingsToastMs);
 }
 
 // ---------------------------------------------------------------------------
@@ -2059,7 +2068,7 @@ void MainWindow::askDefaultProgram(bool fromSettings) {
              L"1. Scroll to the bottom and click “Set defaults by app”.\n"
              L"2. Find mpainter in the list and click “Manage”.\n"
              L"3. Change the app next to each image format to mpainter.");
-    if (MessageBoxW(hwnd_, guide, kAppName, MB_OKCANCEL | MB_ICONINFORMATION) == IDOK) openDefaultAppsSettings();
+    if (askOk(hwnd_, guide, TD_INFORMATION_ICON, true)) openDefaultAppsSettings();
 }
 
 void MainWindow::showSettings(int startPage) {
@@ -2123,7 +2132,7 @@ void MainWindow::applyPinnedNow() {
     } else {
         nav_.load(path_);
     }
-    if (twoPage()) { updateSpreads(); loadSecond(); fit_ = true; fitToView(); }
+    if (twoPage()) { updateSpreads(); loadSecond(); fitToView(); }
     updateTitle();
     repaint();
 }
@@ -2189,7 +2198,7 @@ void MainWindow::deleteSelected() {
 // 新物件放在畫布中央；看得到的範圍的短邊（圖片像素）決定預設大小。
 float MainWindow::visibleShortSide() const {
     float cw = canvasRc_.right - canvasRc_.left, ch = canvasRc_.bottom - canvasRc_.top;
-    return std::min(cw, ch) / zoom_;
+    return std::min(cw, ch) / view_.zoom();
 }
 
 void MainWindow::addShape(Kind kind) {
@@ -2234,7 +2243,6 @@ void MainWindow::rotateImage() {
     endInteraction(true);
     editor_.rotateCCW();
     if (readOnly()) doc_.markSaved(); // 唯讀：旋轉不算修改，標題不加 *
-    fit_ = true;
     fitToView();
     updateTitle();
     repaint();
@@ -2248,7 +2256,6 @@ void MainWindow::adjustSize() {
     ResizeResult r;
     if (!showResizeDialog(hwnd_, img->width, img->height, doc_.dpi().x, r)) return;
     editor_.resize(r.width, r.height, r.dpi, r.resample);
-    fit_ = true;
     fitToView();
     updateTitle();
     repaint();
@@ -2264,12 +2271,8 @@ void MainWindow::beginCrop() {
     hideTip();
     if (!editor_.beginCrop()) return;
     // 整張圖放進畫布；原本的檢視記下來，取消時還原。
-    cropSavedZoom_ = zoom_;
-    cropSavedOffset_ = offset_;
-    cropSavedFit_ = fit_;
-    cropFit_ = true;
-    fit_ = true;
-    fitToView();
+    view_.enterCrop(viewFrame());
+    buildButtons();
     repaint();
 }
 
@@ -2277,11 +2280,7 @@ void MainWindow::cancelCrop() {
     const bool wasDraggingBox = editor_.drag() == DragKind::Crop;
     if (!editor_.cancelCrop()) return;
     if (wasDraggingBox && GetCapture() == hwnd_) ReleaseCapture();
-    cropFit_ = false;
-    zoom_ = cropSavedZoom_;
-    offset_ = cropSavedOffset_;
-    fit_ = cropSavedFit_;
-    if (fit_) fitToView(false); else clampOffset();
+    view_.leaveCrop(viewFrame());
     buildButtons();
     repaint();
 }
@@ -2292,8 +2291,7 @@ void MainWindow::applyCrop() {
     const CropBox box = editor_.cropBox();
     if (box == CropBox{0, 0, doc_.image()->width, doc_.image()->height}) { cancelCrop(); return; }
     if (editor_.applyCrop() != Editor::CropResult::Applied) return;
-    cropFit_ = false;
-    fit_ = true;
+    view_.endCropFit();
     fitToView();
     updateTitle();
     repaint();
@@ -2320,7 +2318,7 @@ void MainWindow::drawCrop() {
     rt->DrawRectangle(D2D1::RectF(bl + 0.5f, bt + 0.5f, br - 0.5f, bb - 0.5f), renderer_.brush(theme::kCropFrame), 1.0f);
     // 四個角的 L 形把手畫在框內；深色底再疊白色，淺色、深色的圖上都看得到
     float len = std::min({px(kCropHandleLen), (br - bl) / 2, (bb - bt) / 2});
-    float w = px(4), inset = w / 2;
+    float w = px(kCropHandleW), inset = w / 2;
     auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
         auto corner = [&](float x, float y, float sx, float sy) { // (sx, sy)：往框內的方向
             float cx = x + sx * inset, cy = y + sy * inset;
@@ -2335,18 +2333,19 @@ void MainWindow::drawCrop() {
         corner(br, bb, -1, -1);
     });
     if (geo) {
-        rt->DrawGeometry(geo.Get(), renderer_.brush(theme::kCropHandleShadow), w + px(2));
+        rt->DrawGeometry(geo.Get(), renderer_.brush(theme::kCropHandleShadow), w + px(kCropHandleShadowW));
         rt->DrawGeometry(geo.Get(), renderer_.brush(theme::kWhite), w);
     }
     // 拖曳中：框中央顯示裁切後的像素尺寸
     if (editor_.drag() == DragKind::Crop) {
         std::wstring s = std::to_wstring(cropBox_.width()) + L" × " + std::to_wstring(cropBox_.height());
         float h = 0;
-        float tw = renderer_.measureUiText(s, px(12), true, 1e6f, &h);
+        const float padX = px(kCropSizePadX), padY = px(kCropSizePadY);
+        float tw = renderer_.measureUiText(s, px(kCropSizeText), true, 1e6f, &h);
         float cx = (bl + br) / 2, cy = (bt + bb) / 2;
-        D2D1_RECT_F pill = D2D1::RectF(cx - tw / 2 - px(8), cy - h / 2 - px(4), cx + tw / 2 + px(8), cy + h / 2 + px(4));
-        rt->FillRoundedRectangle(D2D1::RoundedRect(pill, px(4), px(4)), renderer_.brush(theme::kCropSizeBg));
-        renderer_.drawUiText(s, pill, px(12), theme::kWhite, DWRITE_TEXT_ALIGNMENT_CENTER, true);
+        D2D1_RECT_F pill = D2D1::RectF(cx - tw / 2 - padX, cy - h / 2 - padY, cx + tw / 2 + padX, cy + h / 2 + padY);
+        rt->FillRoundedRectangle(D2D1::RoundedRect(pill, px(kCropSizeRadius), px(kCropSizeRadius)), renderer_.brush(theme::kCropSizeBg));
+        renderer_.drawUiText(s, pill, px(kCropSizeText), theme::kWhite, DWRITE_TEXT_ALIGNMENT_CENTER, true);
     }
 }
 
@@ -2377,7 +2376,7 @@ void MainWindow::updateEditFont() {
     if (!shape) return;
     const TextStyle& ts = shape->style;
     if (editFont_) DeleteObject(editFont_);
-    int h = -static_cast<int>(std::lround(ts.size * zoom_));
+    int h = -static_cast<int>(std::lround(ts.size * view_.zoom()));
     editFont_ = CreateFontW(h, 0, 0, 0, ts.bold ? FW_BOLD : FW_NORMAL, ts.italic, ts.underline, FALSE,
                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
                             ts.font.c_str());
@@ -2463,7 +2462,7 @@ void MainWindow::offerPendingUpdate() {
     if (!updates_.hasPending()) return;
     // 使用者正在做事（對話框、選單、拖曳，加上彈出選單、調色面板、文字編輯）就晚點再問。
     if (!canInterrupt() || popups_.isOpen() || adjustPanel_.isOpen() || edit_) {
-        SetTimer(hwnd_, kUpdateTimer, 3000, nullptr);
+        SetTimer(hwnd_, kUpdateTimer, kUpdateRetryMs, nullptr);
         return;
     }
     updates_.offerPending();

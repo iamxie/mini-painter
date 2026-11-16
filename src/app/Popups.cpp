@@ -20,6 +20,12 @@ namespace {
 
 constexpr wchar_t kPopupClass[] = L"MiniPainterPopup";
 
+// 以下的尺寸都是邏輯像素，用的時候過 px()。
+constexpr float kPad = 10;        // 選單內容到視窗邊緣
+constexpr float kCellRadius = 4;  // 游標底下那一格的底色、選到的框、按鈕的圓角
+constexpr float kSelFrameW = 2;   // 選到的那一格的框線
+constexpr int kAnchorGap = 2;     // 選單和它的按鈕之間（實際像素）
+
 // 一個可點的格子。
 struct Cell {
     D2D1_RECT_F rect;
@@ -85,10 +91,10 @@ struct PopupBase {
     }
     void drawHover(int i) {
         if (i < 0) return;
-        rt->FillRoundedRectangle(D2D1::RoundedRect(cells[i].rect, px(4), px(4)), br(theme::kPopupHover));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(cells[i].rect, px(kCellRadius), px(kCellRadius)), br(theme::kPopupHover));
     }
     void drawSelectedFrame(const D2D1_RECT_F& r) {
-        rt->DrawRoundedRectangle(D2D1::RoundedRect(r, px(4), px(4)), br(theme::kAccent), px(2));
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(r, px(kCellRadius), px(kCellRadius)), br(theme::kAccent), px(kSelFrameW));
     }
     // 從選單開選色對話框。開著時把選單藏起來：選單是最上層視窗會蓋住對話框；而且選單還能點，再按一次會疊出第二個對話框。
     bool pickColor(Color& inout) {
@@ -184,23 +190,34 @@ void registerPopupClass(HINSTANCE inst) {
 struct LineStylePopup : PopupBase {
     StrokeStyle cur;
     std::function<void(const StrokeStyle&)> onChange;
+    static constexpr float kRowW = 200, kRowH = 26;        // 粗細：一級一列
+    static constexpr float kGroupGap = 10;                 // 粗細、線型、箭頭三組之間
+    static constexpr float kOptH = 30;                     // 線型與箭頭那兩列的高
+    static constexpr float kLineW = 62, kLinePitch = 66;   // 線型：一格的寬、格的間距（含格寬）
+    static constexpr float kArrowW = 46, kArrowPitch = 50; // 箭頭：同上
+    static constexpr int kLineStyles = 3, kArrowModes = 4;
+    static constexpr float kBottomPad = 20;
+    // 畫樣本：粗細那一列的線左右各縮多少、樣本比實際線寬細多少；線型與箭頭的線左右各縮多少、線寬；箭頭兩撇的長與半寬
+    static constexpr float kRowInset = 14, kRowStrokeScale = 0.6f;
+    static constexpr float kOptInset = 8, kLineSampleW = 3, kArrowSampleW = 2;
+    static constexpr float kHeadLen = 7, kHeadHalf = 5;
     D2D1_SIZE_F layout() override {
         cells.clear();
-        float x0 = px(10), y = px(10);
+        float x0 = px(kPad), y = px(kPad);
         // 粗細：一級一列
         for (int i = 0; i < kStrokeLevels; ++i) {
-            cells.push_back({D2D1::RectF(x0, y, x0 + px(200), y + px(26)), 0, i});
-            y += px(26);
+            cells.push_back({D2D1::RectF(x0, y, x0 + px(kRowW), y + px(kRowH)), 0, i});
+            y += px(kRowH);
         }
-        y += px(10);
-        for (int i = 0; i < 3; ++i) { // 線型
-            cells.push_back({D2D1::RectF(x0 + i * px(66), y, x0 + i * px(66) + px(62), y + px(30)), 1, i});
+        y += px(kGroupGap);
+        for (int i = 0; i < kLineStyles; ++i) { // 線型
+            cells.push_back({D2D1::RectF(x0 + i * px(kLinePitch), y, x0 + i * px(kLinePitch) + px(kLineW), y + px(kOptH)), 1, i});
         }
-        y += px(40);
-        for (int i = 0; i < 4; ++i) { // 箭頭
-            cells.push_back({D2D1::RectF(x0 + i * px(50), y, x0 + i * px(50) + px(46), y + px(30)), 2, i});
+        y += px(kOptH + kGroupGap);
+        for (int i = 0; i < kArrowModes; ++i) { // 箭頭
+            cells.push_back({D2D1::RectF(x0 + i * px(kArrowPitch), y, x0 + i * px(kArrowPitch) + px(kArrowW), y + px(kOptH)), 2, i});
         }
-        return D2D1::SizeF(px(220), y + px(30) + px(20));
+        return D2D1::SizeF(px(2 * kPad + kRowW), y + px(kOptH) + px(kBottomPad));
     }
     void draw() override {
         drawHover(hover);
@@ -209,28 +226,28 @@ struct LineStylePopup : PopupBase {
             float cy = (c.rect.top + c.rect.bottom) / 2;
             if (c.group == 0) {
                 if (strokeLevelForWidth(cur.width) == c.value) drawSelectedFrame(c.rect);
-                float w = px(strokeWidthForLevel(c.value)) * 0.6f;
-                rt->DrawLine(D2D1::Point2F(c.rect.left + px(14), cy), D2D1::Point2F(c.rect.right - px(14), cy), br(ink), std::max(1.0f, w),
+                float w = px(strokeWidthForLevel(c.value)) * kRowStrokeScale;
+                rt->DrawLine(D2D1::Point2F(c.rect.left + px(kRowInset), cy), D2D1::Point2F(c.rect.right - px(kRowInset), cy), br(ink), std::max(1.0f, w),
                              device->roundStyle());
             } else if (c.group == 1) {
                 if (static_cast<int>(cur.line) == c.value) drawSelectedFrame(c.rect);
-                auto a = D2D1::Point2F(c.rect.left + px(8), cy), b = D2D1::Point2F(c.rect.right - px(8), cy);
-                if (c.value == 0) rt->DrawLine(a, b, br(ink), px(3), device->roundStyle());
-                else if (c.value == 1) rt->DrawLine(a, b, br(ink), px(3), device->dashStyle());
+                auto a = D2D1::Point2F(c.rect.left + px(kOptInset), cy), b = D2D1::Point2F(c.rect.right - px(kOptInset), cy);
+                if (c.value == 0) rt->DrawLine(a, b, br(ink), px(kLineSampleW), device->roundStyle());
+                else if (c.value == 1) rt->DrawLine(a, b, br(ink), px(kLineSampleW), device->dashStyle());
                 else {
                     for (const FuzzyLayer& layer : kFuzzyLayers) { // 和實際畫出來的同一組參數
                         D2D1_COLOR_F f = ink;
                         f.a = ink.a * layer.alpha;
-                        rt->DrawLine(a, b, br(f), px(3) * layer.widthScale, device->roundStyle());
+                        rt->DrawLine(a, b, br(f), px(kLineSampleW) * layer.widthScale, device->roundStyle());
                     }
                 }
             } else {
                 if (static_cast<int>(cur.arrows) == c.value) drawSelectedFrame(c.rect);
-                auto a = D2D1::Point2F(c.rect.left + px(8), cy), b = D2D1::Point2F(c.rect.right - px(8), cy);
-                rt->DrawLine(a, b, br(ink), px(2), device->roundStyle());
+                auto a = D2D1::Point2F(c.rect.left + px(kOptInset), cy), b = D2D1::Point2F(c.rect.right - px(kOptInset), cy);
+                rt->DrawLine(a, b, br(ink), px(kArrowSampleW), device->roundStyle());
                 auto head = [&](D2D1_POINT_2F tip, float dir) {
-                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(7), tip.y - px(5)), br(ink), px(2), device->roundStyle());
-                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(7), tip.y + px(5)), br(ink), px(2), device->roundStyle());
+                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(kHeadLen), tip.y - px(kHeadHalf)), br(ink), px(kArrowSampleW), device->roundStyle());
+                    rt->DrawLine(tip, D2D1::Point2F(tip.x - dir * px(kHeadLen), tip.y + px(kHeadHalf)), br(ink), px(kArrowSampleW), device->roundStyle());
                 };
                 if (c.value == 1 || c.value == 3) head(a, -1);
                 if (c.value == 2 || c.value == 3) head(b, 1);
@@ -261,11 +278,18 @@ struct ColorPopup : PopupBase {
     std::function<void(Color)> onChange;
     std::vector<Color> colors; // 對應 cells，group 0；group 1 是「顯示顏色…」
     static constexpr int kCols = 12, kRows = 8;
+    static constexpr float kSwatch = 22, kSwatchGap = 4; // 色塊的邊長、色塊之間
+    static constexpr float kQuickGap = 12;               // 快速色塊那一列和下面的色表之間
+    static constexpr float kMoreGap = 8, kMoreH = 28;    // 「顯示顏色…」按鈕：和色表之間、高
+    static constexpr float kBottomPad = 12;
+    static constexpr float kMoreText = 13;               // 按鈕的字級
+    static constexpr float kSlashW = 1.5f;               // 「無色」那一格的紅斜線
+    static constexpr float kSwatchInset = 2;             // 斜線離格子邊緣、選到的框比色塊大多少（實際像素）
 
     D2D1_SIZE_F layout() override {
         cells.clear();
         colors.clear();
-        float cell = px(22), gap = px(4), x0 = px(10), y = px(10);
+        float cell = px(kSwatch), gap = px(kSwatchGap), x0 = px(kPad), y = px(kPad);
         // 快速色塊
         const Color quick[kCols] = {Color::rgb(255, 59, 48), Color::rgb(255, 149, 0), Color::rgb(255, 214, 10), Color::rgb(52, 199, 89),
                                     Color::rgb(0, 199, 190), Color::rgb(0, 122, 255), Color::rgb(255, 45, 85), Color::rgb(175, 82, 222),
@@ -274,7 +298,7 @@ struct ColorPopup : PopupBase {
             cells.push_back({D2D1::RectF(x0 + i * (cell + gap), y, x0 + i * (cell + gap) + cell, y + cell), 0, static_cast<int>(colors.size())});
             colors.push_back(quick[i]);
         }
-        y += cell + px(12);
+        y += cell + px(kQuickGap);
         // 第一列：無色 + 灰階
         for (int i = 0; i < kCols; ++i) {
             cells.push_back({D2D1::RectF(x0 + i * (cell + gap), y, x0 + i * (cell + gap) + cell, y + cell), 0, static_cast<int>(colors.size())});
@@ -293,29 +317,30 @@ struct ColorPopup : PopupBase {
             }
             y += cell + gap;
         }
-        y += px(8);
-        cells.push_back({D2D1::RectF(x0, y, x0 + kCols * (cell + gap) - gap, y + px(28)), 1, 0});
-        return D2D1::SizeF(x0 + kCols * (cell + gap) + px(10), y + px(28) + px(12));
+        y += px(kMoreGap);
+        cells.push_back({D2D1::RectF(x0, y, x0 + kCols * (cell + gap) - gap, y + px(kMoreH)), 1, 0});
+        return D2D1::SizeF(x0 + kCols * (cell + gap) + px(kPad), y + px(kMoreH) + px(kBottomPad));
     }
     void draw() override {
         drawHover(hover);
         for (size_t i = 0; i < cells.size(); ++i) {
             const auto& c = cells[i];
             if (c.group == 1) {
-                rt->DrawRoundedRectangle(D2D1::RoundedRect(c.rect, px(4), px(4)), br(theme::kPopupBtnLine), 1);
-                surface.drawUiText(tr(L"Show Colors…"), c.rect, px(13), theme::kPopupInk, DWRITE_TEXT_ALIGNMENT_CENTER);
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(c.rect, px(kCellRadius), px(kCellRadius)), br(theme::kPopupBtnLine), 1);
+                surface.drawUiText(tr(L"Show Colors…"), c.rect, px(kMoreText), theme::kPopupInk, DWRITE_TEXT_ALIGNMENT_CENTER);
                 continue;
             }
             Color col = colors[c.value];
             D2D1_RECT_F r = c.rect;
             if (col.none()) {
                 rt->DrawRectangle(r, br(theme::kSwatchNoneLine), 1);
-                rt->DrawLine(D2D1::Point2F(r.left + 2, r.bottom - 2), D2D1::Point2F(r.right - 2, r.top + 2), br(theme::kNoColorSlash), px(1.5f));
+                rt->DrawLine(D2D1::Point2F(r.left + kSwatchInset, r.bottom - kSwatchInset), D2D1::Point2F(r.right - kSwatchInset, r.top + kSwatchInset),
+                             br(theme::kNoColorSlash), px(kSlashW));
             } else {
                 rt->FillRectangle(r, br(col));
                 rt->DrawRectangle(r, br(theme::kSwatchLine), 1);
             }
-            if (col == cur) drawSelectedFrame(D2D1::RectF(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2));
+            if (col == cur) drawSelectedFrame(D2D1::RectF(r.left - kSwatchInset, r.top - kSwatchInset, r.right + kSwatchInset, r.bottom + kSwatchInset));
         }
     }
     void click(const Cell& c) override {
@@ -338,9 +363,11 @@ struct ShapesPopup : PopupBase {
     static constexpr Kind kKinds[] = {Kind::Line, Kind::Rect,    Kind::RoundRect, Kind::Ellipse, Kind::Bubble,
                                       Kind::Star, Kind::Polygon, Kind::Magnifier, Kind::Mosaic};
     static constexpr int kCount = static_cast<int>(std::size(kKinds)), kPerRow = 5;
+    static constexpr float kCell = 44, kCellGap = 6; // 一格的邊長、格與格之間
+    static constexpr float kIconInset = 8;           // 圖示離格子邊緣
     D2D1_SIZE_F layout() override {
         cells.clear();
-        float cell = px(44), gap = px(6), x0 = px(10), y0 = px(10);
+        float cell = px(kCell), gap = px(kCellGap), x0 = px(kPad), y0 = px(kPad);
         for (int i = 0; i < kCount; ++i) {
             int col = i % kPerRow, row = i / kPerRow;
             float x = x0 + col * (cell + gap), y = y0 + row * (cell + gap);
@@ -352,7 +379,8 @@ struct ShapesPopup : PopupBase {
     void draw() override {
         drawHover(hover);
         for (const auto& c : cells) {
-            D2D1_RECT_F box = D2D1::RectF(c.rect.left + px(8), c.rect.top + px(8), c.rect.right - px(8), c.rect.bottom - px(8));
+            const float inset = px(kIconInset);
+            D2D1_RECT_F box = D2D1::RectF(c.rect.left + inset, c.rect.top + inset, c.rect.right - inset, c.rect.bottom - inset);
             drawKindIcon(surface, kKinds[c.value], box, theme::kPopupInk);
         }
     }
@@ -376,6 +404,18 @@ struct FormatPopup : PopupBase {
     float labelW = 36, alignW = 46;
     enum { ID_FONT = 10, ID_SIZE, ID_SPIN, ID_COLOR, ID_B, ID_I, ID_U, ID_AL, ID_AC, ID_AR, ID_AJ };
     static constexpr float kControlFontSize = 13;
+    // 版面（邏輯像素）：四列（字型、大小與顏色、樣式、對齊）的 y；標籤欄在 kPad，控制項欄在它右邊隔 kLabelGap。
+    static constexpr float kRowFont = 10, kRowSize = 40, kRowStyle = 72, kRowAlign = 104;
+    static constexpr float kLabelGap = 4, kLabelDy = 2, kLabelH = 18; // 標籤比同一列的控制項低一點、矮一點
+    static constexpr float kFontW = 200, kFontDropH = 300;            // 字型下拉：寬、拉開的高
+    static constexpr float kEditH = 22;                               // 大小欄與「文字顏色」按鈕的高
+    static constexpr float kSizeW = 60, kSpinW = 16;                  // 大小欄與它的上下鈕
+    static constexpr float kColorX = 90, kColorW = 110;               // 「文字顏色」按鈕：離控制項欄左緣、寬
+    static constexpr float kToggleW = 30, kTogglePitch = 34, kToggleH = 24; // B / I / U 與對齊按鈕
+    static constexpr float kAlignGap = 4;                             // 對齊按鈕之間
+    static constexpr float kLabelPad = 4, kAlignTextPad = 14;         // 量出來的文字寬之外：標籤多留多少、對齊按鈕多留多少
+    static constexpr float kMinW = 262, kHeight = 140, kRightPad = 6, kFontRightPad = 12;
+    static constexpr int kMinFontSize = 4, kMaxFontSize = 400;        // 大小欄接受的範圍
 
     static int CALLBACK enumFonts(const LOGFONTW* lf, const TEXTMETRICW*, DWORD, LPARAM lp) {
         auto* self = reinterpret_cast<FormatPopup*>(lp);
@@ -394,26 +434,26 @@ struct FormatPopup : PopupBase {
             SendMessageW(c, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
             return c;
         };
-        const float cx = 14 + labelW; // 控制項欄的左緣
-        mk(L"STATIC", tr(L"Font"), 0, 0, 10, 12, labelW, 18);
-        fontCombo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_SORT | WS_VSCROLL | WS_TABSTOP, ID_FONT, cx, 10, 200, 300);
+        const float cx = kPad + kLabelGap + labelW; // 控制項欄的左緣
+        mk(L"STATIC", tr(L"Font"), 0, 0, kPad, kRowFont + kLabelDy, labelW, kLabelH);
+        fontCombo = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_SORT | WS_VSCROLL | WS_TABSTOP, ID_FONT, cx, kRowFont, kFontW, kFontDropH);
         HDC dc = GetDC(hwnd);
         LOGFONTW lf{};
         lf.lfCharSet = DEFAULT_CHARSET;
         EnumFontFamiliesExW(dc, &lf, enumFonts, reinterpret_cast<LPARAM>(this), 0);
         ReleaseDC(hwnd, dc);
-        mk(L"STATIC", tr(L"Size"), 0, 0, 10, 42, labelW, 18);
-        sizeEdit = mk(L"EDIT", L"", WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL, ID_SIZE, cx, 40, 60, 22);
-        sizeSpin = mk(UPDOWN_CLASSW, L"", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS, ID_SPIN, cx + 60, 40, 16, 22);
+        mk(L"STATIC", tr(L"Size"), 0, 0, kPad, kRowSize + kLabelDy, labelW, kLabelH);
+        sizeEdit = mk(L"EDIT", L"", WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL, ID_SIZE, cx, kRowSize, kSizeW, kEditH);
+        sizeSpin = mk(UPDOWN_CLASSW, L"", UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS, ID_SPIN, cx + kSizeW, kRowSize, kSpinW, kEditH);
         SendMessageW(sizeSpin, UDM_SETBUDDY, reinterpret_cast<WPARAM>(sizeEdit), 0);
-        SendMessageW(sizeSpin, UDM_SETRANGE32, 4, 400);
-        colorBtn = mk(L"BUTTON", tr(L"Text Color…"), BS_PUSHBUTTON, ID_COLOR, cx + 90, 40, 110, 22);
-        bold = mk(L"BUTTON", L"B", BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_B, cx, 72, 30, 24);
-        italic = mk(L"BUTTON", L"I", BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_I, cx + 34, 72, 30, 24);
-        underline = mk(L"BUTTON", L"U", BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_U, cx + 68, 72, 30, 24);
+        SendMessageW(sizeSpin, UDM_SETRANGE32, kMinFontSize, kMaxFontSize);
+        colorBtn = mk(L"BUTTON", tr(L"Text Color…"), BS_PUSHBUTTON, ID_COLOR, cx + kColorX, kRowSize, kColorW, kEditH);
+        bold = mk(L"BUTTON", L"B", BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_B, cx, kRowStyle, kToggleW, kToggleH);
+        italic = mk(L"BUTTON", L"I", BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_I, cx + kTogglePitch, kRowStyle, kToggleW, kToggleH);
+        underline = mk(L"BUTTON", L"U", BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_U, cx + 2 * kTogglePitch, kRowStyle, kToggleW, kToggleH);
         const wchar_t* alName[4] = {tr(L"Left"), tr(L"Center"), tr(L"Right"), tr(L"Justify")};
         for (int i = 0; i < 4; ++i)
-            align[i] = mk(L"BUTTON", alName[i], BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_AL + i, cx + i * (alignW + 4), 104, alignW, 24);
+            align[i] = mk(L"BUTTON", alName[i], BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_AL + i, cx + i * (alignW + kAlignGap), kRowAlign, alignW, kToggleH);
         syncControls();
     }
     // 選單裡系統控制項用的字（介面字型，kControlFontSize）。用完要 DeleteObject。
@@ -435,10 +475,12 @@ struct FormatPopup : PopupBase {
     }
     // 依目前語言算欄寬（控制項在 onCreated 照這兩個寬度擺）。
     D2D1_SIZE_F layout() override {
-        for (auto* s : {L"Font", L"Size", L"Style", L"Alignment"}) labelW = std::max(labelW, textWidth(tr(s), px) + 4);
-        for (auto* s : {L"Left", L"Center", L"Right", L"Justify"}) alignW = std::max(alignW, textWidth(tr(s), px) + 14);
-        const float cx = 14 + labelW;
-        return D2D1::SizeF(px(std::max({262.0f, cx + 4 * (alignW + 4) + 6, cx + 200 + 12})), px(140));
+        for (auto* s : {trKey(L"Font"), trKey(L"Size"), trKey(L"Style"), trKey(L"Alignment")})
+            labelW = std::max(labelW, textWidth(tr(s), px) + kLabelPad);
+        for (auto* s : {trKey(L"Left"), trKey(L"Center"), trKey(L"Right"), trKey(L"Justify")})
+            alignW = std::max(alignW, textWidth(tr(s), px) + kAlignTextPad);
+        const float cx = kPad + kLabelGap + labelW;
+        return D2D1::SizeF(px(std::max({kMinW, cx + 4 * (alignW + kAlignGap) + kRightPad, cx + kFontW + kFontRightPad})), px(kHeight));
     }
     void syncControls() {
         updating = true;
@@ -469,7 +511,7 @@ struct FormatPopup : PopupBase {
                 wchar_t buf[16];
                 GetWindowTextW(sizeEdit, buf, 16);
                 int v = _wtoi(buf);
-                if (v >= 4 && v <= 400) { cur.size = static_cast<float>(v); onChange(cur); }
+                if (v >= kMinFontSize && v <= kMaxFontSize) { cur.size = static_cast<float>(v); onChange(cur); }
             }
             return true;
         case ID_COLOR: {
@@ -491,8 +533,10 @@ struct FormatPopup : PopupBase {
         }
     }
     void draw() override {
-        surface.drawUiText(tr(L"Style"), D2D1::RectF(px(10), px(72), px(10 + labelW), px(96)), px(kControlFontSize), theme::kPopupInk);
-        surface.drawUiText(tr(L"Alignment"), D2D1::RectF(px(10), px(104), px(10 + labelW), px(128)), px(kControlFontSize), theme::kPopupInk);
+        surface.drawUiText(tr(L"Style"), D2D1::RectF(px(kPad), px(kRowStyle), px(kPad + labelW), px(kRowStyle + kToggleH)), px(kControlFontSize),
+                           theme::kPopupInk);
+        surface.drawUiText(tr(L"Alignment"), D2D1::RectF(px(kPad), px(kRowAlign), px(kPad + labelW), px(kRowAlign + kToggleH)), px(kControlFontSize),
+                           theme::kPopupInk);
     }
     void click(const Cell&) override {}
     ~FormatPopup() override { if (font) DeleteObject(font); }
@@ -519,12 +563,12 @@ void PopupMenus::show(std::unique_ptr<PopupBase> popup, HWND owner, RenderDevice
     popup->closedAt = &lastClose_;
     const D2D1_SIZE_F size = popup->layout();
     const int w = static_cast<int>(size.width), h = static_cast<int>(size.height);
-    int x = anchor.left, y = anchor.bottom + 2;
+    int x = anchor.left, y = anchor.bottom + kAnchorGap;
     HMONITOR mon = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(mon, &mi);
     if (x + w > mi.rcWork.right) x = mi.rcWork.right - w;
-    if (y + h > mi.rcWork.bottom) y = anchor.top - h - 2;
+    if (y + h > mi.rcWork.bottom) y = anchor.top - h - kAnchorGap;
     current_ = std::move(popup);
     HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kPopupClass, L"", WS_POPUP | WS_BORDER, x, y, w, h, owner,
                                 nullptr, inst, current_.get());

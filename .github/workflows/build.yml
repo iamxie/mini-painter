@@ -14,7 +14,6 @@ permissions:
   contents: read   # 只有下面的 release job 要寫權限
 
 env:
-  VCPKG_COMMIT: a4f7741c53c97354fc43222fea17955c657dd549   # 與 vcpkg.json 的 builtin-baseline 相同
   VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
 
 jobs:
@@ -25,6 +24,14 @@ jobs:
       version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
+
+      # vcpkg 用哪個 commit 只寫在 vcpkg.json 的 builtin-baseline：這裡讀出來，下面的 checkout 與快取的 key 都用它。
+      - name: Read the pinned vcpkg commit
+        shell: pwsh
+        run: |
+          $commit = (Get-Content vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
+          if ($commit -notmatch '^[0-9a-f]{40}$') { throw "vcpkg.json builtin-baseline is not a commit hash: $commit" }
+          "VCPKG_COMMIT=$commit" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Checkout vcpkg (pinned)
         uses: actions/checkout@v4
@@ -109,8 +116,14 @@ jobs:
           $ver = "${{ steps.ver.outputs.version }}"
           $dir = "dist\mini-painter-$ver-win64"
           New-Item -ItemType Directory -Force "$dir\lang" | Out-Null
-          Copy-Item build\mpainter.exe, 7zip\7z.dll, readme.txt, readme_en.txt, LICENSE, NOTICE, THIRD-PARTY-NOTICES.txt $dir
-          Copy-Item src\lang\zh-TW.txt, src\lang\ja-JP.txt "$dir\lang"
+          Copy-Item build\mpainter.exe, 7zip\7z.dll $dir
+          # 根目錄的檔案照 scripts/package-files.txt（scripts/package.sh 讀同一份）；語系檔是 src/lang 的每個 .txt（_ 開頭的是範本，不放）。
+          $files = @(Get-Content scripts\package-files.txt | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+          if ($files.Count -eq 0) { throw "scripts/package-files.txt lists no files" }
+          Copy-Item $files $dir
+          $langs = @(Get-ChildItem src\lang\*.txt | Where-Object { -not $_.Name.StartsWith('_') })
+          if ($langs.Count -eq 0) { throw "no language files in src/lang" }
+          Copy-Item $langs.FullName "$dir\lang"
           Compress-Archive -Path "$dir\*" -DestinationPath "dist\mini-painter-$ver-win64.zip"
           # 自動更新下載後核對用（sha256sum 格式，UTF-8 無 BOM）
           $h = (Get-FileHash "dist\mini-painter-$ver-win64.zip" -Algorithm SHA256).Hash.ToLower()

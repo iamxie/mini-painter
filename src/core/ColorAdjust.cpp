@@ -67,6 +67,10 @@ void boxBlur(const std::vector<uint8_t>& src, std::vector<uint8_t>& dst, int w, 
 
 } // namespace
 
+// 絆線：加了參數這裡會編譯不過，提醒把它補進下面的比較。漏了的話，只調那個參數會被當成沒調整、不套用。
+// （test_color_adjust.cpp 另有一個測試逐欄位改一次。）
+static_assert(sizeof(ColorAdjustParams) == 15 * sizeof(float), "ColorAdjustParams changed: update isIdentity()");
+
 bool ColorAdjustParams::isIdentity() const {
     const ColorAdjustParams d;
     return blackPoint == d.blackPoint && midtone == d.midtone && whitePoint == d.whitePoint &&

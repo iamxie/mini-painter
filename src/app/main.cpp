@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "app/DialogUtil.h"
 #include "app/MainWindow.h"
 #include "core/Lang.h"
 #include "core/Launch.h"
@@ -36,7 +37,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     mp::MainWindow win;
     win.setJustUpdated(launch.afterUpdate);
     if (!win.create(hInstance, launch.path, nCmdShow)) {
-        MessageBoxW(nullptr, mp::tr(L"Could not create the window."), L"mpainter", MB_ICONERROR);
+        mp::showMessage(nullptr, mp::tr(L"Could not create the window."), TD_ERROR_ICON);
         return 1;
     }
 

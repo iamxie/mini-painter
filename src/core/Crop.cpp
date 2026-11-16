@@ -45,7 +45,7 @@ CropBox dragCropBox(const CropBox& start, CropPart part, float dx, float dy, int
 std::vector<Annotation> cropAnnotations(const std::vector<Annotation>& items, const CropBox& box) {
     std::vector<Annotation> out;
     for (const auto& a : items) {
-        Rc bb = bounds(a).inflate(std::max(1.0f, a.stroke.width()));
+        Rc bb = bounds(a).inflate(std::max(1.0f, paintedStrokeWidth(a)));
         bool overlaps = bb.right > box.left && bb.left < box.right && bb.bottom > box.top && bb.top < box.bottom;
         if (!overlaps) continue;
         Annotation moved = a;

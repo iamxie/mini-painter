@@ -28,13 +28,33 @@ namespace mp {
 
 namespace {
 
-// COM 初始化，離開範圍時還原。
-struct ComInit {
-    HRESULT hr;
-    ComInit() : hr(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
-    ~ComInit() {
-        if (SUCCEEDED(hr)) CoUninitialize();
+// 這條執行緒的 COM 與 WIC factory：第一次用到時初始化，之後同一條執行緒的讀圖、存圖都重用，執行緒結束時放掉。
+// 以前每次呼叫都初始化、收掉一輪。在沒有別人初始化過 COM 的執行緒（預先解碼、換本預備的背景執行緒）上，
+// 一輪約 10 毫秒：一本 300 頁逐頁讀寬高要 3 秒，重用之後 0.1 秒（VM 量測，tests/test_time.cpp）。
+class WicContext {
+public:
+    static WicContext& forThisThread() {
+        thread_local WicContext context;
+        return context;
     }
+    // 建不出來回 nullptr（之後每次呼叫會再試）。
+    IWICImagingFactory* factory() {
+        if (!factory_) CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory_));
+        return factory_.Get();
+    }
+
+private:
+    // 這條執行緒已經用別的模式初始化過時會失敗：那就用它現有的，結束時也不必還原。
+    WicContext() : init_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+    ~WicContext() {
+        factory_.Reset(); // 一定要在 CoUninitialize 之前放掉：寫在這裡，不靠成員的宣告順序
+        if (SUCCEEDED(init_)) CoUninitialize();
+    }
+    WicContext(const WicContext&) = delete;
+    WicContext& operator=(const WicContext&) = delete;
+
+    HRESULT init_;
+    ComPtr<IWICImagingFactory> factory_;
 };
 
 // PROPVARIANT 的初始化與釋放。
@@ -146,11 +166,8 @@ private:
     LONG refs_ = 1;
 };
 
-ComPtr<IWICImagingFactory> makeFactory() {
-    ComPtr<IWICImagingFactory> f;
-    CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f));
-    return f;
-}
+// 這條執行緒的 WIC factory（必要時先初始化 COM）。
+ComPtr<IWICImagingFactory> makeFactory() { return WicContext::forThisThread().factory(); }
 
 bool isGuid(const GUID& a, const GUID& b) { return IsEqualGUID(a, b) != FALSE; }
 
@@ -881,113 +898,119 @@ constexpr unsigned kTiffStructureTags[] = {
     34675, // ICC profile
 };
 
+// ---- applyMetadata 的幾個步驟 ----
+
+// EXIF 裡和像素綁在一起的欄位。
+constexpr unsigned kTagOrientation = 274, kTagPixelXDimension = 40962, kTagPixelYDimension = 40963;
+
+// 同一種容器：整塊照抄（IPTC、Photoshop 這類區塊只有這條路帶得過去）。
+bool copyAllBlocks(IWICBitmapFrameEncode* frame, const SourceMeta& m) {
+    ComPtr<IWICMetadataBlockWriter> bw;
+    ComPtr<IWICMetadataBlockReader> br;
+    return SUCCEEDED(frame->QueryInterface(IID_PPV_ARGS(&bw))) && SUCCEEDED(m.frame->QueryInterface(IID_PPV_ARGS(&br))) &&
+           SUCCEEDED(bw->InitializeFromBlockReader(br.Get()));
+}
+
+// 跨容器搬 EXIF 到 qw 的 ifdPath。WIC 來源從 query reader 的 IFD 子區塊轉成 writer；
+// WebP 來源從 EXIF 位元組建 reader，逐項複製到新的 IFD writer。回傳 false：來源有 EXIF，但沒寫進去。
+bool carryExif(IWICImagingFactory* factory, IWICMetadataQueryWriter* qw, IWICMetadataQueryReader* srcQ, const SourceMeta& m,
+               const wchar_t* ifdPath) {
+    ComPtr<IWICMetadataQueryWriter> ifdW;
+    bool had = false;
+    if (!m.webp()) {
+        ifdW = subtreeWriter(factory, srcQ, L"/app1/ifd");
+        if (!ifdW) ifdW = subtreeWriter(factory, srcQ, L"/ifd");
+    } else if (!m.chunks.exif.empty()) {
+        had = true;
+        ComPtr<IWICComponentFactory> cf;
+        factory->QueryInterface(IID_PPV_ARGS(&cf));
+        if (auto app1 = cf ? app1ReaderFromExif(factory, m.chunks.exif) : nullptr) {
+            PropVar schema, id, value;
+            ComPtr<IWICMetadataReader> ifdR;
+            if (SUCCEEDED(app1->GetValueByIndex(0, &schema.v, &id.v, &value.v)) && value.v.vt == VT_UNKNOWN && value.v.punkVal)
+                value.v.punkVal->QueryInterface(IID_PPV_ARGS(&ifdR));
+            if (ifdR && SUCCEEDED(cf->CreateQueryWriter(GUID_MetadataFormatIfd, nullptr, &ifdW))) copyIfdTree(cf.Get(), ifdR.Get(), ifdW.Get());
+        }
+    }
+    if (!ifdW) return !had;
+    for (unsigned tag : kTiffStructureTags) ifdW->RemoveMetadataByName((L"/{ushort=" + std::to_wstring(tag) + L"}").c_str());
+    return setSubtree(qw, ifdPath, ifdW.Get());
+}
+
+// 跨容器搬 XMP 到 qw 的 xmpPath。WebP 來源：XMP chunk 包在一張記憶體裡的 JPEG，從它的 /xmp 拿。
+// 回傳 false：來源有 XMP，但沒寫進去。
+bool carryXmp(IWICImagingFactory* factory, IWICMetadataQueryWriter* qw, IWICMetadataQueryReader* srcQ, const SourceMeta& m,
+              const wchar_t* xmpPath) {
+    ComPtr<IWICMetadataQueryWriter> xmpW;
+    bool had = false;
+    if (!m.webp()) {
+        xmpW = subtreeWriter(factory, srcQ, L"/xmp");
+        if (!xmpW) xmpW = subtreeWriter(factory, srcQ, L"/ifd/xmp");
+    } else if (!m.chunks.xmp.empty()) {
+        had = true;
+        ComPtr<IWICMetadataQueryReader> carrierQ;
+        if (m.xmpCarrier.frame && SUCCEEDED(m.xmpCarrier.frame->GetMetadataQueryReader(&carrierQ)))
+            xmpW = subtreeWriter(factory, carrierQ.Get(), L"/xmp");
+    }
+    if (!xmpW) return !had;
+    return setSubtree(qw, xmpPath, xmpW.Get());
+}
+
+bool setIccProfile(IWICImagingFactory* factory, IWICBitmapFrameEncode* frame, const std::vector<uint8_t>& icc) {
+    ComPtr<IWICColorContext> cc;
+    if (FAILED(factory->CreateColorContext(&cc)) || FAILED(cc->InitializeFromMemory(icc.data(), static_cast<UINT>(icc.size())))) return false;
+    IWICColorContext* raw = cc.Get();
+    return SUCCEEDED(frame->SetColorContexts(1, &raw));
+}
+
+// 與像素不符的欄位（ifd 是目標容器裡 IFD0 的路徑）：orientation 一律 1，尺寸變了改 Exif 的 PixelX/YDimension，
+// 舊的內嵌縮圖丟掉（存檔時由 frame->SetThumbnail 重新產生）。原本沒有的欄位不新增。
+void fixPixelFields(IWICMetadataQueryWriter* qw, const std::wstring& ifd, int newW, int newH, bool sizeChanged) {
+    auto setIfPresent = [&](const std::wstring& key, VARTYPE type, ULONG value) {
+        PropVar old;
+        if (FAILED(qw->GetMetadataByName(key.c_str(), &old.v))) return;
+        PropVar nv;
+        nv.v.vt = type;
+        if (type == VT_UI2) nv.v.uiVal = static_cast<USHORT>(value);
+        else nv.v.ulVal = value;
+        qw->SetMetadataByName(key.c_str(), &nv.v);
+    };
+    setIfPresent(ifd + L"/{ushort=" + std::to_wstring(kTagOrientation) + L"}", VT_UI2, 1);
+    if (sizeChanged) {
+        setIfPresent(ifd + L"/exif/{ushort=" + std::to_wstring(kTagPixelXDimension) + L"}", VT_UI4, static_cast<ULONG>(newW));
+        setIfPresent(ifd + L"/exif/{ushort=" + std::to_wstring(kTagPixelYDimension) + L"}", VT_UI4, static_cast<ULONG>(newH));
+    }
+    for (const wchar_t* t : {L"/app1/thumb", L"/app1/ifd/thumb", L"/app1/{ushort=1}", L"/ifd/thumb"}) qw->RemoveMetadataByName(t);
+}
+
 // 在編碼器 frame 上套 metadata。frame 已 Initialize，還沒 SetSize。
 // 同容器：整包複製；跨容器：照 metadataCarried 搬 EXIF（/ifd）與 XMP；ICC 走 color context。
 // 回傳 false：有東西該帶卻沒寫進去（檔案照存，呼叫端回報 metadataDropped）。
 bool applyMetadata(IWICImagingFactory* factory, IWICBitmapFrameEncode* frame, ImageFormat target, const SourceMeta& m,
                    int newW, int newH, bool sizeChanged) {
-    if (!m.valid) return true;
+    if (!m.valid || target == ImageFormat::Bmp) return true;
     const bool toJpeg = target == ImageFormat::Jpeg, toTiff = target == ImageFormat::Tiff, toPng = target == ImageFormat::Png;
-    if (target == ImageFormat::Bmp) return true;
     bool complete = true;
 
     bool copied = false;
     if (!m.webp() && m.format == target) {
-        ComPtr<IWICMetadataBlockWriter> bw;
-        ComPtr<IWICMetadataBlockReader> br;
-        if (SUCCEEDED(frame->QueryInterface(IID_PPV_ARGS(&bw))) && SUCCEEDED(m.frame->QueryInterface(IID_PPV_ARGS(&br))))
-            copied = SUCCEEDED(bw->InitializeFromBlockReader(br.Get()));
+        copied = copyAllBlocks(frame, m);
         if (!copied) complete = false; // 退到下面的跨容器搬法，IPTC 這類區塊帶不過去
     }
     ComPtr<IWICMetadataQueryWriter> qw;
     frame->GetMetadataQueryWriter(&qw);
     if (!copied && qw && (toJpeg || toTiff || toPng)) {
-        ComPtr<IWICComponentFactory> cf;
-        factory->QueryInterface(IID_PPV_ARGS(&cf));
         ComPtr<IWICMetadataQueryReader> srcQ;
         if (m.frame) m.frame->GetMetadataQueryReader(&srcQ);
-        // EXIF：WIC 來源從 query reader 的 IFD 子區塊轉成 writer；WebP 來源從 EXIF 位元組建 reader，逐項複製到新的 IFD writer。
-        if ((toJpeg || toTiff) && metadataCarried(m.format, target, MetaSectionId::Exif)) {
-            ComPtr<IWICMetadataQueryWriter> ifdW;
-            bool had = false;
-            if (!m.webp()) {
-                ifdW = subtreeWriter(factory, srcQ.Get(), L"/app1/ifd");
-                if (!ifdW) ifdW = subtreeWriter(factory, srcQ.Get(), L"/ifd");
-            } else if (!m.chunks.exif.empty()) {
-                had = true;
-                if (auto app1 = cf ? app1ReaderFromExif(factory, m.chunks.exif) : nullptr) {
-                    PropVar schema, id, value;
-                    ComPtr<IWICMetadataReader> ifdR;
-                    if (SUCCEEDED(app1->GetValueByIndex(0, &schema.v, &id.v, &value.v)) && value.v.vt == VT_UNKNOWN && value.v.punkVal)
-                        value.v.punkVal->QueryInterface(IID_PPV_ARGS(&ifdR));
-                    if (ifdR && SUCCEEDED(cf->CreateQueryWriter(GUID_MetadataFormatIfd, nullptr, &ifdW))) copyIfdTree(cf.Get(), ifdR.Get(), ifdW.Get());
-                }
-            }
-            if (ifdW) {
-                for (unsigned tag : kTiffStructureTags) ifdW->RemoveMetadataByName((L"/{ushort=" + std::to_wstring(tag) + L"}").c_str());
-                if (!setSubtree(qw.Get(), toJpeg ? L"/app1/ifd" : L"/ifd", ifdW.Get())) complete = false;
-            } else if (had) {
-                complete = false;
-            }
-        }
+        if ((toJpeg || toTiff) && metadataCarried(m.format, target, MetaSectionId::Exif) &&
+            !carryExif(factory, qw.Get(), srcQ.Get(), m, toJpeg ? L"/app1/ifd" : L"/ifd"))
+            complete = false;
         // XMP 在 JPEG 是獨立區塊（/xmp），在 TIFF 是 IFD0 的 700 號欄位（/ifd/xmp）。PNG 不帶（見 metadataCarried）。
-        // WebP 來源：把 XMP chunk 包進一張記憶體裡的 JPEG，從它的 /xmp 拿。
-        if (metadataCarried(m.format, target, MetaSectionId::Xmp)) {
-            ComPtr<IWICMetadataQueryWriter> xmpW;
-            bool had = false;
-            if (!m.webp()) {
-                xmpW = subtreeWriter(factory, srcQ.Get(), L"/xmp");
-                if (!xmpW) xmpW = subtreeWriter(factory, srcQ.Get(), L"/ifd/xmp");
-            } else if (!m.chunks.xmp.empty()) {
-                had = true;
-                ComPtr<IWICMetadataQueryReader> carrierQ;
-                if (m.xmpCarrier.frame && SUCCEEDED(m.xmpCarrier.frame->GetMetadataQueryReader(&carrierQ)))
-                    xmpW = subtreeWriter(factory, carrierQ.Get(), L"/xmp");
-            }
-            if (xmpW) {
-                if (!setSubtree(qw.Get(), toTiff ? L"/ifd/xmp" : L"/xmp", xmpW.Get())) complete = false;
-            } else if (had) {
-                complete = false;
-            }
-        }
-    }
-    // ICC
-    if (!m.chunks.icc.empty() && factory && iccCarried(m.format, target)) {
-        ComPtr<IWICColorContext> cc;
-        IWICColorContext* raw = nullptr;
-        if (FAILED(factory->CreateColorContext(&cc)) ||
-            FAILED(cc->InitializeFromMemory(m.chunks.icc.data(), static_cast<UINT>(m.chunks.icc.size()))) ||
-            (raw = cc.Get(), FAILED(frame->SetColorContexts(1, &raw))))
+        if (metadataCarried(m.format, target, MetaSectionId::Xmp) && !carryXmp(factory, qw.Get(), srcQ.Get(), m, toTiff ? L"/ifd/xmp" : L"/xmp"))
             complete = false;
     }
-    // 與像素不符的欄位：orientation 一律 1，尺寸變了改 Exif 的 PixelX/YDimension。
-    if (qw && (toJpeg || toTiff)) {
-        const wchar_t* ifd = toJpeg ? L"/app1/ifd" : L"/ifd";
-        std::wstring key = std::wstring(ifd) + L"/{ushort=274}";
-        {
-            PropVar old;
-            if (SUCCEEDED(qw->GetMetadataByName(key.c_str(), &old.v))) {
-                PropVar one;
-                one.v.vt = VT_UI2;
-                one.v.uiVal = 1;
-                qw->SetMetadataByName(key.c_str(), &one.v);
-            }
-        }
-        if (sizeChanged) {
-            for (auto [tag, val] : {std::pair{40962u, newW}, std::pair{40963u, newH}}) {
-                std::wstring k = std::wstring(ifd) + L"/exif/{ushort=" + std::to_wstring(tag) + L"}";
-                PropVar old;
-                if (SUCCEEDED(qw->GetMetadataByName(k.c_str(), &old.v))) {
-                    PropVar nv;
-                    nv.v.vt = VT_UI4;
-                    nv.v.ulVal = static_cast<ULONG>(val);
-                    qw->SetMetadataByName(k.c_str(), &nv.v);
-                }
-            }
-        }
-        // 內嵌縮圖：舊的丟掉（IFD1），存檔時由 frame->SetThumbnail 重新產生。
-        for (const wchar_t* t : {L"/app1/thumb", L"/app1/ifd/thumb", L"/app1/{ushort=1}", L"/ifd/thumb"}) qw->RemoveMetadataByName(t);
-    }
+    if (!m.chunks.icc.empty() && factory && iccCarried(m.format, target) && !setIccProfile(factory, frame, m.chunks.icc)) complete = false;
+    if (qw && (toJpeg || toTiff)) fixPixelFields(qw.Get(), toJpeg ? L"/app1/ifd" : L"/ifd", newW, newH, sizeChanged);
     return complete;
 }
 
@@ -1278,7 +1301,6 @@ std::vector<std::wstring> metadataLossOnSave(const ImageInfo& info, ImageFormat 
 
 LoadResult loadImage(const std::wstring& path) {
     try {
-        ComInit com;
         if (detectImageFormat(path) == ImageFormat::WebP) return loadWebP(path);
         return loadWithWic(path);
     } catch (const std::bad_alloc&) {
@@ -1310,7 +1332,6 @@ bool readImageSize(const std::wstring& path, int& width, int& height) {
         hh = static_cast<unsigned>(wh);
     } else {
         CloseHandle(h);
-        ComInit com;
         auto factory = makeFactory();
         if (!factory) return false;
         ComPtr<IWICBitmapDecoder> decoder;
@@ -1342,7 +1363,6 @@ SaveResult encodeAndReplace(const Image& img, Image* scratch, const std::wstring
     }
     const std::wstring tmp = path + L".mp-saving.tmp";
     try {
-        ComInit com;
         auto factory = makeFactory();
         if (!factory && target != ImageFormat::WebP) { res.error = failure(IoErrorCode::WicUnavailable); return res; }
 

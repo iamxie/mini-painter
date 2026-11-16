@@ -269,7 +269,7 @@ TEST_CASE("Renderer：馬賽克小圖只留這一幀畫過的") {
     auto a = img(64, 64);
     Annotation m = makeShape(Kind::Mosaic, {32, 32}, 32, StrokeStyle{});
     m.id = 7;
-    m.blockSize = 8;
+    m.as<MosaicShape>()->blockSize = 8;
     f.frame([&] {
         drawAnnotation(f.r.paintCtx(a, f.r.imageBitmap(a)), m);
     });
@@ -376,30 +376,30 @@ TEST_CASE("MosaicCache：握著來源圖到不再畫它的那一幀；底圖換�
     std::weak_ptr<const Image> aWeak = a;
     Annotation m = makeShape(Kind::Mosaic, {32, 32}, 32, StrokeStyle{});
     m.id = 7;
-    m.blockSize = 8;
+    m.as<MosaicShape>()->blockSize = 8;
     MosaicCache cache;
-    const MosaicCache::Tile* t = cache.get(f.r.rt(), a, m);
+    const MosaicCache::Tile* t = cache.get(f.r.rt(), a, m.id, *m.as<MosaicShape>());
     REQUIRE(t != nullptr);
     ID2D1Bitmap* first = t->bitmap.Get();
-    CHECK(cache.get(f.r.rt(), a, m)->bitmap.Get() == first); // 沒變：沿用
+    CHECK(cache.get(f.r.rt(), a, m.id, *m.as<MosaicShape>())->bitmap.Get() == first); // 沒變：沿用
     cache.endFrame();
     a.reset();
     CHECK_FALSE(aWeak.expired()); // 快取握著，位址不會被別張圖重用
     auto b = std::make_shared<Image>(64, 64);
-    const MosaicCache::Tile* t2 = cache.get(f.r.rt(), b, m);
+    const MosaicCache::Tile* t2 = cache.get(f.r.rt(), b, m.id, *m.as<MosaicShape>());
     REQUIRE(t2 != nullptr);
     CHECK(aWeak.expired()); // 換了底圖：舊的那筆被換掉
     Annotation moved = m;
-    moved.rect.left -= 8;
-    CHECK(cache.get(f.r.rt(), b, moved) != nullptr);
+    rectOf(moved)->left -= 8;
+    CHECK(cache.get(f.r.rt(), b, moved.id, *moved.as<MosaicShape>()) != nullptr);
     CHECK(cache.size() == 1);
     cache.endFrame();
     cache.endFrame(); // 這一幀沒畫
     CHECK(cache.size() == 0);
     // 整個在圖外、沒有 target、沒有圖：沒有小圖可畫
     Annotation outside = m;
-    outside.rect = {200, 200, 260, 260};
-    CHECK(cache.get(f.r.rt(), b, outside) == nullptr);
-    CHECK(cache.get(nullptr, b, m) == nullptr);
-    CHECK(cache.get(f.r.rt(), nullptr, m) == nullptr);
+    (*rectOf(outside)) = {200, 200, 260, 260};
+    CHECK(cache.get(f.r.rt(), b, outside.id, *outside.as<MosaicShape>()) == nullptr);
+    CHECK(cache.get(nullptr, b, m.id, *m.as<MosaicShape>()) == nullptr);
+    CHECK(cache.get(f.r.rt(), nullptr, m.id, *m.as<MosaicShape>()) == nullptr);
 }

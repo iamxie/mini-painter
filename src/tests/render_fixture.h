@@ -76,7 +76,7 @@ struct RenderFixture {
         return out;
     }
 
-    float textHeight(const Annotation& a) { return mp::textHeight(r.device(), a); }
+    float textHeight(const Annotation& a) { return mp::textHeight(r.device(), *a.as<TextShape>()); }
     float measureUiText(const std::wstring& text, float size, bool bold = false, float maxWidth = 1e6f, float* height = nullptr) {
         return r.measureUiText(text, size, bold, maxWidth, height);
     }

@@ -1,5 +1,7 @@
 #include "render/RenderDevice.h"
 
+#include "core/Fonts.h"
+
 #include <wincodec.h>
 
 #include <algorithm>
@@ -56,9 +58,9 @@ IDWriteTextFormat* RenderDevice::uiFormat(float size, bool bold, DWRITE_TEXT_ALI
     auto it = uiFormats_.find(key);
     if (it != uiFormats_.end()) return it->second.Get();
     ComPtr<IDWriteTextFormat> fmt;
-    if (!dw_ || FAILED(dw_->CreateTextFormat(L"Microsoft JhengHei UI", nullptr,
+    if (!dw_ || FAILED(dw_->CreateTextFormat(kUiFont, nullptr,
                                              bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-                                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, L"zh-TW", &fmt)))
+                                             DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, kTextLocale, &fmt)))
         return nullptr;
     fmt->SetTextAlignment(align);
     fmt->SetParagraphAlignment(para);

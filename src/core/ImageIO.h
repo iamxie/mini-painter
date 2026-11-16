@@ -17,6 +17,9 @@ struct LoadResult {
     IoError error;   // 失敗原因
 };
 
+// 這個檔的函式可以在任何執行緒呼叫。第一次在某條執行緒用到 WIC 時會初始化那條執行緒的 COM（單執行緒 apartment）
+// 並建一個 WIC factory，之後同一條執行緒重用，執行緒結束時放掉。
+
 // 讀檔。格式看檔案內容，不看副檔名：WebP 走 libwebp，其他走 WIC（BMP、TIFF、JPEG、PNG）。
 // EXIF orientation 會套用到像素上（info.orientation 仍記錄原值）。
 // 不丟例外：圖太大、記憶體配不出來時回 OutOfMemory。

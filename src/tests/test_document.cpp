@@ -417,3 +417,74 @@ TEST_CASE("Document：解析度跟著狀態走；只改解析度的步驟共用�
     doc.reset(base); // 沒給：96
     CHECK(doc.dpi() == Dpi{});
 }
+
+TEST_CASE("Document：addItem 配 id、加在最上層，一步 undo") {
+    Document d;
+    d.reset(img(4, 4));
+    Annotation a = makeShape(Kind::Rect, {2, 2}, 4, StrokeStyle{});
+    a.id = 999; // 不看：id 由文件配
+    const uint32_t first = d.addItem(a);
+    const uint32_t second = d.addItem(makeShape(Kind::Ellipse, {1, 1}, 4, StrokeStyle{}));
+    CHECK(first != 999);
+    CHECK(second != first);
+    REQUIRE(d.items().size() == 2);
+    CHECK(d.items()[0].id == first);
+    CHECK(d.items()[1].id == second); // 後加的在上層
+    CHECK(d.items()[1].kind() == Kind::Ellipse);
+    CHECK(d.undoCount() == 2);
+    d.undo();
+    CHECK(d.items().size() == 1);
+    CHECK(d.findItem(second) == nullptr);
+}
+
+TEST_CASE("Document：replaceItem 換掉同一個 id 的物件；沒有這個 id 什麼都不做") {
+    Document d;
+    d.reset(img(4, 4));
+    const uint32_t id = d.addItem(makeShape(Kind::Rect, {2, 2}, 4, StrokeStyle{}));
+    Annotation changed = *d.findItem(id);
+    changed.stroke.width = 12;
+    CHECK(d.replaceItem(changed));
+    CHECK(d.findItem(id)->stroke.width == 12);
+    CHECK(d.undoCount() == 2);
+    d.undo();
+    CHECK(d.findItem(id)->stroke.width == StrokeStyle{}.width);
+    d.redo();
+
+    changed.id = id + 100;
+    CHECK_FALSE(d.replaceItem(changed));
+    CHECK(d.undoCount() == 2); // 沒有多一步
+}
+
+TEST_CASE("Document：removeItem 刪掉那一個，其他的順序不變") {
+    Document d;
+    d.reset(img(4, 4));
+    const uint32_t a = d.addItem(makeShape(Kind::Rect, {2, 2}, 4, StrokeStyle{}));
+    const uint32_t b = d.addItem(makeShape(Kind::Rect, {2, 2}, 4, StrokeStyle{}));
+    const uint32_t c = d.addItem(makeShape(Kind::Rect, {2, 2}, 4, StrokeStyle{}));
+    CHECK(d.removeItem(b));
+    REQUIRE(d.items().size() == 2);
+    CHECK(d.items()[0].id == a);
+    CHECK(d.items()[1].id == c);
+    CHECK_FALSE(d.removeItem(b)); // 已經不在
+    CHECK(d.undoCount() == 4);
+    d.undo();
+    CHECK(d.indexOf(b) == 1);
+}
+
+TEST_CASE("Document：amendItem 直接改目前的狀態，不進 undo、不算修改") {
+    Document d;
+    d.reset(img(4, 4));
+    const uint32_t id = d.addItem(makeShape(Kind::Rect, {2, 2}, 4, StrokeStyle{}));
+    d.markSaved();
+    const size_t undoBefore = d.undoCount();
+    Annotation taller = *d.findItem(id);
+    rectOf(taller)->bottom = 50;
+    CHECK(d.amendItem(taller));
+    CHECK(rectOf(*d.findItem(id))->bottom == 50);
+    CHECK(d.undoCount() == undoBefore);
+    CHECK_FALSE(d.dirty());
+    CHECK(&d.state().items == &d.items()); // state() 就是目前這一份
+
+    taller.id = id + 1;
+    CHECK_FALSE(d.amendItem(taller));
+}

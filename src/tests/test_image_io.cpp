@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <windows.h>
+#include <objbase.h>
 
 #include <string>
+#include <thread>
 
 #include "core/ImageIO.h"
 #include "test_util.h"
@@ -350,4 +352,36 @@ TEST_CASE("saveImage：很寬、很高、只有一個像素的圖都存得回來
             CHECK(maxDiff(*r.image, img) == 0); // 無損格式：逐像素相同
         }
     }
+}
+
+TEST_CASE("讀圖、存圖在同一條執行緒重用 COM：第一次用到之後就留著，結果不變") {
+    const std::wstring src = tempPath(L"ctx_src.png"), dst = tempPath(L"ctx_dst.png");
+    mp::test::writePng(src, 12, 7);
+    HRESULT before = E_FAIL, after = E_FAIL;
+    bool sized = false, saved = false;
+    int w = 0, h = 0, loadedW = 0, savedW = 0;
+    std::thread([&] {
+        // 新的執行緒還沒有人初始化過 COM。
+        before = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (SUCCEEDED(before)) CoUninitialize();
+        sized = readImageSize(src, w, h);
+        // 讀過一次之後 COM 是初始化著的（再初始化一次會回 S_FALSE），下一次呼叫不必重來。
+        after = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        if (SUCCEEDED(after)) CoUninitialize();
+        LoadResult r = loadImage(src);
+        if (r.image) {
+            loadedW = r.image->width;
+            saved = saveImage(*r.image, dst).error.ok();
+        }
+        if (saved && readImageSize(dst, w, h)) savedW = w;
+    }).join(); // 執行緒結束時把它的 COM 與 factory 放掉，不會當
+    CHECK(before == S_OK);
+    CHECK(sized);
+    CHECK(after == S_FALSE);
+    CHECK(loadedW == 12);
+    CHECK(saved);
+    CHECK(savedW == 12);
+    // 這條（測試的主）執行緒照樣能用。
+    CHECK(readImageSize(src, w, h));
+    CHECK(h == 7);
 }

@@ -82,19 +82,19 @@ void BitmapCache::endFrame() {
     });
 }
 
-const MosaicCache::Tile* MosaicCache::get(ID2D1RenderTarget* rt, const ImagePtr& image, const Annotation& a) {
+const MosaicCache::Tile* MosaicCache::get(ID2D1RenderTarget* rt, const ImagePtr& image, uint32_t id, const MosaicShape& m) {
     if (!rt || !image) return nullptr;
-    Entry& entry = entries_[a.id];
-    if (!entry.tile.bitmap || !(entry.rect == a.rect) || entry.block != a.blockSize || entry.source != image) {
-        int x0 = static_cast<int>(std::floor(a.rect.left)), y0 = static_cast<int>(std::floor(a.rect.top));
-        int x1 = static_cast<int>(std::ceil(a.rect.right)), y1 = static_cast<int>(std::ceil(a.rect.bottom));
+    Entry& entry = entries_[id];
+    if (!entry.tile.bitmap || !(entry.rect == m.rect) || entry.block != m.blockSize || entry.source != image) {
+        int x0 = static_cast<int>(std::floor(m.rect.left)), y0 = static_cast<int>(std::floor(m.rect.top));
+        int x1 = static_cast<int>(std::ceil(m.rect.right)), y1 = static_cast<int>(std::ceil(m.rect.bottom));
         entry = {};
-        entry.rect = a.rect;
-        entry.block = a.blockSize;
+        entry.rect = m.rect;
+        entry.block = m.blockSize;
         entry.source = image;
         entry.tile.x0 = std::max(0, x0);
         entry.tile.y0 = std::max(0, y0);
-        entry.tile.bitmap = upload(rt, mosaicBlocks(*image, x0, y0, x1, y1, a.blockSize));
+        entry.tile.bitmap = upload(rt, mosaicBlocks(*image, x0, y0, x1, y1, m.blockSize));
     }
     entry.used = true;
     return entry.tile.bitmap ? &entry.tile : nullptr;

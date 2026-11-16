@@ -1,6 +1,8 @@
 #pragma once
 #include <windows.h>
 
+#include <memory>
+
 #include "core/ColorAdjust.h"
 #include "core/Image.h"
 
@@ -26,13 +28,29 @@ struct ColorAdjustHost {
     virtual void beginPickWhite() = 0;                           // 按滴管，等使用者點圖片
 };
 
-// 開啟調整顏色面板。同時只會有一個。
-void showColorAdjustPanel(HWND owner, ColorAdjustHost* host);
-bool isColorAdjustPanelOpen();
-// 面板的視窗，給訊息迴圈呼叫 IsDialogMessage 用。沒開時是 nullptr。
-HWND colorAdjustPanelHwnd();
-// 主視窗在使用者點了圖片後呼叫，更新面板的參數顯示。
-void colorAdjustPanelSetParams(const ColorAdjustParams& p);
-void closeColorAdjustPanel();
+struct ColorPanelState;
+
+// 「調整顏色」面板。主視窗擁有一個，面板的狀態由它握著：對話框關掉時狀態不刪自己，
+// 下次開啟或這個物件解構時才換掉，所以面板自己的函式還沒回來時狀態一定還在。
+class ColorAdjustPanel {
+public:
+    ColorAdjustPanel();
+    ~ColorAdjustPanel();
+    ColorAdjustPanel(const ColorAdjustPanel&) = delete;
+    ColorAdjustPanel& operator=(const ColorAdjustPanel&) = delete;
+
+    // 開啟。已經開著就把它帶到前面。開不起來時呼叫 host->cancelAdjust()。
+    void show(HWND owner, ColorAdjustHost* host);
+    bool isOpen() const { return hwnd() != nullptr; }
+    // 面板的視窗，給訊息迴圈呼叫 IsDialogMessage 用。沒開時是 nullptr。
+    HWND hwnd() const;
+    // 主視窗在使用者點了圖片（取白點）後呼叫，更新面板的參數顯示。
+    void setParams(const ColorAdjustParams& p);
+    // 關掉，不通知 host（呼叫端自己決定要套用還是放棄）。
+    void close();
+
+private:
+    std::unique_ptr<ColorPanelState> state_;
+};
 
 } // namespace mp

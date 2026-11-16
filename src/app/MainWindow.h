@@ -8,7 +8,12 @@
 #include <vector>
 
 #include "app/ImageDialogs.h"
+#include "app/AppSettings.h"
 #include "app/InfoPanel.h"
+#include "app/Popups.h"
+#include "app/Theme.h"
+#include "app/Toolbar.h"
+#include "app/UpdateFlow.h"
 #include "core/Annotation.h"
 #include "core/Archive.h"
 #include "core/ColorAdjust.h"
@@ -30,24 +35,7 @@
 
 namespace mp {
 
-// 工具列按鈕。
-enum ButtonId {
-    BTN_NONE = 0,
-    BTN_ZOOMOUT, BTN_ZOOM100, BTN_ZOOMIN, BTN_ROTATE, BTN_MARKUP, BTN_INFO,
-    BTN_FREEHAND, BTN_SHAPES, BTN_TEXT, BTN_ADJCOLOR, BTN_ADJSIZE, BTN_LINESTYLE, BTN_LINECOLOR, BTN_FILL, BTN_FORMAT,
-    BTN_CROP,       // 標示工具列：進入 / 取消裁切模式
-    BTN_CROP_APPLY, // 裁切模式中才有：標示工具列最右邊的「裁切」文字按鈕
-};
-
-struct Button {
-    int id = BTN_NONE;
-    D2D1_RECT_F rect{};
-    bool enabled = true;
-    bool pressed = false;  // 切換按鈕亮起
-    bool dropdown = false; // 右下角畫小三角
-};
-
-class MainWindow : public ColorAdjustHost {
+class MainWindow : public ColorAdjustHost, private UpdateHost {
 public:
     // 剛被自動更新重啟（main 收到 --after-update）：開好視窗後提示「已更新」。create 前呼叫。
     void setJustUpdated(bool v) { justUpdated_ = v; }
@@ -66,11 +54,17 @@ private:
     static LRESULT CALLBACK wndProc(HWND, UINT, WPARAM, LPARAM);
     static LRESULT CALLBACK editProc(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     LRESULT handle(UINT msg, WPARAM wp, LPARAM lp);
+    // handle 裡比較長的幾個訊息
+    LRESULT onCloseForUpdate(DWORD pid, HWND progress);
+    void onDpiChanged(unsigned dpi, const RECT& suggested);
+    bool onTimer(UINT_PTR id);
+    HBRUSH editColors(HDC dc);
+    void onClose();
+    void onDestroy();
 
     // 版面
     void layout();
-    void buildButtons();
-    float px(float v) const { return v * ui_; }
+    void buildButtons(); // 工具列重排：按鈕的可用與亮起跟著目前的狀態（狀態變了就要呼叫）
 
     // 檔案
     // 開一個路徑（圖片、資料夾或壓縮檔），換掉目前的圖。呼叫前要先問過使用者（confirmLeaveImage）：
@@ -78,6 +72,10 @@ private:
     // landAtBottom：開好後捲到底（用 ↑ 翻到上一張時）。
     bool openPath(const std::wstring& path, bool landAtBottom = false);
     bool openConfirmed(const std::wstring& path); // confirmLeaveImage 通過才 openPath
+    bool showPage(const std::wstring& path, bool inArchive, bool landAtBottom); // openPath 的後半：解碼並換上這一張圖
+    int spreadStartIfSecond() const; // 兩頁並排：目前這頁是某屏的第二頁時，那屏第一頁的位置；否則 -1
+    void undoRedo(bool undo);
+    void togglePairing(bool& flag, bool saved); // 兩頁並排的配對選項開 / 關
     // 開不了：把訊息畫在畫布上，目前的圖清掉。resetList：連翻頁清單與檔案資訊也清掉（資料夾沒圖、壓縮檔打不開）。
     void showLoadError(const std::wstring& path, const std::wstring& message, bool resetList);
     LoadResult loadPage(const std::wstring& path); // 解一頁：預先解好的直接拿，沒有就現在解（解好的交給 prefetch_ 留著）
@@ -123,8 +121,8 @@ private:
 
     // 設定與 shell 登錄
     void loadSettingsAndRegister();
-    void saveSettingsQuiet();
-    std::wstring exeDir() const;        // exe 所在資料夾，結尾帶反斜線
+    void saveSettingsQuiet() { store_.save(); } // 存設定（和別的視窗寫的合併；寫不進去就算了）
+    std::wstring exeDir() const { return store_.exeDir(); } // exe 所在資料夾，結尾帶反斜線
     void applyPinnedNow();              // 置頂檔名改了：正在看的資料夾 / 壓縮檔立刻重排
     void showMainWindow(int cmd);       // 第一次顯示主視窗：上次關閉時是最大化就最大化
     void rememberPlacement();           // 關閉前把視窗位置存進 settings_
@@ -136,20 +134,22 @@ private:
     void switchProfile(const Profile& p);
     void saveCurrentToProfile();
 
-    // 新版本檢查與自動更新
-    void startAutoUpdateCheck();                   // 啟動時：背景查，有新版就 post WM_MP_UPDATE_FOUND
+    // 新版本檢查與自動更新：流程在 updates_（app/UpdateFlow），這裡是它要主視窗幫忙的事（UpdateHost）
+    HWND updateOwnerWindow() const override { return hwnd_; }
+    std::wstring updateExePath() const override { return store_.exePath(); }
+    std::wstring updateCheckUrl() const override { return settings_.updateUrl; }
+    bool updateVersionSkipped(const std::wstring& version) const override;
+    void skipUpdateVersion(const std::wstring& version) override;
+    bool confirmDiscardBeforeUpdate() override { return confirmDiscard(); }
+    bool loadArchiveLibraryForUpdate() override { return ensureArchiveLibrary(); }
+    std::wstring reopenAfterUpdate() const override;
+    void closeForRelaunch(const std::wstring& relaunchArgs) override;
     // 現在能不能打斷使用者（跳出別的視窗、把這個視窗關掉）：模態對話框或進度框開著（主視窗被停用）、選單開著、
     // 滑鼠拖到一半都不行。背景做完事要跳視窗、或別的行程要求關閉之前，都先問這個。
     bool canInterrupt() const;
     void offerPendingUpdate();                     // 有空檔（canInterrupt，而且沒有彈出選單、調色面板、文字編輯）才跳新版本對話框，否則稍後再試
-    void checkForUpdatesNow();                     // 「關於」的檢查更新按鈕
-    void offerUpdate(const ReleaseInfo& r);        // 新版本對話框 → 略過 / 稍後 / 安裝
-    void installUpdate(const ReleaseInfo& r);      // 其他視窗會被關的提示 → 存檔確認 → 下載核對解開 → 關掉其他 mpainter → 換檔 → 關閉並重啟
-    bool closeOtherInstances();                    // 請同一個 exe 的其他 mpainter 關閉並等它們結束；有一個不關回 false
-    void manualDownloadFallback(const std::wstring& reason, const std::wstring& pageUrl); // 不能自動更新時打開下載頁
 
-    // 語言：讀內建與 lang/ 的語系，依設定或系統語系選一個啟用；選單切換後問是否重啟
-    void initLanguage();
+    // 語言：選單切換後問是否重啟（可選的語系與啟用哪一個在 store_，啟動時決定）
     void selectLanguage(const std::wstring& code);
 
     // 提示：物件教學提示（計次）與工具列按鈕名稱（每次 hover）共用一個 tooltip 視窗
@@ -157,7 +157,6 @@ private:
     void showTipAt(const wchar_t* text, POINT screenPt);
     void showTip(POINT pt);
     void showButtonTip(int id);
-    static const wchar_t* buttonName(int id);
     void hideTip();
 
     // 檢視模式（看漫畫）
@@ -192,15 +191,12 @@ private:
     // 繪製
     void paint();
     void drawChrome();
-    void drawButton(const Button& b);
-    void drawIcon(const Button& b);
     void drawCanvas();
     void drawSelection();
     void repaint() { InvalidateRect(hwnd_, nullptr, FALSE); }
 
     // 按鈕與選單
     CommandState commandState() const; // 指令可用條件要看的狀態（core/Commands.h）；選單、工具列、鍵盤共用
-    int hitButton(POINT pt, const Button** out = nullptr) const;
     void onButton(int id);
     void onCommand(int id);
     void buildMenu();
@@ -250,12 +246,8 @@ private:
 
     HINSTANCE inst_ = nullptr;
     HWND hwnd_ = nullptr;
-    Settings settings_;
-    Settings settingsBase_;           // 上次和設定檔同步時的 settings_（存檔時的三方合併用，見 mergeSettings）
-    std::wstring exePath_, settingsPath_;
-    std::vector<LangTable> langs_; // 可選的語系，順序同語言選單
-    bool settingsWritable_ = true;
-    bool settingsUnreadable_ = false; // 啟動時設定檔在但讀不到：這次執行用預設值，而且不存檔（存了會蓋掉原本的設定）
+    AppSettings store_;                  // 設定檔的讀寫、目前的值、可選的語系
+    Settings& settings_ = store_.values; // 目前的設定值
     bool askPending_ = false;
     HWND tip_ = nullptr;
     TOOLINFOW tipInfo_{};
@@ -264,16 +256,16 @@ private:
     bool tipVisible_ = false;
     HMENU menu_ = nullptr;
     HMENU profileMenu_ = nullptr; // 顯示 › 模式（內容隨模式清單重建）
-    float ui_ = 1.0f;
+    UiScale px; // 邏輯像素 → 這個視窗所在螢幕的實際像素：px(10)
     Renderer renderer_;
 
     // 版面矩形（視窗座標）
     D2D1_RECT_F toolbarRc_{}, markupRc_{}, nameRc_{}, canvasRc_{}, infoRc_{};
-    std::vector<Button> buttons_;
-    int hoverBtn_ = BTN_NONE;
-    int pressBtn_ = BTN_NONE;
+    Toolbar toolbar_; // 兩列工具列的按鈕（排版、繪製、命中）
     bool trackingMouse_ = false;
     int popupBtn_ = BTN_NONE; // 最近一次開彈出選單的按鈕
+    PopupMenus popups_;       // 工具列的彈出選單（同時最多一個）
+    ColorAdjustPanel adjustPanel_; // 「調整顏色」面板
 
     bool showMarkup_ = false;
     bool showInfo_ = false;
@@ -295,8 +287,7 @@ private:
     std::wstring archiveDir_;             // 它解出來的資料夾
     std::vector<std::wstring> archiveFiles_; // 解出來的檔（磁碟檔名是序號），閱讀順序
     std::vector<std::wstring> archiveNames_; // 與 archiveFiles_ 同序的壓縮檔內名字，顯示用
-    InfoData infoData_;
-    InfoPanelState infoState_;
+    InfoPanel info_;
     // 預先解碼（在 tempDir_ 之後宣告：先解構，背景停了才刪暫存資料夾）
     Prefetcher prefetch_;
     int lastDir_ = 1;                     // 最近一次翻頁的方向：預先解碼往這個方向準備
@@ -331,7 +322,7 @@ private:
     HBRUSH editBrush_ = nullptr;
 
     // 自動更新
-    std::unique_ptr<ReleaseInfo> pendingUpdate_; // 背景查到、還沒問使用者的新版
+    UpdateFlow updates_{*this};
     bool menuLoop_ = false;     // 選單開著（不在這時跳新版本對話框）
     bool updating_ = false;     // 換檔完成、正在關閉：WM_CLOSE 不再問存檔（已經問過）
     bool justUpdated_ = false;

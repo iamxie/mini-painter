@@ -37,13 +37,13 @@ StrokeStyle Editor::currentStroke() const {
 
 TextStyle Editor::currentText() const {
     if (const Annotation* a = doc_.findItem(selected_)) {
-        if (a->kind == Kind::Text) return a->text;
+        if (const auto* t = a->as<TextShape>()) return t->style;
     }
     return text_;
 }
 
 void Editor::fitText(Annotation& a) const {
-    if (a.kind == Kind::Text && measure_) a.rect.bottom = a.rect.top + measure_(a);
+    if (auto* t = a.as<TextShape>(); t && measure_) t->rect.bottom = t->rect.top + measure_(*t);
 }
 
 // ---- 工具 ----
@@ -188,11 +188,7 @@ bool Editor::release() {
     switch (d) {
     case DragKind::Draw:
         if (!drawPath_.empty()) {
-            Annotation a = makeFreehand(drawPath_, stroke_);
-            a.id = doc_.nextId();
-            auto items = doc_.items();
-            items.push_back(a);
-            commitItems(std::move(items));
+            doc_.addItem(makeFreehand(drawPath_, stroke_));
             changed = true;
         }
         drawPath_.clear();
@@ -200,7 +196,7 @@ bool Editor::release() {
     case DragKind::Move:
     case DragKind::Handle:
         if (dragMoved_) {
-            commitItems(liveItems_);
+            doc_.commitItems(liveItems_);
             changed = true;
         }
         liveItems_.clear();
@@ -261,7 +257,7 @@ uint32_t Editor::tipItemAt(Pt p, bool twoPage) const {
 uint32_t Editor::textItemAt(const Pointer& p) const {
     const auto& items = doc_.items();
     for (int i = static_cast<int>(items.size()) - 1; i >= 0; --i)
-        if (items[i].kind == Kind::Text && hitTest(items[i], p.pos, p.tol)) return items[i].id;
+        if (items[i].as<TextShape>() && hitTest(items[i], p.pos, p.tol)) return items[i].id;
     return 0;
 }
 
@@ -287,36 +283,23 @@ Editor::Escape Editor::escape() {
 uint32_t Editor::addShape(Kind kind, Pt center, float viewSize) {
     if (!doc_.image()) return 0;
     leaveFreehand();
-    Annotation a = makeShape(kind, center, viewSize, stroke_);
-    a.id = doc_.nextId();
-    auto items = doc_.items();
-    items.push_back(a);
-    commitItems(std::move(items));
-    selected_ = a.id;
-    return a.id;
+    selected_ = doc_.addItem(makeShape(kind, center, viewSize, stroke_));
+    return selected_;
 }
 
 uint32_t Editor::addText(Pt center, float viewSize, const std::wstring& label) {
     if (!doc_.image()) return 0;
     leaveFreehand();
     Annotation a = makeText(center, viewSize, stroke_, text_, label);
-    a.id = doc_.nextId();
     fitText(a);
-    auto items = doc_.items();
-    items.push_back(a);
-    commitItems(std::move(items));
-    selected_ = a.id;
-    return a.id;
+    selected_ = doc_.addItem(std::move(a));
+    return selected_;
 }
 
 bool Editor::commitItem(const Annotation& updated) {
-    int i = doc_.indexOf(updated.id);
-    if (i < 0) return false;
-    auto items = doc_.items();
-    items[i] = updated;
-    fitText(items[i]);
-    commitItems(std::move(items));
-    return true;
+    Annotation a = updated;
+    fitText(a);
+    return doc_.replaceItem(a);
 }
 
 bool Editor::nudgeSelected(float dx, float dy) {
@@ -329,18 +312,14 @@ bool Editor::nudgeSelected(float dx, float dy) {
 
 bool Editor::deleteSelected() {
     if (textEditing()) return false;
-    int i = doc_.indexOf(selected_);
-    if (i < 0) return false;
-    auto items = doc_.items();
-    items.erase(items.begin() + i);
-    commitItems(std::move(items));
+    if (!doc_.removeItem(selected_)) return false;
     selected_ = 0;
     return true;
 }
 
 bool Editor::applyStrokeStyle(const StrokeStyle& s) {
     const Annotation* sel = doc_.findItem(selected_);
-    if (!sel || sel->kind != Kind::Text) stroke_ = s;
+    if (!sel || !sel->as<TextShape>()) stroke_ = s;
     if (!sel) return false;
     Annotation a = *sel;
     a.stroke = s;
@@ -350,9 +329,9 @@ bool Editor::applyStrokeStyle(const StrokeStyle& s) {
 bool Editor::applyTextStyle(const TextStyle& t) {
     text_ = t;
     const Annotation* sel = doc_.findItem(selected_);
-    if (!sel || sel->kind != Kind::Text) return false;
+    if (!sel || !sel->as<TextShape>()) return false;
     Annotation a = *sel;
-    a.text = t;
+    a.as<TextShape>()->style = t;
     return commitItem(a);
 }
 
@@ -444,11 +423,17 @@ void Editor::cancelAdjust() {
 
 bool Editor::beginTextEdit(uint32_t id) {
     const Annotation* a = doc_.findItem(id);
-    if (!a || a->kind != Kind::Text) return false;
+    const TextShape* t = a ? a->as<TextShape>() : nullptr;
+    if (!t) return false;
     editingId_ = id;
-    editOriginal_ = a->textValue;
-    editText_ = a->textValue;
+    editOriginal_ = t->value;
+    editText_ = t->value;
     return true;
+}
+
+const TextShape* Editor::editingShape() const {
+    const Annotation* a = doc_.findItem(editingId_);
+    return a ? a->as<TextShape>() : nullptr;
 }
 
 bool Editor::setEditText(const std::wstring& text) {
@@ -458,35 +443,32 @@ bool Editor::setEditText(const std::wstring& text) {
     for (wchar_t ch : text)
         if (ch != L'\r') editText_ += ch;
     const Annotation* a = doc_.findItem(editingId_);
-    if (!a || !measure_) return false;
-    Annotation tmp = *a;
-    tmp.textValue = editText_;
-    float newBottom = tmp.rect.top + measure_(tmp);
-    if (std::abs(newBottom - a->rect.bottom) <= 0.5f) return false;
-    // 高度跟著內容長：直接更新文件裡的物件（不進 undo，結束編輯時才一次 commit）。
-    doc_.itemsMutable()[doc_.indexOf(editingId_)].rect.bottom = newBottom;
+    const TextShape* cur = editingShape();
+    if (!cur || !measure_) return false;
+    TextShape typed = *cur;
+    typed.value = editText_;
+    const float newBottom = typed.rect.top + measure_(typed);
+    if (std::abs(newBottom - cur->rect.bottom) <= 0.5f) return false;
+    // 高度跟著內容長：直接更新文件裡的物件（不進 undo，結束編輯時才一次 commit）。內容仍是編輯前的。
+    Annotation taller = *a;
+    taller.as<TextShape>()->rect.bottom = newBottom;
+    doc_.amendItem(taller);
     return true;
 }
 
 bool Editor::endTextEdit(bool commit) {
     const uint32_t id = editingId_;
     editingId_ = 0;
-    int i = doc_.indexOf(id);
-    if (i < 0 || !commit) return false;
-    auto items = doc_.items();
+    const Annotation* a = doc_.findItem(id);
+    if (!a || !commit) return false;
     if (editText_.empty()) {
-        items.erase(items.begin() + i);
         if (selected_ == id) selected_ = 0;
-        commitItems(std::move(items));
-        return true;
+        return doc_.removeItem(id);
     }
-    if (editText_ != editOriginal_) {
-        items[i].textValue = editText_;
-        fitText(items[i]);
-        commitItems(std::move(items));
-        return true;
-    }
-    return false;
+    if (editText_ == editOriginal_) return false;
+    Annotation typed = *a;
+    typed.as<TextShape>()->value = editText_;
+    return commitItem(typed);
 }
 
 } // namespace mp

@@ -46,13 +46,19 @@ public:
     ImagePtr image() const { return cur_.image; }
     Dpi dpi() const { return cur_.dpi; }
     const std::vector<Annotation>& items() const { return cur_.items; }
-    // 直接改目前狀態，不進 undo。只給「編輯中暫時更新」用，例如打字時文字方塊長高。
-    std::vector<Annotation>& itemsMutable() { return cur_.items; }
+    // 把同一個 id 的物件換成 a，不進 undo。只給「編輯中暫時更新」用，例如打字時文字方塊長高。沒有這個 id 回 false。
+    bool amendItem(const Annotation& a);
 
     // 把新狀態變成目前狀態；舊的進 undo，redo 清空。
     void commit(DocState next);
     // 方便用法：只改標註物件（底圖、解析度維持）。
     void commitItems(std::vector<Annotation> items);
+    // 改一個標註物件，各進一步 undo。
+    // 加在最上層，id 由文件配（a.id 不看），回傳配到的 id。
+    uint32_t addItem(Annotation a);
+    // 把同一個 id 的物件換成 a。沒有這個 id 回 false，什麼都不做。
+    bool replaceItem(const Annotation& a);
+    bool removeItem(uint32_t id);
     // 只改底圖（標註物件、解析度維持）。
     void commitImage(ImagePtr image);
 

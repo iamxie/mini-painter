@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <memory>
 #include <vector>
 
+#include "core/Fonts.h"
 #include "core/Lang.h"
 #include "render/Surface.h"
 
@@ -17,19 +19,6 @@ namespace mp {
 namespace {
 
 constexpr wchar_t kPopupClass[] = L"MiniPainterPopup";
-ULONGLONG g_lastClose = 0;
-HWND g_popup = nullptr;
-bool g_modalChild = false; // 開著系統對話框時不要因失去焦點而關閉
-
-// 從彈出選單開選色對話框。開著時把選單藏起來：選單是最上層視窗會蓋住對話框；
-// 而且選單還能點，再按一次會疊出第二個對話框，選單被刪掉後回到外層就當機。
-bool pickColorFromPopup(HWND popup, HWND owner, Color& inout) {
-    g_modalChild = true; // 先設：藏起來時選單會失去焦點
-    ShowWindow(popup, SW_HIDE);
-    bool ok = chooseColorDialog(owner, inout);
-    g_modalChild = false;
-    return ok;
-}
 
 // 一個可點的格子。
 struct Cell {
@@ -38,30 +27,33 @@ struct Cell {
     int value;  // 自訂
 };
 
-// D2D 繪製的彈出選單基底。
+} // namespace
+
+// D2D 繪製的彈出選單基底。物件由 PopupMenus 握著，活得比它的視窗久（見 Popups.h）。
 struct PopupBase {
-    HWND hwnd = nullptr;
+    HWND hwnd = nullptr; // 視窗關掉後是 nullptr
     HWND owner = nullptr;
+    ULONGLONG* closedAt = nullptr; // 視窗關掉時把時刻記在這裡（PopupMenus::lastClose_）
+    bool modalChild = false;  // 開著系統對話框（選色）：這時不要因為失去焦點而關閉
     bool deactivated = false; // 因為別的視窗被啟用而關閉，就不把焦點搶回主視窗
     RenderDevice* device = nullptr;
-    float ui = 1;
+    UiScale px;
     ComPtr<ID2D1HwndRenderTarget> rt;
     Surface surface; // rt 與它的畫刷；選單關掉時跟著這個物件一起釋放
     std::vector<Cell> cells;
     int hover = -1;
-    int width = 0, height = 0;
-    // click / onCommand 裡可以直接 DestroyWindow(hwnd)（選完就關），也可能因為失去焦點被關。
-    // 視窗關掉時這個物件要刪，但那時成員函式還在堆疊上：用 inCall 記著，等最外層的呼叫回來才刪（見 popupProc）。
+    // click / onCommand 還沒回來的層數。它們可以直接 DestroyWindow(hwnd)（選完就關），視窗也可能因為失去焦點被關；
+    // 物件要等這些呼叫都回來才能放掉（PopupMenus::reap 會看）。
     int inCall = 0;
-    bool destroyed = false;
 
     virtual ~PopupBase() = default;
+    // 排好 cells，回傳選單視窗要多大（實際像素）。開視窗之前呼叫一次：排版和視窗大小只算這一次。
+    virtual D2D1_SIZE_F layout() = 0;
     virtual void draw() = 0;
     virtual void click(const Cell& c) = 0;
     virtual void onCreated() {}
     virtual bool onCommand(WPARAM, LPARAM) { return false; }
 
-    float px(float v) const { return v * ui; }
     ID2D1SolidColorBrush* br(D2D1_COLOR_F c) { return surface.brush(c); }
     ID2D1SolidColorBrush* br(Color c) { return br(toD2D(c)); }
 
@@ -74,7 +66,7 @@ struct PopupBase {
     void paint() {
         if (!ensureRt()) return;
         rt->BeginDraw();
-        rt->Clear(D2D1::ColorF(0.98f, 0.98f, 0.98f));
+        rt->Clear(theme::kPopupBg);
         draw();
         HRESULT hr = rt->EndDraw();
         surface.endFrame();
@@ -93,12 +85,22 @@ struct PopupBase {
     }
     void drawHover(int i) {
         if (i < 0) return;
-        rt->FillRoundedRectangle(D2D1::RoundedRect(cells[i].rect, px(4), px(4)), br(D2D1::ColorF(0.85f, 0.85f, 0.85f)));
+        rt->FillRoundedRectangle(D2D1::RoundedRect(cells[i].rect, px(4), px(4)), br(theme::kPopupHover));
     }
     void drawSelectedFrame(const D2D1_RECT_F& r) {
-        rt->DrawRoundedRectangle(D2D1::RoundedRect(r, px(4), px(4)), br(D2D1::ColorF(0.04f, 0.52f, 1.0f)), px(2));
+        rt->DrawRoundedRectangle(D2D1::RoundedRect(r, px(4), px(4)), br(theme::kAccent), px(2));
+    }
+    // 從選單開選色對話框。開著時把選單藏起來：選單是最上層視窗會蓋住對話框；而且選單還能點，再按一次會疊出第二個對話框。
+    bool pickColor(Color& inout) {
+        modalChild = true; // 先設：藏起來時選單會失去焦點
+        ShowWindow(hwnd, SW_HIDE);
+        const bool ok = chooseColorDialog(owner, inout);
+        modalChild = false;
+        return ok;
     }
 };
+
+namespace {
 
 LRESULT CALLBACK popupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* self = reinterpret_cast<PopupBase*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -127,22 +129,20 @@ LRESULT CALLBACK popupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (h < 0) return 0;
         ++self->inCall;
         self->click(self->cells[h]);
-        if (--self->inCall == 0 && self->destroyed) delete self; // click 裡把視窗關了
-        else InvalidateRect(hwnd, nullptr, FALSE);
+        --self->inCall;
+        if (self->hwnd) InvalidateRect(hwnd, nullptr, FALSE); // click 裡可能把視窗關了
         return 0;
     }
     case WM_COMMAND: {
+        if (!self) break;
         ++self->inCall;
         const bool handled = self->onCommand(wp, lp);
-        if (--self->inCall == 0 && self->destroyed) {
-            delete self;
-            return 0;
-        }
-        if (handled) return 0;
+        --self->inCall;
+        if (handled || !self->hwnd) return 0;
         break;
     }
     case WM_ACTIVATE:
-        if (LOWORD(wp) == WA_INACTIVE && !g_modalChild) {
+        if (LOWORD(wp) == WA_INACTIVE && !self->modalChild) {
             // 焦點跑到自己的子視窗（例如下拉清單）不算
             HWND other = reinterpret_cast<HWND>(lp);
             if (!other || (GetAncestor(other, GA_ROOT) != hwnd)) {
@@ -155,13 +155,12 @@ LRESULT CALLBACK popupProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (wp == VK_ESCAPE) DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
-        g_lastClose = GetTickCount64();
-        if (g_popup == hwnd) g_popup = nullptr;
+        if (!self) return 0;
+        if (self->closedAt) *self->closedAt = GetTickCount64();
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
-        // 選完項目關閉時，鍵盤焦點不會自動回到主視窗（Delete、Esc 會失效），要主視窗自己拿回來。
-        if (!self->deactivated && self->owner) PostMessageW(self->owner, WM_MP_POPUP_CLOSED, 0, 0);
-        if (self->inCall > 0) self->destroyed = true; // 成員函式還沒回來：交給它的呼叫端刪
-        else delete self;
+        self->hwnd = nullptr; // 物件還在（PopupMenus 握著），之後由 reap 放掉
+        // 通知主視窗把物件放掉。選完項目關閉時，鍵盤焦點不會自動回到主視窗（Delete、Esc 會失效），要它自己拿回來。
+        if (self->owner) PostMessageW(self->owner, WM_MP_POPUP_CLOSED, self->deactivated ? 1 : 0, 0);
         return 0;
     default: break;
     }
@@ -180,41 +179,15 @@ void registerPopupClass(HINSTANCE inst) {
     RegisterClassExW(&wc);
 }
 
-// 建立並顯示。popup 的所有權交給視窗。
-void showPopup(PopupBase* p, HWND owner, RenderDevice& device, RECT anchor, float ui, int w, int h) {
-    closePopup();
-    HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
-    registerPopupClass(inst);
-    p->owner = owner;
-    p->device = &device;
-    p->surface.setDevice(device);
-    p->ui = ui;
-    p->width = w;
-    p->height = h;
-    int x = anchor.left, y = anchor.bottom + 2;
-    HMONITOR mon = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi{sizeof(mi)};
-    GetMonitorInfoW(mon, &mi);
-    if (x + w > mi.rcWork.right) x = mi.rcWork.right - w;
-    if (y + h > mi.rcWork.bottom) y = anchor.top - h - 2;
-    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kPopupClass, L"", WS_POPUP | WS_BORDER, x, y, w, h, owner,
-                                nullptr, inst, p);
-    if (!hwnd) { delete p; return; }
-    g_popup = hwnd;
-    ShowWindow(hwnd, SW_SHOW);
-    SetForegroundWindow(hwnd);
-    SetFocus(hwnd);
-}
-
 // ---- 線型 ----
 
 struct LineStylePopup : PopupBase {
     StrokeStyle cur;
     std::function<void(const StrokeStyle&)> onChange;
-    void onCreated() override {
+    D2D1_SIZE_F layout() override {
         cells.clear();
         float x0 = px(10), y = px(10);
-        // 粗細：7 列
+        // 粗細：一級一列
         for (int i = 0; i < kStrokeLevels; ++i) {
             cells.push_back({D2D1::RectF(x0, y, x0 + px(200), y + px(26)), 0, i});
             y += px(26);
@@ -227,15 +200,16 @@ struct LineStylePopup : PopupBase {
         for (int i = 0; i < 4; ++i) { // 箭頭
             cells.push_back({D2D1::RectF(x0 + i * px(50), y, x0 + i * px(50) + px(46), y + px(30)), 2, i});
         }
+        return D2D1::SizeF(px(220), y + px(30) + px(20));
     }
     void draw() override {
         drawHover(hover);
-        auto ink = D2D1::ColorF(0.15f, 0.15f, 0.15f);
+        const D2D1_COLOR_F ink = theme::kPopupInk;
         for (const auto& c : cells) {
             float cy = (c.rect.top + c.rect.bottom) / 2;
             if (c.group == 0) {
-                if (cur.widthLevel == c.value) drawSelectedFrame(c.rect);
-                float w = strokeWidthForLevel(c.value) * ui * 0.6f;
+                if (strokeLevelForWidth(cur.width) == c.value) drawSelectedFrame(c.rect);
+                float w = px(strokeWidthForLevel(c.value)) * 0.6f;
                 rt->DrawLine(D2D1::Point2F(c.rect.left + px(14), cy), D2D1::Point2F(c.rect.right - px(14), cy), br(ink), std::max(1.0f, w),
                              device->roundStyle());
             } else if (c.group == 1) {
@@ -264,7 +238,7 @@ struct LineStylePopup : PopupBase {
         }
     }
     void click(const Cell& c) override {
-        if (c.group == 0) cur.widthLevel = c.value;
+        if (c.group == 0) cur.width = strokeWidthForLevel(c.value);
         else if (c.group == 1) cur.line = static_cast<LineStyle>(c.value);
         else cur.arrows = static_cast<ArrowMode>(c.value);
         onChange(cur);
@@ -284,12 +258,11 @@ Color hsv(float h, float s, float v) {
 
 struct ColorPopup : PopupBase {
     Color cur;
-    bool allowNone = true;
     std::function<void(Color)> onChange;
     std::vector<Color> colors; // 對應 cells，group 0；group 1 是「顯示顏色…」
     static constexpr int kCols = 12, kRows = 8;
 
-    void onCreated() override {
+    D2D1_SIZE_F layout() override {
         cells.clear();
         colors.clear();
         float cell = px(22), gap = px(4), x0 = px(10), y = px(10);
@@ -309,7 +282,7 @@ struct ColorPopup : PopupBase {
             else { uint8_t g = static_cast<uint8_t>(255 - (i - 1) * 255 / (kCols - 2)); colors.push_back(Color::rgb(g, g, g)); }
         }
         y += cell + gap;
-        // 10 個色相 × 8 級亮度（直欄是色相，橫列由淺到深）
+        // kCols 個色相 × kRows 級亮度（直欄是色相，橫列由淺到深）
         for (int r = 0; r < kRows; ++r) {
             for (int i = 0; i < kCols; ++i) {
                 cells.push_back({D2D1::RectF(x0 + i * (cell + gap), y, x0 + i * (cell + gap) + cell, y + cell), 0, static_cast<int>(colors.size())});
@@ -322,24 +295,25 @@ struct ColorPopup : PopupBase {
         }
         y += px(8);
         cells.push_back({D2D1::RectF(x0, y, x0 + kCols * (cell + gap) - gap, y + px(28)), 1, 0});
+        return D2D1::SizeF(x0 + kCols * (cell + gap) + px(10), y + px(28) + px(12));
     }
     void draw() override {
         drawHover(hover);
         for (size_t i = 0; i < cells.size(); ++i) {
             const auto& c = cells[i];
             if (c.group == 1) {
-                rt->DrawRoundedRectangle(D2D1::RoundedRect(c.rect, px(4), px(4)), br(D2D1::ColorF(0.6f, 0.6f, 0.6f)), 1);
-                surface.drawUiText(tr(L"Show Colors…"), c.rect, px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f), DWRITE_TEXT_ALIGNMENT_CENTER);
+                rt->DrawRoundedRectangle(D2D1::RoundedRect(c.rect, px(4), px(4)), br(theme::kPopupBtnLine), 1);
+                surface.drawUiText(tr(L"Show Colors…"), c.rect, px(13), theme::kPopupInk, DWRITE_TEXT_ALIGNMENT_CENTER);
                 continue;
             }
             Color col = colors[c.value];
             D2D1_RECT_F r = c.rect;
             if (col.none()) {
-                rt->DrawRectangle(r, br(D2D1::ColorF(0.5f, 0.5f, 0.5f)), 1);
-                rt->DrawLine(D2D1::Point2F(r.left + 2, r.bottom - 2), D2D1::Point2F(r.right - 2, r.top + 2), br(D2D1::ColorF(0.85f, 0.1f, 0.1f)), px(1.5f));
+                rt->DrawRectangle(r, br(theme::kSwatchNoneLine), 1);
+                rt->DrawLine(D2D1::Point2F(r.left + 2, r.bottom - 2), D2D1::Point2F(r.right - 2, r.top + 2), br(theme::kNoColorSlash), px(1.5f));
             } else {
                 rt->FillRectangle(r, br(col));
-                rt->DrawRectangle(r, br(D2D1::ColorF(0, 0, 0, 0.15f)), 1);
+                rt->DrawRectangle(r, br(theme::kSwatchLine), 1);
             }
             if (col == cur) drawSelectedFrame(D2D1::RectF(r.left - 2, r.top - 2, r.right + 2, r.bottom + 2));
         }
@@ -347,8 +321,7 @@ struct ColorPopup : PopupBase {
     void click(const Cell& c) override {
         if (c.group == 1) {
             Color pick = cur.none() ? Color::rgb(255, 0, 0) : cur;
-            bool ok = pickColorFromPopup(hwnd, owner, pick);
-            if (ok) { cur = pick; onChange(cur); }
+            if (pickColor(pick)) { cur = pick; onChange(cur); }
             DestroyWindow(hwnd);
             return;
         }
@@ -361,21 +334,26 @@ struct ColorPopup : PopupBase {
 
 struct ShapesPopup : PopupBase {
     std::function<void(Kind)> onPick;
-    static const Kind kKinds[9];
-    void onCreated() override {
+    // 選單裡有哪些形狀、順序、一列幾個。加一種形狀在這裡加（drawKindIcon 也要會畫它）。
+    static constexpr Kind kKinds[] = {Kind::Line, Kind::Rect,    Kind::RoundRect, Kind::Ellipse, Kind::Bubble,
+                                      Kind::Star, Kind::Polygon, Kind::Magnifier, Kind::Mosaic};
+    static constexpr int kCount = static_cast<int>(std::size(kKinds)), kPerRow = 5;
+    D2D1_SIZE_F layout() override {
         cells.clear();
         float cell = px(44), gap = px(6), x0 = px(10), y0 = px(10);
-        for (int i = 0; i < 9; ++i) {
-            int col = i % 5, row = i / 5;
+        for (int i = 0; i < kCount; ++i) {
+            int col = i % kPerRow, row = i / kPerRow;
             float x = x0 + col * (cell + gap), y = y0 + row * (cell + gap);
             cells.push_back({D2D1::RectF(x, y, x + cell, y + cell), 0, i});
         }
+        const int rows = (kCount + kPerRow - 1) / kPerRow;
+        return D2D1::SizeF(2 * x0 + kPerRow * (cell + gap) - gap, 2 * y0 + rows * (cell + gap) - gap);
     }
     void draw() override {
         drawHover(hover);
         for (const auto& c : cells) {
             D2D1_RECT_F box = D2D1::RectF(c.rect.left + px(8), c.rect.top + px(8), c.rect.right - px(8), c.rect.bottom - px(8));
-            drawKindIcon(surface, kKinds[c.value], box, D2D1::ColorF(0.15f, 0.15f, 0.15f));
+            drawKindIcon(surface, kKinds[c.value], box, theme::kPopupInk);
         }
     }
     void click(const Cell& c) override {
@@ -383,8 +361,6 @@ struct ShapesPopup : PopupBase {
         DestroyWindow(hwnd);
     }
 };
-const Kind ShapesPopup::kKinds[9] = {Kind::Line, Kind::Rect, Kind::RoundRect, Kind::Ellipse, Kind::Bubble,
-                                     Kind::Star, Kind::Polygon, Kind::Magnifier, Kind::Mosaic};
 
 // ---- 格式（用系統控制項） ----
 
@@ -399,6 +375,7 @@ struct FormatPopup : PopupBase {
     // 標籤欄與對齊按鈕的寬度依翻譯後的文字量出來（日文的「スタイル」「中央揃え」比中英文寬）。
     float labelW = 36, alignW = 46;
     enum { ID_FONT = 10, ID_SIZE, ID_SPIN, ID_COLOR, ID_B, ID_I, ID_U, ID_AL, ID_AC, ID_AR, ID_AJ };
+    static constexpr float kControlFontSize = 13;
 
     static int CALLBACK enumFonts(const LOGFONTW* lf, const TEXTMETRICW*, DWORD, LPARAM lp) {
         auto* self = reinterpret_cast<FormatPopup*>(lp);
@@ -410,7 +387,7 @@ struct FormatPopup : PopupBase {
 
     void onCreated() override {
         HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(hwnd, GWLP_HINSTANCE));
-        font = CreateFontW(-static_cast<int>(px(13)), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft JhengHei UI");
+        font = controlFont(px);
         auto mk = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int id, float x, float y, float w, float h) {
             HWND c = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, static_cast<int>(px(x)), static_cast<int>(px(y)),
                                      static_cast<int>(px(w)), static_cast<int>(px(h)), hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), inst, nullptr);
@@ -439,24 +416,29 @@ struct FormatPopup : PopupBase {
             align[i] = mk(L"BUTTON", alName[i], BS_AUTOCHECKBOX | BS_PUSHLIKE, ID_AL + i, cx + i * (alignW + 4), 104, alignW, 24);
         syncControls();
     }
-    // 控制項用的字（13px JhengHei UI）量一段文字的寬，回傳未乘 ui 的邏輯像素。
-    static float textWidth(const wchar_t* s, float ui) {
+    // 選單裡系統控制項用的字（介面字型，kControlFontSize）。用完要 DeleteObject。
+    static HFONT controlFont(UiScale scale) {
+        return CreateFontW(-static_cast<int>(scale(kControlFontSize)), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0,
+                           kUiFont);
+    }
+    // 用控制項的字量一段文字的寬，回傳邏輯像素。
+    static float textWidth(const wchar_t* s, UiScale scale) {
         HDC dc = GetDC(nullptr);
-        HFONT f = CreateFontW(-static_cast<int>(13 * ui), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, L"Microsoft JhengHei UI");
+        HFONT f = controlFont(scale);
         HGDIOBJ old = SelectObject(dc, f);
         SIZE sz{};
         GetTextExtentPoint32W(dc, s, static_cast<int>(wcslen(s)), &sz);
         SelectObject(dc, old);
         DeleteObject(f);
         ReleaseDC(nullptr, dc);
-        return sz.cx / ui;
+        return sz.cx / scale.factor;
     }
-    // 依目前語言算欄寬，回傳整個彈出選單需要的寬度（邏輯像素）。
-    float measure(float ui) {
-        for (auto* s : {L"Font", L"Size", L"Style", L"Alignment"}) labelW = std::max(labelW, textWidth(tr(s), ui) + 4);
-        for (auto* s : {L"Left", L"Center", L"Right", L"Justify"}) alignW = std::max(alignW, textWidth(tr(s), ui) + 14);
+    // 依目前語言算欄寬（控制項在 onCreated 照這兩個寬度擺）。
+    D2D1_SIZE_F layout() override {
+        for (auto* s : {L"Font", L"Size", L"Style", L"Alignment"}) labelW = std::max(labelW, textWidth(tr(s), px) + 4);
+        for (auto* s : {L"Left", L"Center", L"Right", L"Justify"}) alignW = std::max(alignW, textWidth(tr(s), px) + 14);
         const float cx = 14 + labelW;
-        return std::max({262.0f, cx + 4 * (alignW + 4) + 6, cx + 200 + 12});
+        return D2D1::SizeF(px(std::max({262.0f, cx + 4 * (alignW + 4) + 6, cx + 200 + 12})), px(140));
     }
     void syncControls() {
         updating = true;
@@ -492,8 +474,7 @@ struct FormatPopup : PopupBase {
             return true;
         case ID_COLOR: {
             Color c = cur.color;
-            bool ok = pickColorFromPopup(hwnd, owner, c);
-            if (ok) { cur.color = c; onChange(cur); }
+            if (pickColor(c)) { cur.color = c; onChange(cur); }
             ShowWindow(hwnd, SW_SHOW);
             SetFocus(hwnd);
             return true;
@@ -510,8 +491,8 @@ struct FormatPopup : PopupBase {
         }
     }
     void draw() override {
-        surface.drawUiText(tr(L"Style"), D2D1::RectF(px(10), px(72), px(10 + labelW), px(96)), px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f));
-        surface.drawUiText(tr(L"Alignment"), D2D1::RectF(px(10), px(104), px(10 + labelW), px(128)), px(13), D2D1::ColorF(0.15f, 0.15f, 0.15f));
+        surface.drawUiText(tr(L"Style"), D2D1::RectF(px(10), px(72), px(10 + labelW), px(96)), px(kControlFontSize), theme::kPopupInk);
+        surface.drawUiText(tr(L"Alignment"), D2D1::RectF(px(10), px(104), px(10 + labelW), px(128)), px(kControlFontSize), theme::kPopupInk);
     }
     void click(const Cell&) override {}
     ~FormatPopup() override { if (font) DeleteObject(font); }
@@ -521,47 +502,80 @@ struct FormatPopup : PopupBase {
 
 // ---------------------------------------------------------------------------
 
-void showLineStylePopup(HWND owner, RenderDevice& device, RECT anchor, float ui, StrokeStyle current,
-                        std::function<void(const StrokeStyle&)> onChange) {
-    auto* p = new LineStylePopup;
-    p->cur = current;
-    p->onChange = std::move(onChange);
-    showPopup(p, owner, device, anchor, ui, static_cast<int>(220 * ui), static_cast<int>(kStrokeLevels * 26 * ui + 110 * ui));
+PopupMenus::PopupMenus() = default;
+
+PopupMenus::~PopupMenus() { close(); }
+
+// 排版、建視窗並顯示。視窗建不出來就當成沒開。
+void PopupMenus::show(std::unique_ptr<PopupBase> popup, HWND owner, RenderDevice& device, RECT anchor, UiScale px) {
+    close();
+    if (current_) return; // 上一個選單自己的函式還沒回來（不該發生）：不開新的
+    HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
+    registerPopupClass(inst);
+    popup->owner = owner;
+    popup->device = &device;
+    popup->surface.setDevice(device);
+    popup->px = px;
+    popup->closedAt = &lastClose_;
+    const D2D1_SIZE_F size = popup->layout();
+    const int w = static_cast<int>(size.width), h = static_cast<int>(size.height);
+    int x = anchor.left, y = anchor.bottom + 2;
+    HMONITOR mon = MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{sizeof(mi)};
+    GetMonitorInfoW(mon, &mi);
+    if (x + w > mi.rcWork.right) x = mi.rcWork.right - w;
+    if (y + h > mi.rcWork.bottom) y = anchor.top - h - 2;
+    current_ = std::move(popup);
+    HWND hwnd = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_TOPMOST, kPopupClass, L"", WS_POPUP | WS_BORDER, x, y, w, h, owner,
+                                nullptr, inst, current_.get());
+    if (!hwnd) {
+        current_.reset();
+        return;
+    }
+    ShowWindow(hwnd, SW_SHOW);
+    SetForegroundWindow(hwnd);
+    SetFocus(hwnd);
 }
 
-void showColorPopup(HWND owner, RenderDevice& device, RECT anchor, float ui, Color current, bool allowNone,
-                    std::function<void(Color)> onChange) {
-    auto* p = new ColorPopup;
+void PopupMenus::showLineStyle(HWND owner, RenderDevice& device, RECT anchor, UiScale px, StrokeStyle current,
+                               std::function<void(const StrokeStyle&)> onChange) {
+    auto p = std::make_unique<LineStylePopup>();
     p->cur = current;
-    p->allowNone = allowNone;
     p->onChange = std::move(onChange);
-    int w = static_cast<int>((20 + 12 * 26) * ui), h = static_cast<int>((10 + 22 + 12 + 9 * 26 + 8 + 28 + 12) * ui);
-    showPopup(p, owner, device, anchor, ui, w, h);
+    show(std::move(p), owner, device, anchor, px);
 }
 
-void showShapesPopup(HWND owner, RenderDevice& device, RECT anchor, float ui, std::function<void(Kind)> onPick) {
-    auto* p = new ShapesPopup;
+void PopupMenus::showColor(HWND owner, RenderDevice& device, RECT anchor, UiScale px, Color current, std::function<void(Color)> onChange) {
+    auto p = std::make_unique<ColorPopup>();
+    p->cur = current;
+    p->onChange = std::move(onChange);
+    show(std::move(p), owner, device, anchor, px);
+}
+
+void PopupMenus::showShapes(HWND owner, RenderDevice& device, RECT anchor, UiScale px, std::function<void(Kind)> onPick) {
+    auto p = std::make_unique<ShapesPopup>();
     p->onPick = std::move(onPick);
-    showPopup(p, owner, device, anchor, ui, static_cast<int>((20 + 5 * 50 - 6) * ui), static_cast<int>((20 + 2 * 50 - 6) * ui));
+    show(std::move(p), owner, device, anchor, px);
 }
 
-void showFormatPopup(HWND owner, RenderDevice& device, RECT anchor, float ui, TextStyle current,
-                     std::function<void(const TextStyle&)> onChange) {
-    auto* p = new FormatPopup;
+void PopupMenus::showFormat(HWND owner, RenderDevice& device, RECT anchor, UiScale px, TextStyle current,
+                            std::function<void(const TextStyle&)> onChange) {
+    auto p = std::make_unique<FormatPopup>();
     p->cur = current;
     p->onChange = std::move(onChange);
-    float w = p->measure(ui);
-    showPopup(p, owner, device, anchor, ui, static_cast<int>(w * ui), static_cast<int>(140 * ui));
+    show(std::move(p), owner, device, anchor, px);
 }
 
-bool isPopupOpen() { return g_popup != nullptr; }
+bool PopupMenus::isOpen() const { return current_ && current_->hwnd; }
 
-void closePopup() {
-    if (g_popup && IsWindow(g_popup)) DestroyWindow(g_popup);
-    g_popup = nullptr;
+void PopupMenus::close() {
+    if (current_ && current_->hwnd) DestroyWindow(current_->hwnd);
+    reap();
 }
 
-ULONGLONG lastPopupCloseTick() { return g_lastClose; }
+void PopupMenus::reap() {
+    if (current_ && !current_->hwnd && current_->inCall == 0) current_.reset();
+}
 
 bool chooseColorDialog(HWND owner, Color& inout) {
     static COLORREF custom[16] = {};
@@ -582,6 +596,9 @@ void drawKindIcon(Surface& surface, Kind kind, D2D1_RECT_F box, D2D1_COLOR_F col
     float cx = (box.left + box.right) / 2, cy = (box.top + box.bottom) / 2;
     float sw = std::max(1.5f, w * 0.07f);
     auto P = [](float x, float y) { return D2D1::Point2F(x, y); };
+    auto outline = [&](const std::vector<Pt>& pts) { // 封閉的折線
+        for (size_t i = 0; i < pts.size(); ++i) rt->DrawLine(toD2D(pts[i]), toD2D(pts[(i + 1) % pts.size()]), br, sw);
+    };
     switch (kind) {
     case Kind::Line:
         rt->DrawLine(P(box.left, box.bottom), P(box.right, box.top), br, sw);
@@ -593,19 +610,13 @@ void drawKindIcon(Surface& surface, Kind kind, D2D1_RECT_F box, D2D1_COLOR_F col
     case Kind::Ellipse: rt->DrawEllipse(D2D1::Ellipse(P(cx, cy), w / 2, h / 2), br, sw); break;
     case Kind::Bubble: {
         Annotation a = makeShape(Kind::Bubble, {cx, cy - h * 0.12f}, h * 2.4f, StrokeStyle{});
-        a.tailTip = {box.left + w * 0.2f, box.bottom};
-        auto pts = bubbleOutline(a);
-        for (size_t i = 0; i + 1 < pts.size(); ++i) rt->DrawLine(toD2D(pts[i]), toD2D(pts[i + 1]), br, sw);
-        rt->DrawLine(toD2D(pts.back()), toD2D(pts.front()), br, sw);
+        BubbleShape& bubble = *a.as<BubbleShape>();
+        bubble.tailTip = {box.left + w * 0.2f, box.bottom};
+        outline(bubbleOutline(bubble));
         break;
     }
-    case Kind::Star:
-    case Kind::Polygon: {
-        Annotation a = makeShape(kind, {cx, cy}, std::min(w, h) / 0.3f, StrokeStyle{});
-        auto pts = starPoints(a);
-        for (size_t i = 0; i < pts.size(); ++i) rt->DrawLine(toD2D(pts[i]), toD2D(pts[(i + 1) % pts.size()]), br, sw);
-        break;
-    }
+    case Kind::Star: outline(starPoints(*makeShape(kind, {cx, cy}, std::min(w, h) / 0.3f, StrokeStyle{}).as<StarShape>())); break;
+    case Kind::Polygon: outline(starPoints(*makeShape(kind, {cx, cy}, std::min(w, h) / 0.3f, StrokeStyle{}).as<PolygonShape>())); break;
     case Kind::Magnifier:
         rt->DrawEllipse(D2D1::Ellipse(P(cx, cy), w * 0.42f, h * 0.42f), br, sw);
         rt->DrawLine(P(cx - w * 0.15f, cy), P(cx + w * 0.15f, cy), br, sw);
@@ -621,19 +632,8 @@ void drawKindIcon(Surface& surface, Kind kind, D2D1_RECT_F box, D2D1_COLOR_F col
             }
         break;
     }
-    case Kind::Freehand: {
-        auto geo = surface.device().pathGeometry([&](ID2D1GeometrySink& sink) {
-            sink.BeginFigure(P(box.left, cy + h * 0.3f), D2D1_FIGURE_BEGIN_HOLLOW);
-            sink.AddBezier(D2D1::BezierSegment(P(box.left + w * 0.2f, box.top - h * 0.3f), P(box.left + w * 0.5f, box.bottom + h * 0.3f), P(cx + w * 0.1f, cy)));
-            sink.AddBezier(D2D1::BezierSegment(P(box.right - w * 0.3f, box.top - h * 0.2f), P(box.right - w * 0.2f, box.bottom), P(box.right, cy - h * 0.2f)));
-            sink.EndFigure(D2D1_FIGURE_END_OPEN);
-        });
-        if (geo) rt->DrawGeometry(geo.Get(), br, sw);
-        break;
-    }
-    case Kind::Text:
-        surface.drawUiText(L"A", box, h, color, DWRITE_TEXT_ALIGNMENT_CENTER);
-        break;
+    case Kind::Freehand:
+    case Kind::Text: break; // 不在形狀選單裡
     }
 }
 

@@ -40,7 +40,7 @@ enum class CursorKind { Default, Cross, Move, SizeNWSE, SizeNESW, SizeWE, SizeNS
 class Editor {
 public:
     // 文字方塊依目前寬度排版後的高度（要 DirectWrite，由 app 給）。沒給時文字方塊的高度不會跟著內容變。
-    void setTextMeasurer(std::function<float(const Annotation&)> measure) { measure_ = std::move(measure); }
+    void setTextMeasurer(std::function<float(const TextShape&)> measure) { measure_ = std::move(measure); }
 
     Document& doc() { return doc_; }
     const Document& doc() const { return doc_; }
@@ -162,16 +162,17 @@ public:
     // 開始編輯 id 這個文字方塊。不是文字方塊回 false。
     bool beginTextEdit(uint32_t id);
     const std::wstring& editText() const { return editText_; }
+    // 正在編輯的文字方塊在文件裡的樣子（位置、樣式；內容是編輯前的）。沒在編輯回 nullptr。
+    const TextShape* editingShape() const;
     // 輸入框的內容變了。方塊的高度跟著內容長（直接改文件裡的物件，不進 undo）。回傳高度有沒有變。
     bool setEditText(const std::wstring& text);
     // 結束編輯。commit：打成空的就刪掉方塊，有改就進 undo；否則丟掉打的字。回傳文件有沒有新的 undo 步驟。
     bool endTextEdit(bool commit);
 
 private:
-    void fitText(Annotation& a) const;
-    void commitItems(std::vector<Annotation> items) { doc_.commitItems(std::move(items)); }
+    void fitText(Annotation& a) const; // 文字方塊：照目前的寬度與內容重算高度；其他物件不動
 
-    std::function<float(const Annotation&)> measure_;
+    std::function<float(const TextShape&)> measure_;
     Document doc_;
     Tool tool_ = Tool::Select;
     uint32_t selected_ = 0;

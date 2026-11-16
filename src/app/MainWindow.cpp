@@ -12,7 +12,7 @@
 
 #include "app/AboutDialog.h"
 #include "app/ArchiveDialogs.h"
-#include "app/Popups.h"
+#include "app/DialogUtil.h"
 #include "app/SettingsDialog.h"
 #include "app/UiText.h"
 #include "app/UpdateDialogs.h"
@@ -30,83 +30,27 @@ namespace mp {
 
 namespace {
 
-constexpr wchar_t kClassName[] = L"MiniPainterMain";
-constexpr wchar_t kAppName[] = L"mpainter";
 constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer = 4, kToastTimer = 5, kArmTimer = 6,
                    kUpdateTimer = 7, kPrefetchTimer = 8;
-// 主視窗自己用的訊息。WM_APP 起的編號全專案只有這些：彈出選單關閉的 WM_MP_POPUP_CLOSED 是 WM_APP + 3（Popups.h），
-// 進度對話框內部用 WM_APP + 10 起（Dialogs.cpp）。
-constexpr UINT WM_MP_EDIT_LOST_FOCUS = WM_APP + 1; // 文字編輯框把焦點交回主視窗
-constexpr UINT WM_MP_ASK_DEFAULT = WM_APP + 2;     // 第一次開圖後詢問預設程式
-constexpr UINT WM_MP_UPDATE_FOUND = WM_APP + 4; // lParam = new 出來的 ReleaseInfo*，收到的人 delete
-constexpr wchar_t kReleasesPage[] = L"https://github.com/iamxie/mini-painter/releases";
-
-// 自動更新：請同一個 exe 的其他 mpainter 關閉（跨行程，用註冊的訊息）。回 1 = 會關，0 = 使用者在存檔詢問按了取消。
-UINT closeForUpdateMessage() {
-    static const UINT msg = RegisterWindowMessageW(L"mpainter.CloseForUpdate");
-    return msg;
-}
-
-// 這些行程的主視窗。
-std::vector<HWND> mainWindowsOf(const std::vector<unsigned long>& pids) {
-    struct Ctx { const std::vector<unsigned long>* pids; std::vector<HWND> out; } ctx{&pids, {}};
-    EnumWindows([](HWND h, LPARAM lp) -> BOOL {
-        auto* c = reinterpret_cast<Ctx*>(lp);
-        DWORD pid = 0;
-        GetWindowThreadProcessId(h, &pid);
-        wchar_t cls[64];
-        if (std::find(c->pids->begin(), c->pids->end(), pid) != c->pids->end() && GetClassNameW(h, cls, 64) &&
-            wcscmp(cls, kClassName) == 0)
-            c->out.push_back(h);
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&ctx));
-    return ctx.out;
-}
-
-// 確認按鈕一律叫「好」，所以不用 MessageBox 的 MB_OKCANCEL / MB_OK。
-bool askOk(HWND owner, const std::wstring& text, PCWSTR icon, bool withCancel) {
-    TASKDIALOG_BUTTON ok{IDOK, tr(L"OK")};
-    TASKDIALOGCONFIG td{sizeof(td)};
-    td.hwndParent = owner;
-    td.dwFlags = TDF_POSITION_RELATIVE_TO_WINDOW | (withCancel ? TDF_ALLOW_DIALOG_CANCELLATION : 0);
-    td.dwCommonButtons = withCancel ? TDCBF_CANCEL_BUTTON : 0;
-    td.cButtons = 1;
-    td.pButtons = &ok;
-    td.pszWindowTitle = kAppName;
-    td.pszMainIcon = icon;
-    td.pszContent = text.c_str();
-    int pressed = IDCANCEL;
-    if (FAILED(TaskDialogIndirect(&td, &pressed, nullptr, nullptr))) return false;
-    return pressed == IDOK;
-}
 constexpr UINT kToastMs = 2000, kArmMs = 3000;
 constexpr UINT kUndoToastMs = 6000; // 復原紀錄快滿的提示比較長，多留一點時間
 constexpr UINT kSettingsToastMs = 10000; // 設定檔讀不到的提示：影響整次執行，留久一點
-// 啟動時設定檔讀不到：重試幾次、每次隔多久（最多多等 1 秒）
-constexpr int kSettingsReadRetries = 10;
-constexpr DWORD kSettingsReadRetryMs = 100;
 constexpr UINT kHqDelayMs = 200;
 constexpr UINT kPrefetchDelayMs = 300; // 拖曳改視窗大小時，停下來才重排預先縮圖
 constexpr UINT kTipDelayMs = 500, kTipShowMs = 6000;
-constexpr float kToolbarH = 44, kMarkupH = 40, kNameH = 26, kInfoW = 320, kBtnW = 36, kBtnH = 30;
+// 以下的尺寸都是邏輯像素，用的時候過 px()。
+constexpr float kDefaultWindowW = 1100, kDefaultWindowH = 760; // 沒有記住的視窗位置時
+constexpr float kMinWindowW = 520, kMinWindowH = 320;
+constexpr float kToolbarH = 44, kMarkupH = 40, kNameH = 26, kInfoW = 320;
+constexpr float kTipMaxW = 420;   // 提示最寬多少，超過就折行
 constexpr float kHandleR = 5.0f;
 constexpr float kHandleHitExtra = 3.0f; // 控制點比畫出來的圓多幾個像素也算點到
 constexpr float kDrawStepPx = 0.5f;     // 塗鴉：滑鼠離上一點至少這麼多螢幕像素才記下一點
-constexpr int kClickSlopPx = 2;         // 滑鼠按下後移動超過這麼多像素才算拖曳（不是手抖）
+constexpr float kClickSlop = 2;         // 滑鼠按下後移動超過這麼多才算拖曳（不是手抖）
 constexpr float kNudgePx = 1.0f, kNudgeLargePx = 10.0f; // 方向鍵微移選取的物件（圖片像素）；按著 Shift 用大的
 // 裁切框（DIP）：邊的命中容差、角的命中範圍（沿邊從角算起）、L 形把手的長度
 constexpr float kCropTol = 8.0f, kCropCorner = 30.0f, kCropHandleLen = 26.0f;
 constexpr UINT_PTR kEditSubclass = 1;
-
-const D2D1_COLOR_F kChromeBg = D2D1::ColorF(0.953f, 0.953f, 0.953f);
-const D2D1_COLOR_F kChromeLine = D2D1::ColorF(0.80f, 0.80f, 0.80f);
-const D2D1_COLOR_F kCanvasBg = D2D1::ColorF(0.90f, 0.90f, 0.90f);
-const D2D1_COLOR_F kIcon = D2D1::ColorF(0.20f, 0.20f, 0.20f);
-const D2D1_COLOR_F kIconDisabled = D2D1::ColorF(0.70f, 0.70f, 0.70f);
-const D2D1_COLOR_F kBtnHover = D2D1::ColorF(0.87f, 0.87f, 0.87f);
-const D2D1_COLOR_F kBtnOn = D2D1::ColorF(0.78f, 0.85f, 0.95f);
-const D2D1_COLOR_F kHandleBlue = D2D1::ColorF(0.04f, 0.52f, 1.0f);
-const D2D1_COLOR_F kHandleGreen = D2D1::ColorF(0.20f, 0.78f, 0.35f);
 
 bool ctrlDown() { return (GetKeyState(VK_CONTROL) & 0x8000) != 0; }
 bool shiftDown() { return (GetKeyState(VK_SHIFT) & 0x8000) != 0; }
@@ -141,7 +85,7 @@ bool openDefaultAppsSettings() {
 bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCmdShow) {
     inst_ = inst;
     if (!renderer_.init()) return false;
-    editor_.setTextMeasurer([this](const Annotation& a) { return textHeight(renderer_.device(), a); });
+    editor_.setTextMeasurer([this](const TextShape& t) { return textHeight(renderer_.device(), t); });
     loadSettingsAndRegister();
     {
         // 清掉當掉的執行個體留下的壓縮檔暫存（lock 沒人持有的子資料夾）：設定的位置、exe 旁的 temp、退路的 %TEMP%。
@@ -161,17 +105,30 @@ bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCm
     wc.lpfnWndProc = wndProc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    wc.lpszClassName = kClassName;
+    wc.lpszClassName = kMainWindowClass;
     wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_APP));
     wc.hIconSm = wc.hIcon;
     RegisterClassExW(&wc);
 
     buildMenu();
-    hwnd_ = CreateWindowExW(0, kClassName, kAppName, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1100, 760,
-                            nullptr, menu_, inst, this);
+    hwnd_ = CreateWindowExW(0, kMainWindowClass, kAppName, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                            CW_USEDEFAULT, nullptr, menu_, inst, this);
     if (!hwnd_) return false;
 
-    ui_ = GetDpiForWindow(hwnd_) / 96.0f;
+    px = UiScale::forDpi(GetDpiForWindow(hwnd_));
+    // 預設大小照這個螢幕的 DPI 算（視窗建好才知道在哪個螢幕）。位置留給系統排的。
+    // 高 DPI 的小螢幕放不下時縮到工作區裡。
+    {
+        RECT wr{};
+        GetWindowRect(hwnd_, &wr);
+        MONITORINFO mi{sizeof(mi)};
+        GetMonitorInfoW(MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST), &mi);
+        const RECT& work = mi.rcWork;
+        const int w = std::min<int>(px.round(kDefaultWindowW), work.right - work.left);
+        const int h = std::min<int>(px.round(kDefaultWindowH), work.bottom - work.top);
+        const int x = std::clamp<int>(wr.left, work.left, work.right - w), y = std::clamp<int>(wr.top, work.top, work.bottom - h);
+        SetWindowPos(hwnd_, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
     editBrush_ = CreateSolidBrush(RGB(255, 255, 255));
     DragAcceptFiles(hwnd_, TRUE);
     layout();
@@ -191,10 +148,10 @@ bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCm
     updateTitle();
     showMainWindow(nCmdShow);
     if (justUpdated_) showToast(fmt1(L"Updated to mpainter %s.", MP_VERSION_WSTRING), false);
-    if (settingsUnreadable_)
+    if (store_.unreadable())
         showToast(tr(L"Could not read mpainter.ini. Default settings are used this time, and settings will not be saved."), false,
                   kSettingsToastMs);
-    if (settings_.autoCheckUpdate) startAutoUpdateCheck();
+    if (settings_.autoCheckUpdate) updates_.startBackgroundCheck();
     return true;
 }
 
@@ -216,14 +173,9 @@ void MainWindow::rememberPlacement() {
     settings_.winMax = wp.showCmd == SW_SHOWMAXIMIZED;
 }
 
-std::wstring MainWindow::exeDir() const {
-    size_t slash = exePath_.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? L"" : exePath_.substr(0, slash + 1);
-}
-
 bool MainWindow::preTranslate(MSG& msg) {
     // modeless 的調整顏色面板要靠 IsDialogMessage 才有 Tab / Esc / Enter。
-    if (HWND panel = colorAdjustPanelHwnd()) {
+    if (HWND panel = adjustPanel_.hwnd()) {
         if (IsDialogMessageW(panel, &msg)) return true;
     }
     // 文字編輯框裡的 Esc / Ctrl+Enter 結束編輯，其餘交給編輯框。
@@ -259,28 +211,7 @@ LRESULT CALLBACK MainWindow::editProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp,
 }
 
 LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
-    if (msg == closeForUpdateMessage()) {
-        // 另一個 mpainter 要裝更新。這邊正忙（對話框或進度框開著、選單開著、拖曳中）就不關，回 0，那邊會取消更新：
-        // 這時關視窗，堆疊上還沒做完的流程回來之後會在已經銷毀的視窗上繼續跑。
-        if (!canInterrupt()) {
-            AllowSetForegroundWindow(static_cast<DWORD>(wp));
-            return 0;
-        }
-        // 有沒存的修改先問（拉到前面讓使用者看得到），按取消就回 0。
-        if (doc_.image() && doc_.dirty() && !readOnly()) {
-            if (IsIconic(hwnd_)) ShowWindow(hwnd_, SW_RESTORE);
-            SetForegroundWindow(hwnd_);
-        }
-        if (!confirmDiscard()) {
-            AllowSetForegroundWindow(static_cast<DWORD>(wp)); // wParam = 要更新的那個行程，讓它能跳到前面說「已取消」
-            return 0;
-        }
-        // 使用者回答存檔詢問的期間，那邊可能已經按取消、不更新了（lParam 是那邊的進度框，取消後就不在了）：那就不關。
-        if (lp && !IsWindow(reinterpret_cast<HWND>(lp))) return 0;
-        updating_ = true; // WM_CLOSE 不再問
-        PostMessageW(hwnd_, WM_CLOSE, 0, 0);
-        return 1;
-    }
+    if (msg == closeForUpdateMessage()) return onCloseForUpdate(static_cast<DWORD>(wp), reinterpret_cast<HWND>(lp));
     switch (msg) {
     case WM_ERASEBKGND: return 1;
     case WM_PAINT: {
@@ -296,17 +227,10 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         if (fit_) fitToView(false); else clampOffset();
         positionEdit();
         return 0;
-    case WM_DPICHANGED: {
-        ui_ = HIWORD(wp) / 96.0f;
-        const RECT* r = reinterpret_cast<const RECT*>(lp);
-        SetWindowPos(hwnd_, nullptr, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
-        layout();
-        updateEditFont();
-        return 0;
-    }
+    case WM_DPICHANGED: onDpiChanged(HIWORD(wp), *reinterpret_cast<const RECT*>(lp)); return 0;
     case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
-        mmi->ptMinTrackSize = {static_cast<LONG>(px(520)), static_cast<LONG>(px(320))};
+        mmi->ptMinTrackSize = {px.round(kMinWindowW), px.round(kMinWindowH)};
         return 0;
     }
     case WM_LBUTTONDOWN: disarmJump(); onLButtonDown({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}); return 0;
@@ -321,48 +245,23 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     case WM_MOUSELEAVE:
         trackingMouse_ = false;
-        if (hoverBtn_ != BTN_NONE) { hoverBtn_ = BTN_NONE; repaint(); }
+        if (toolbar_.hover != BTN_NONE) { toolbar_.hover = BTN_NONE; repaint(); }
         hoverItem_ = 0;
         KillTimer(hwnd_, kTipTimer);
         KillTimer(hwnd_, kBtnTipTimer);
         hideTip();
         return 0;
     case WM_TIMER:
-        if (wp == kTipTimer) {
-            KillTimer(hwnd_, kTipTimer);
-            POINT p;
-            GetCursorPos(&p);
-            ScreenToClient(hwnd_, &p);
-            if (!editor_.dragging() && hoverItem_ && hitItemBox(p) == hoverItem_ && settings_.tipShown < kTipMaxShown) showTip(p);
-            return 0;
-        }
-        if (wp == kTipHideTimer) { hideTip(); return 0; }
-        if (wp == kToastTimer) { hideToast(); return 0; }
-        if (wp == kArmTimer) { disarmJump(); return 0; }
-        if (wp == kUpdateTimer) { KillTimer(hwnd_, kUpdateTimer); offerPendingUpdate(); return 0; }
-        if (wp == kPrefetchTimer) { schedulePrefetch(); return 0; }
-        if (wp == kHqTimer) {
-            KillTimer(hwnd_, kHqTimer);
-            hqBusy_ = false;
-            repaint();
-            return 0;
-        }
-        if (wp == kBtnTipTimer) {
-            KillTimer(hwnd_, kBtnTipTimer);
-            if (!editor_.dragging() && pressBtn_ == BTN_NONE && hoverBtn_ != BTN_NONE) showButtonTip(hoverBtn_);
-            return 0;
-        }
+        if (onTimer(wp)) return 0;
         break;
     case WM_MP_POPUP_CLOSED:
-        SetFocus(edit_ ? edit_ : hwnd_);
+        popups_.reap();
+        if (wp == 0) SetFocus(edit_ ? edit_ : hwnd_);
         return 0;
-    case WM_MP_UPDATE_FOUND: {
-        std::unique_ptr<ReleaseInfo> r(reinterpret_cast<ReleaseInfo*>(lp));
-        if (_wcsicmp(r->version.c_str(), settings_.skipVersion.c_str()) == 0) return 0; // 使用者選過略過這一版
-        pendingUpdate_ = std::move(r);
+    case WM_MP_UPDATE_FOUND:
+        updates_.found(std::unique_ptr<ReleaseInfo>(reinterpret_cast<ReleaseInfo*>(lp)));
         offerPendingUpdate();
         return 0;
-    }
     case WM_ENTERMENULOOP: menuLoop_ = true; break;
     case WM_EXITMENULOOP: menuLoop_ = false; break;
     case WM_MP_ASK_DEFAULT:
@@ -394,17 +293,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         onCommand(LOWORD(wp));
         return 0;
     case WM_CTLCOLOREDIT:
-        if (reinterpret_cast<HWND>(lp) == edit_) {
-            const Annotation* item = doc_.findItem(editor_.editingId());
-            Color bg = item && !item->stroke.fill.none() ? item->stroke.fill : Color::rgb(255, 255, 255);
-            Color fg = item ? item->text.color : Color::rgb(0, 0, 0);
-            HDC dc = reinterpret_cast<HDC>(wp);
-            SetBkColor(dc, RGB(bg.r, bg.g, bg.b));
-            SetTextColor(dc, RGB(fg.r, fg.g, fg.b));
-            if (editBrush_) DeleteObject(editBrush_);
-            editBrush_ = CreateSolidBrush(RGB(bg.r, bg.g, bg.b));
-            return reinterpret_cast<LRESULT>(editBrush_);
-        }
+        if (reinterpret_cast<HWND>(lp) == edit_) return reinterpret_cast<LRESULT>(editColors(reinterpret_cast<HDC>(wp)));
         break;
     case WM_MP_EDIT_LOST_FOCUS:
         if (edit_ && GetFocus() != edit_) endTextEdit(true);
@@ -417,40 +306,124 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
     }
     case WM_INITMENUPOPUP: updateMenu(); return 0;
-    case WM_CLOSE:
-        // 模態對話框或進度框開著（主視窗被停用）時不關：別的程式送來的 WM_CLOSE（例如 taskkill）也會走到這裡。
-        if (!IsWindowEnabled(hwnd_)) return 0;
-        if (!updating_ && !confirmDiscard()) return 0; // 更新前已經問過存檔
-        closePopup();
-        closeColorAdjustPanel();
-        rememberPlacement();
-        saveSettingsQuiet();
-        DestroyWindow(hwnd_);
-        return 0;
+    case WM_CLOSE: onClose(); return 0;
     case WM_DESTROY:
-        prefetch_.shutdown();
-        closeArchive();
-        tempDir_.release();
-        if (!relaunchArgs_.empty()) {
-            // 自動更新：檔案已換好，用新的 exe 重開（它會等這個行程結束才開始）。
-            std::wstring cmd = quoteArg(exePath_) + L" " + relaunchArgs_;
-            STARTUPINFOW si{sizeof(si)};
-            PROCESS_INFORMATION pi{};
-            if (CreateProcessW(exePath_.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
-                AllowSetForegroundWindow(pi.dwProcessId);
-                CloseHandle(pi.hThread);
-                CloseHandle(pi.hProcess);
-            } else {
-                MessageBoxW(nullptr, tr(L"mpainter has been updated. Please start it again."), kAppName, MB_ICONINFORMATION);
-            }
-        }
-        if (editFont_) DeleteObject(editFont_);
-        if (editBrush_) DeleteObject(editBrush_);
-        PostQuitMessage(0);
+        onDestroy();
         return 0;
     default: break;
     }
     return DefWindowProcW(hwnd_, msg, wp, lp);
+}
+
+// 另一個 mpainter 要裝更新，請這個視窗關閉。pid 是要更新的那個行程，progress 是它的進度框。回 1 = 會關，0 = 不關。
+LRESULT MainWindow::onCloseForUpdate(DWORD pid, HWND progress) {
+    // 這邊正忙（對話框或進度框開著、選單開著、拖曳中）就不關，那邊會取消更新：
+    // 這時關視窗，堆疊上還沒做完的流程回來之後會在已經銷毀的視窗上繼續跑。
+    if (!canInterrupt()) {
+        AllowSetForegroundWindow(pid);
+        return 0;
+    }
+    // 有沒存的修改先問（拉到前面讓使用者看得到），按取消就回 0。
+    if (doc_.image() && doc_.dirty() && !readOnly()) {
+        if (IsIconic(hwnd_)) ShowWindow(hwnd_, SW_RESTORE);
+        SetForegroundWindow(hwnd_);
+    }
+    if (!confirmDiscard()) {
+        AllowSetForegroundWindow(pid); // 讓要更新的那個行程能跳到前面說「已取消」
+        return 0;
+    }
+    // 使用者回答存檔詢問的期間，那邊可能已經按取消、不更新了（進度框取消後就不在了）：那就不關。
+    if (progress && !IsWindow(progress)) return 0;
+    updating_ = true; // WM_CLOSE 不再問
+    PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+    return 1;
+}
+
+void MainWindow::onDpiChanged(unsigned dpi, const RECT& suggested) {
+    px = UiScale::forDpi(dpi);
+    if (tip_) SendMessageW(tip_, TTM_SETMAXTIPWIDTH, 0, px.round(kTipMaxW)); // 提示的折行寬度跟著新的 DPI
+    SetWindowPos(hwnd_, nullptr, suggested.left, suggested.top, suggested.right - suggested.left, suggested.bottom - suggested.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+    layout();
+    updateEditFont();
+}
+
+// 回傳是不是自己的 timer。
+bool MainWindow::onTimer(UINT_PTR id) {
+    switch (id) {
+    case kTipTimer: {
+        KillTimer(hwnd_, kTipTimer);
+        POINT p;
+        GetCursorPos(&p);
+        ScreenToClient(hwnd_, &p);
+        if (!editor_.dragging() && hoverItem_ && hitItemBox(p) == hoverItem_ && settings_.tipShown < kTipMaxShown) showTip(p);
+        return true;
+    }
+    case kTipHideTimer: hideTip(); return true;
+    case kToastTimer: hideToast(); return true;
+    case kArmTimer: disarmJump(); return true;
+    case kUpdateTimer:
+        KillTimer(hwnd_, kUpdateTimer);
+        offerPendingUpdate();
+        return true;
+    case kPrefetchTimer: schedulePrefetch(); return true;
+    case kHqTimer:
+        KillTimer(hwnd_, kHqTimer);
+        hqBusy_ = false;
+        repaint();
+        return true;
+    case kBtnTipTimer:
+        KillTimer(hwnd_, kBtnTipTimer);
+        if (!editor_.dragging() && toolbar_.pressed == BTN_NONE && toolbar_.hover != BTN_NONE) showButtonTip(toolbar_.hover);
+        return true;
+    default: return false;
+    }
+}
+
+// 文字編輯的輸入框要用的顏色：字是文字方塊的字色，底是它的填色（沒有填色用白的）。回傳底色的畫刷。
+HBRUSH MainWindow::editColors(HDC dc) {
+    const Annotation* item = doc_.findItem(editor_.editingId());
+    Color bg = item && !item->stroke.fill.none() ? item->stroke.fill : Color::rgb(255, 255, 255);
+    const TextShape* shape = editor_.editingShape();
+    Color fg = shape ? shape->style.color : Color::rgb(0, 0, 0);
+    SetBkColor(dc, RGB(bg.r, bg.g, bg.b));
+    SetTextColor(dc, RGB(fg.r, fg.g, fg.b));
+    if (editBrush_) DeleteObject(editBrush_);
+    editBrush_ = CreateSolidBrush(RGB(bg.r, bg.g, bg.b));
+    return editBrush_;
+}
+
+void MainWindow::onClose() {
+    // 模態對話框或進度框開著（主視窗被停用）時不關：別的程式送來的 WM_CLOSE（例如 taskkill）也會走到這裡。
+    if (!IsWindowEnabled(hwnd_)) return;
+    if (!updating_ && !confirmDiscard()) return; // 更新前已經問過存檔
+    popups_.close();
+    adjustPanel_.close();
+    rememberPlacement();
+    saveSettingsQuiet();
+    DestroyWindow(hwnd_);
+}
+
+void MainWindow::onDestroy() {
+    prefetch_.shutdown();
+    closeArchive();
+    tempDir_.release();
+    if (!relaunchArgs_.empty()) {
+        // 自動更新：檔案已換好，用新的 exe 重開（它會等這個行程結束才開始）。
+        std::wstring cmd = quoteArg(store_.exePath()) + L" " + relaunchArgs_;
+        STARTUPINFOW si{sizeof(si)};
+        PROCESS_INFORMATION pi{};
+        if (CreateProcessW(store_.exePath().c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+            AllowSetForegroundWindow(pi.dwProcessId);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        } else {
+            MessageBoxW(nullptr, tr(L"mpainter has been updated. Please start it again."), kAppName, MB_ICONINFORMATION);
+        }
+    }
+    if (editFont_) DeleteObject(editFont_);
+    if (editBrush_) DeleteObject(editBrush_);
+    PostQuitMessage(0);
 }
 
 // ---------------------------------------------------------------------------
@@ -476,69 +449,19 @@ void MainWindow::layout() {
 }
 
 void MainWindow::buildButtons() {
-    buttons_.clear();
-    float bw = px(kBtnW), bh = px(kBtnH), gap = px(4);
-    auto add = [&](int id, float x, float y, bool dropdown = false) {
-        Button b;
-        b.id = id;
-        b.rect = D2D1::RectF(x, y, x + bw, y + bh);
-        b.dropdown = dropdown;
-        buttons_.push_back(b);
-        return x + bw + gap;
-    };
-    float y = toolbarRc_.top + (px(kToolbarH) - bh) / 2;
-    float x = px(10);
-    x = add(BTN_ZOOMOUT, x, y);
-    x = add(BTN_ZOOM100, x, y);
-    x = add(BTN_ZOOMIN, x, y);
-    x += px(12);
-    x = add(BTN_ROTATE, x, y);
-    float right = toolbarRc_.right - px(10) - bw;
-    add(BTN_INFO, right, y);
-    add(BTN_MARKUP, right - bw - gap, y);
-
-    if (showMarkup_) {
-        y = markupRc_.top + (px(kMarkupH) - bh) / 2;
-        x = px(10);
-        x = add(BTN_FREEHAND, x, y);
-        x = add(BTN_SHAPES, x, y, true);
-        x = add(BTN_TEXT, x, y);
-        x += px(12);
-        x = add(BTN_ADJCOLOR, x, y);
-        x = add(BTN_ADJSIZE, x, y);
-        x = add(BTN_CROP, x, y);
-        x += px(12);
-        x = add(BTN_LINESTYLE, x, y, true);
-        x = add(BTN_LINECOLOR, x, y, true);
-        x = add(BTN_FILL, x, y, true);
-        x = add(BTN_FORMAT, x, y, true);
-        if (editor_.cropping()) {
-            Button b;
-            b.id = BTN_CROP_APPLY;
-            float w = renderer_.measureUiText(tr(L"Crop"), px(13)) + px(28);
-            float r = markupRc_.right - px(10);
-            b.rect = D2D1::RectF(r - w, y, r, y + bh);
-            buttons_.push_back(b);
-        }
-    }
-    CommandState state = commandState();
-    state.dragging = false; // 按鈕的灰色不跟著拖曳變（拖曳中本來就按不到）
-    for (auto& b : buttons_) {
-        switch (b.id) {
-        case BTN_ZOOM100: b.enabled = std::abs(zoom_ - 1.0f) > 1e-4f; break;
-        case BTN_MARKUP: b.pressed = showMarkup_; break;
-        case BTN_INFO: b.pressed = showInfo_; break;
-        case BTN_FREEHAND: b.pressed = editor_.freehand(); break;
-        case BTN_ADJCOLOR: b.pressed = editor_.adjusting(); break;
-        case BTN_CROP: b.pressed = editor_.cropping(); break;
-        default: break;
-        }
-        // 對應到指令的按鈕用指令的可用條件（和選單、快捷鍵同一份）；其他的工具按鈕要有圖才能按。
-        const int command = b.id == BTN_ZOOMIN ? IDM_ZOOMIN : b.id == BTN_ZOOMOUT ? IDM_ZOOMOUT : b.id == BTN_ROTATE ? IDM_ROTATE
-                          : b.id == BTN_MARKUP ? IDM_MARKUP : b.id == BTN_INFO ? IDM_INFO : IDM_NONE;
-        if (command != IDM_NONE) b.enabled = commandEnabled(command, state);
-        else if (!doc_.image()) b.enabled = false;
-    }
+    ToolbarState st;
+    st.showMarkup = showMarkup_;
+    st.showInfo = showInfo_;
+    st.freehand = editor_.freehand();
+    st.adjusting = editor_.adjusting();
+    st.cropping = editor_.cropping();
+    st.hasImage = doc_.image() != nullptr;
+    st.zoomIsActual = std::abs(zoom_ - 1.0f) <= 1e-4f;
+    st.commands = commandState();
+    const StrokeStyle stroke = editor_.currentStroke();
+    st.stroke = stroke.stroke;
+    st.fill = stroke.fill;
+    toolbar_.layout(toolbarRc_, markupRc_, st, px, renderer_.device());
 }
 
 CommandState MainWindow::commandState() const {
@@ -558,23 +481,12 @@ CommandState MainWindow::commandState() const {
 
 RECT MainWindow::buttonScreenRect(int id) const {
     RECT r{};
-    for (const auto& b : buttons_) {
-        if (b.id != id) continue;
-        r = {static_cast<LONG>(b.rect.left), static_cast<LONG>(b.rect.top), static_cast<LONG>(b.rect.right),
-             static_cast<LONG>(b.rect.bottom)};
+    if (const Button* b = toolbar_.find(id)) {
+        r = {static_cast<LONG>(b->rect.left), static_cast<LONG>(b->rect.top), static_cast<LONG>(b->rect.right),
+             static_cast<LONG>(b->rect.bottom)};
         MapWindowPoints(hwnd_, nullptr, reinterpret_cast<POINT*>(&r), 2);
     }
     return r;
-}
-
-int MainWindow::hitButton(POINT pt, const Button** out) const {
-    for (const auto& b : buttons_) {
-        if (inRect(b.rect, pt)) {
-            if (out) *out = &b;
-            return b.id;
-        }
-    }
-    return BTN_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -638,8 +550,8 @@ void MainWindow::buildMenu() {
     HMENU lang = CreatePopupMenu();
     item(lang, IDM_LANG_SYSTEM);
     sep(lang);
-    for (size_t i = 0; i < langs_.size() && IDM_LANG_FIRST + static_cast<int>(i) <= IDM_LANG_LAST; ++i)
-        AppendMenuW(lang, MF_STRING, IDM_LANG_FIRST + static_cast<UINT_PTR>(i), langs_[i].name.c_str());
+    for (size_t i = 0; i < store_.languages().size() && IDM_LANG_FIRST + static_cast<int>(i) <= IDM_LANG_LAST; ++i)
+        AppendMenuW(lang, MF_STRING, IDM_LANG_FIRST + static_cast<UINT_PTR>(i), store_.languages()[i].name.c_str());
     AppendMenuW(menu_, MF_POPUP, reinterpret_cast<UINT_PTR>(file), tr(L"&File"));
     AppendMenuW(menu_, MF_POPUP, reinterpret_cast<UINT_PTR>(edit), tr(L"&Edit"));
     AppendMenuW(menu_, MF_POPUP, reinterpret_cast<UINT_PTR>(view), tr(L"&View"));
@@ -698,8 +610,8 @@ void MainWindow::updateMenu() {
     ModifyMenuW(profileMenu_, IDM_PROFILE_SAVE, MF_BYCOMMAND | MF_STRING, IDM_PROFILE_SAVE,
                 fmt1(L"Save Current Settings to “%s”", settings_.profileName).c_str());
     chk(IDM_LANG_SYSTEM, settings_.language.empty());
-    for (size_t i = 0; i < langs_.size(); ++i)
-        chk(IDM_LANG_FIRST + static_cast<int>(i), !settings_.language.empty() && _wcsicmp(langs_[i].code.c_str(), settings_.language.c_str()) == 0);
+    for (size_t i = 0; i < store_.languages().size(); ++i)
+        chk(IDM_LANG_FIRST + static_cast<int>(i), !settings_.language.empty() && _wcsicmp(store_.languages()[i].code.c_str(), settings_.language.c_str()) == 0);
     // 灰不灰照指令表的條件（快捷鍵用的是同一份，選單停用的指令快捷鍵也不動作）。
     const CommandState state = commandState();
     for (const CommandInfo& c : commands()) en(c.id, commandEnabled(c.id, state));
@@ -725,24 +637,8 @@ void MainWindow::onCommand(int id) {
     case IDM_SAVE: save(); break;
     case IDM_SAVEAS: exportAs(); break;
     case IDM_EXIT: PostMessageW(hwnd_, WM_CLOSE, 0, 0); break;
-    case IDM_UNDO:
-    case IDM_REDO: {
-        if (editor_.cropping()) { cancelCrop(); break; } // 裁切模式中只取消裁切，不動編輯歷史
-        // 調整顏色的面板也要收：它拿著復原前那張圖當底，之後按「好」會把那張圖換回來。
-        endInteraction(true);
-        if (id == IDM_UNDO ? !doc_.canUndo() : !doc_.canRedo()) break;
-        auto before = doc_.image();
-        if (id == IDM_UNDO) editor_.undo(); else editor_.redo();
-        auto after = doc_.image();
-        // 底圖尺寸變了（旋轉、調整尺寸）就重新符合視窗。
-        if (before && after && (before->width != after->width || before->height != after->height)) {
-            fit_ = true;
-            fitToView();
-        }
-        repaint();
-        updateTitle();
-        break;
-    }
+    case IDM_UNDO: undoRedo(true); break;
+    case IDM_REDO: undoRedo(false); break;
     case IDM_DELETE: deleteSelected(); break;
     case IDM_ROTATE: rotateImage(); break;
     case IDM_SETTINGS: showSettings(0); break;
@@ -769,28 +665,8 @@ void MainWindow::onCommand(int id) {
         updateTitle();
         repaint();
         break;
-    case IDM_FIRSTALONE:
-    case IDM_SHIFTONE: {
-        bool& flag = id == IDM_FIRSTALONE ? settings_.view.firstPageAlone : shiftOne_;
-        flag = !flag;
-        if (twoPage()) {
-            // 配對變了：重算，目前這頁可能變成某屏的第二頁，重開到那屏的第一頁（換圖前先問，取消就不改）。
-            updateSpreads();
-            if (!confirmSpreadMove()) {
-                flag = !flag;
-                updateSpreads();
-                break;
-            }
-        }
-        if (id == IDM_FIRSTALONE) { saveSettingsQuiet(); updateTitle(); }
-        if (twoPage()) {
-            int cur = currentSpread();
-            if (cur >= 0 && spreads()[static_cast<size_t>(cur)].first != nav_.index()) openPath(nav_.at(spreads()[static_cast<size_t>(cur)].first));
-            else { loadSecond(); fit_ = true; fitToView(); updateTitle(); repaint(); }
-        }
-        schedulePrefetch();
-        break;
-    }
+    case IDM_FIRSTALONE: togglePairing(settings_.view.firstPageAlone, true); break;
+    case IDM_SHIFTONE: togglePairing(shiftOne_, false); break;
     case IDM_PREV: goPrev(); break;
     case IDM_NEXT: goNext(); break;
     case IDM_AUTONEXT:
@@ -803,14 +679,60 @@ void MainWindow::onCommand(int id) {
     case IDM_MARKUP: onButton(BTN_MARKUP); break;
     case IDM_INFO: onButton(BTN_INFO); break;
     case IDM_LANG_SYSTEM: selectLanguage(L""); break;
-    case IDM_ABOUT: endTextEdit(true); if (showAboutDialog(hwnd_)) checkForUpdatesNow(); break;
+    case IDM_ABOUT: endTextEdit(true); if (showAboutDialog(hwnd_)) updates_.checkNow(); break;
     default:
-        if (id >= IDM_LANG_FIRST && id <= IDM_LANG_LAST && static_cast<size_t>(id - IDM_LANG_FIRST) < langs_.size())
-            selectLanguage(langs_[id - IDM_LANG_FIRST].code);
+        if (id >= IDM_LANG_FIRST && id <= IDM_LANG_LAST && static_cast<size_t>(id - IDM_LANG_FIRST) < store_.languages().size())
+            selectLanguage(store_.languages()[id - IDM_LANG_FIRST].code);
         else if (id >= IDM_PROFILE_FIRST && id <= IDM_PROFILE_LAST && static_cast<size_t>(id - IDM_PROFILE_FIRST) < settings_.profiles.size())
             switchProfile(settings_.profiles[static_cast<size_t>(id - IDM_PROFILE_FIRST)]);
         break;
     }
+}
+
+// 復原 / 重做。
+void MainWindow::undoRedo(bool undo) {
+    if (editor_.cropping()) { cancelCrop(); return; } // 裁切模式中只取消裁切，不動編輯歷史
+    // 調整顏色的面板也要收：它拿著復原前那張圖當底，之後按「好」會把那張圖換回來。
+    endInteraction(true);
+    if (undo ? !doc_.canUndo() : !doc_.canRedo()) return;
+    auto before = doc_.image();
+    if (undo) editor_.undo(); else editor_.redo();
+    auto after = doc_.image();
+    // 底圖尺寸變了（旋轉、調整尺寸）就重新符合視窗。
+    if (before && after && (before->width != after->width || before->height != after->height)) {
+        fit_ = true;
+        fitToView();
+    }
+    repaint();
+    updateTitle();
+}
+
+// 兩頁並排的配對選項（「第一張單獨顯示」「錯開一頁」）開或關。flag 是那個選項；saved：它存不存進設定檔。
+void MainWindow::togglePairing(bool& flag, bool saved) {
+    flag = !flag;
+    if (twoPage()) {
+        // 配對變了：重算，目前這頁可能變成某屏的第二頁，重開到那屏的第一頁（換圖前先問，取消就不改）。
+        updateSpreads();
+        if (!confirmSpreadMove()) {
+            flag = !flag;
+            updateSpreads();
+            return;
+        }
+    }
+    if (saved) { saveSettingsQuiet(); updateTitle(); }
+    if (twoPage()) {
+        if (const int first = spreadStartIfSecond(); first >= 0) openPath(nav_.at(first));
+        else { loadSecond(); fit_ = true; fitToView(); updateTitle(); repaint(); }
+    }
+    schedulePrefetch();
+}
+
+// 兩頁並排：目前這頁是某一屏的第二頁時，回那一屏第一頁在清單裡的位置（要改開它，它會再載入這一頁當第二頁）；否則回 -1。
+int MainWindow::spreadStartIfSecond() const {
+    const int cur = currentSpread();
+    if (cur < 0) return -1;
+    const int first = spreads()[static_cast<size_t>(cur)].first;
+    return first == nav_.index() ? -1 : first;
 }
 
 // ---------------------------------------------------------------------------
@@ -822,7 +744,7 @@ void MainWindow::showLoadError(const std::wstring& path, const std::wstring& mes
     path_ = path;
     if (resetList) {
         nav_ = FolderNav{};
-        infoData_ = {};
+        info_.setData({});
     }
     loadError_ = message;
     editor_.reset(nullptr);
@@ -835,7 +757,7 @@ void MainWindow::showLoadError(const std::wstring& path, const std::wstring& mes
 
 bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
     endInteraction(false); // 正在打的字丟掉：那張圖要被換掉了
-    closePopup();
+    popups_.close();
     hideTip();
     disarmJump();
     hoverItem_ = 0;
@@ -853,18 +775,23 @@ bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
         showLoadError(path, tr(L"This folder has no supported images"), true);
         return false;
     }
+    return showPage(path, inArchive, landAtBottom);
+}
+
+// openPath 的後半：path 已經確定是一張圖（inArchive：它是目前壓縮檔解出來的）。解碼、換掉目前的圖、更新各處。
+bool MainWindow::showPage(const std::wstring& path, bool inArchive, bool landAtBottom) {
     LoadResult r = loadPage(path);
     path_ = path;
     loadedFrom_ = path;
     if (inArchive) nav_.setFiles(archiveFiles_, path);
     else nav_.load(path);
-    infoData_ = {};
-    fillFileFacts(infoData_, path);
+    InfoData facts;
+    fillFileFacts(facts, path);
     if (inArchive) {
-        infoData_.fileName = displayName(path);
-        infoData_.filePath = archivePath_;
+        facts.fileName = displayName(path);
+        facts.filePath = archivePath_;
     }
-    infoState_.scroll = 0;
+    info_.setData(facts); // 圖開不了時面板仍有檔案的部分
     if (!r.image) {
         showLoadError(path, fmt1(L"Cannot open: %s", ioErrorText(r.error)), false);
         schedulePrefetch();
@@ -880,18 +807,16 @@ bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
     secondPath_.clear();
     if (viewMode_ == ViewMode::TwoPage) {
         updateSpreads();
-        int cur = currentSpread();
-        if (cur >= 0 && spreads()[static_cast<size_t>(cur)].first != nav_.index()) {
-            // 開到的是某屏的第二頁：改開那屏的第一頁（它會再載入這一頁當第二頁）。
-            return openPath(nav_.at(spreads()[static_cast<size_t>(cur)].first), landAtBottom);
-        }
+        // 開到的是某屏的第二頁：改開那屏的第一頁。
+        if (const int first = spreadStartIfSecond(); first >= 0) return openPath(nav_.at(first), landAtBottom);
         loadSecond();
     }
-    infoData_.info = r.info;
-    infoData_.width = r.image->width;
-    infoData_.height = r.image->height;
-    infoData_.dpiX = r.dpi.x;
-    infoData_.dpiY = r.dpi.y;
+    facts.info = r.info;
+    facts.width = r.image->width;
+    facts.height = r.image->height;
+    facts.dpiX = r.dpi.x;
+    facts.dpiY = r.dpi.y;
+    info_.setData(std::move(facts));
     fit_ = true;
     fitToView();
     if (landAtBottom) {
@@ -1139,7 +1064,7 @@ bool MainWindow::save() {
     if (!writeFlattened(path_)) return false;
     loadedFrom_ = path_;
     doc_.markSaved();
-    fillFileFacts(infoData_, path_);
+    info_.setFileFacts(path_);
     updateTitle();
     repaint();
     return true;
@@ -1213,8 +1138,8 @@ bool MainWindow::pickSavePath(std::wstring& out, bool exporting) {
     }
     // 跨格式：目標裝不下的 metadata 區塊先列出來問。
     if (settings_.view.warnMetadataLoss) {
-        // 來源的格式看檔案內容（infoData_.info.format），不看 loadedFrom_ 的副檔名：兩者可能不一樣。
-        auto lost = metadataLossOnSave(infoData_.info, imageFormatOfExtension(extensionOf(newPath)));
+        // 來源的格式看檔案內容（info_.data().info.format），不看 loadedFrom_ 的副檔名：兩者可能不一樣。
+        auto lost = metadataLossOnSave(info_.data().info, imageFormatOfExtension(extensionOf(newPath)));
         if (!lost.empty()) {
             std::wstring list;
             for (size_t i = 0; i < lost.size(); ++i) list += (i ? L", " : L"") + trs(lost[i].c_str());
@@ -1254,7 +1179,7 @@ bool MainWindow::saveAs() {
         return false;
     }
     nav_.load(path_);
-    fillFileFacts(infoData_, path_);
+    info_.setFileFacts(path_);
     updateTitle();
     repaint();
     return true;
@@ -1420,9 +1345,9 @@ void MainWindow::drawToast() {
     float w = renderer_.measureUiText(toast_, size, true, maxW, &h);
     float cx = (canvasRc_.left + canvasRc_.right) / 2, cy = (canvasRc_.top + canvasRc_.bottom) / 2;
     D2D1_RECT_F box = {cx - w / 2 - padX, cy - h / 2 - padY, cx + w / 2 + padX, cy + h / 2 + padY};
-    rt->FillRoundedRectangle(D2D1::RoundedRect(box, px(8), px(8)), renderer_.brush(D2D1::ColorF(0.12f, 0.12f, 0.12f, 0.88f)));
+    rt->FillRoundedRectangle(D2D1::RoundedRect(box, px(8), px(8)), renderer_.brush(theme::kToastBg));
     D2D1_RECT_F textRc = {box.left + padX, box.top + padY, box.right - padX, box.bottom - padY};
-    renderer_.drawUiText(toast_, textRc, size, D2D1::ColorF(D2D1::ColorF::White), DWRITE_TEXT_ALIGNMENT_CENTER, true,
+    renderer_.drawUiText(toast_, textRc, size, theme::kWhite, DWRITE_TEXT_ALIGNMENT_CENTER, true,
                          DWRITE_PARAGRAPH_ALIGNMENT_CENTER, false, true);
 }
 
@@ -1527,7 +1452,7 @@ bool MainWindow::setViewMode(ViewMode m) {
     if (m == ViewMode::TwoPage) {
         // 只看不編：收掉編輯狀態與標示工具列。
         endInteraction(true);
-        closePopup();
+        popups_.close();
         editor_.select(0);
         editor_.leaveFreehand();
         showMarkup_ = false;
@@ -1632,18 +1557,14 @@ void MainWindow::paint() {
     auto* rt = renderer_.rt();
     rt->BeginDraw();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
-    rt->Clear(kChromeBg);
+    rt->Clear(theme::kChromeBg);
     drawCanvas();
     drawChrome();
     drawToast();
     if (showInfo_) {
-        if (auto img = doc_.image()) {
-            infoData_.width = img->width;
-            infoData_.height = img->height;
-            infoData_.dpiX = doc_.dpi().x;
-            infoData_.dpiY = doc_.dpi().y;
-        }
-        drawInfoPanel(renderer_.surface(), infoRc_, infoData_, infoState_, ui_);
+        // 圖的尺寸與解析度跟著編輯變（旋轉、裁切、調整尺寸、undo）：畫之前對一次，沒變就不重組。
+        if (auto img = doc_.image()) info_.setImageSize(img->width, img->height, doc_.dpi().x, doc_.dpi().y);
+        info_.draw(renderer_.surface(), infoRc_, px);
     }
     HRESULT hr = rt->EndDraw();
     renderer_.endFrame(); // 這一幀沒畫到的點陣圖（翻走的圖、undo 歷史、舊預覽）連同來源圖一起放掉
@@ -1656,194 +1577,34 @@ void MainWindow::paint() {
 void MainWindow::drawChrome() {
     auto* rt = renderer_.rt();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
-    rt->FillRectangle(toolbarRc_, renderer_.brush(kChromeBg));
+    rt->FillRectangle(toolbarRc_, renderer_.brush(theme::kChromeBg));
     rt->DrawLine(D2D1::Point2F(0, toolbarRc_.bottom - 0.5f), D2D1::Point2F(toolbarRc_.right, toolbarRc_.bottom - 0.5f),
-                 renderer_.brush(kChromeLine), 1.0f);
+                 renderer_.brush(theme::kChromeLine), 1.0f);
     if (showMarkup_) {
-        rt->FillRectangle(markupRc_, renderer_.brush(D2D1::ColorF(0.93f, 0.93f, 0.93f)));
+        rt->FillRectangle(markupRc_, renderer_.brush(theme::kMarkupBg));
         rt->DrawLine(D2D1::Point2F(0, markupRc_.bottom - 0.5f), D2D1::Point2F(markupRc_.right, markupRc_.bottom - 0.5f),
-                     renderer_.brush(kChromeLine), 1.0f);
+                     renderer_.brush(theme::kChromeLine), 1.0f);
     }
-    rt->FillRectangle(nameRc_, renderer_.brush(kChromeBg));
+    rt->FillRectangle(nameRc_, renderer_.brush(theme::kChromeBg));
     rt->DrawLine(D2D1::Point2F(0, nameRc_.bottom - 0.5f), D2D1::Point2F(nameRc_.right, nameRc_.bottom - 0.5f),
-                 renderer_.brush(kChromeLine), 1.0f);
+                 renderer_.brush(theme::kChromeLine), 1.0f);
     std::wstring name = path_.empty() ? trs(L"No file open — drop an image here, or use File > Open") : displayName(path_);
     if (twoPage() && second_) {
         std::wstring a = displayName(path_), b = displayName(secondPath_);
         name = settings_.view.rightToLeft ? b + L"   |   " + a : a + L"   |   " + b;
     }
-    renderer_.drawUiText(name, nameRc_, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
-    for (const auto& b : buttons_) drawButton(b);
-}
-
-void MainWindow::drawButton(const Button& b) {
-    auto* rt = renderer_.rt();
-    float r = px(5);
-    if (b.id == BTN_CROP_APPLY) {
-        // 文字按鈕：灰底圓角，像 Preview 的「裁切」
-        bool hot = hoverBtn_ == b.id || pressBtn_ == b.id;
-        rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, px(6), px(6)),
-                                 renderer_.brush(hot ? D2D1::ColorF(0.78f, 0.78f, 0.78f) : D2D1::ColorF(0.85f, 0.85f, 0.85f)));
-        renderer_.drawUiText(tr(L"Crop"), b.rect, px(13), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
-        return;
-    }
-    if (b.pressed) rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, r, r), renderer_.brush(kBtnOn));
-    else if (b.enabled && (hoverBtn_ == b.id || pressBtn_ == b.id))
-        rt->FillRoundedRectangle(D2D1::RoundedRect(b.rect, r, r), renderer_.brush(kBtnHover));
-    drawIcon(b);
-    if (b.dropdown) {
-        float x = b.rect.right - px(7), y = b.rect.bottom - px(7);
-        D2D1_COLOR_F c = b.enabled ? kIcon : kIconDisabled;
-        rt->DrawLine(D2D1::Point2F(x - px(3), y - px(1.5f)), D2D1::Point2F(x, y + px(1.5f)), renderer_.brush(c), px(1.2f));
-        rt->DrawLine(D2D1::Point2F(x, y + px(1.5f)), D2D1::Point2F(x + px(3), y - px(1.5f)), renderer_.brush(c), px(1.2f));
-    }
-}
-
-void MainWindow::drawIcon(const Button& b) {
-    auto* rt = renderer_.rt();
-    D2D1_COLOR_F c = b.enabled ? kIcon : kIconDisabled;
-    auto* br = renderer_.brush(c);
-    float cx = (b.rect.left + b.rect.right) / 2, cy = (b.rect.top + b.rect.bottom) / 2;
-    float s = px(1.6f);
-    auto P = [](float x, float y) { return D2D1::Point2F(x, y); };
-    switch (b.id) {
-    case BTN_ZOOMOUT:
-    case BTN_ZOOMIN: {
-        float r = px(6);
-        rt->DrawEllipse(D2D1::Ellipse(P(cx - px(1.5f), cy - px(1.5f)), r, r), br, s);
-        rt->DrawLine(P(cx + px(3), cy + px(3)), P(cx + px(8), cy + px(8)), br, s * 1.4f);
-        rt->DrawLine(P(cx - px(5), cy - px(1.5f)), P(cx + px(2), cy - px(1.5f)), br, s);
-        if (b.id == BTN_ZOOMIN) rt->DrawLine(P(cx - px(1.5f), cy - px(5)), P(cx - px(1.5f), cy + px(2)), br, s);
-        break;
-    }
-    case BTN_ZOOM100:
-        renderer_.drawUiText(L"1:1", b.rect, px(12), c, DWRITE_TEXT_ALIGNMENT_CENTER, true);
-        break;
-    case BTN_ROTATE: {
-        // 逆時針的弧加箭頭
-        float r = px(7);
-        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
-            sink.BeginFigure(P(cx + r * 0.0f, cy - r), D2D1_FIGURE_BEGIN_HOLLOW);
-            sink.AddArc(D2D1::ArcSegment(P(cx - r * 0.7f, cy + r * 0.7f), D2D1::SizeF(r, r), 0, D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
-            sink.EndFigure(D2D1_FIGURE_END_OPEN);
-        });
-        if (geo) rt->DrawGeometry(geo.Get(), br, s);
-        rt->DrawLine(P(cx, cy - r), P(cx - px(4), cy - r - px(3)), br, s);
-        rt->DrawLine(P(cx, cy - r), P(cx - px(4), cy - r + px(3)), br, s);
-        break;
-    }
-    case BTN_MARKUP: {
-        // 筆頭
-        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
-            sink.BeginFigure(P(cx + px(6), cy - px(7)), D2D1_FIGURE_BEGIN_FILLED);
-            sink.AddLine(P(cx + px(8), cy - px(5)));
-            sink.AddLine(P(cx - px(4), cy + px(7)));
-            sink.AddLine(P(cx - px(8), cy + px(8)));
-            sink.AddLine(P(cx - px(7), cy + px(4)));
-            sink.EndFigure(D2D1_FIGURE_END_CLOSED);
-        });
-        if (geo) rt->DrawGeometry(geo.Get(), br, s);
-        break;
-    }
-    case BTN_INFO: {
-        float r = px(8);
-        rt->DrawEllipse(D2D1::Ellipse(P(cx, cy), r, r), br, s);
-        rt->DrawLine(P(cx, cy - px(1)), P(cx, cy + px(5)), br, s * 1.3f);
-        rt->FillEllipse(D2D1::Ellipse(P(cx, cy - px(4.5f)), s * 0.8f, s * 0.8f), br);
-        break;
-    }
-    case BTN_FREEHAND: {
-        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
-            sink.BeginFigure(P(cx - px(9), cy + px(5)), D2D1_FIGURE_BEGIN_HOLLOW);
-            sink.AddBezier(D2D1::BezierSegment(P(cx - px(6), cy - px(12)), P(cx - px(2), cy + px(12)), P(cx + px(1), cy - px(2))));
-            sink.AddBezier(D2D1::BezierSegment(P(cx + px(3), cy - px(10)), P(cx + px(5), cy + px(8)), P(cx + px(9), cy - px(4))));
-            sink.EndFigure(D2D1_FIGURE_END_OPEN);
-        });
-        if (geo) rt->DrawGeometry(geo.Get(), br, s);
-        break;
-    }
-    case BTN_SHAPES:
-        rt->DrawRectangle(D2D1::RectF(cx - px(9), cy - px(7), cx - px(1), cy + px(3)), br, s);
-        rt->DrawEllipse(D2D1::Ellipse(P(cx + px(4), cy + px(1)), px(5), px(5)), br, s);
-        break;
-    case BTN_TEXT:
-        renderer_.drawUiText(L"A", b.rect, px(18), c, DWRITE_TEXT_ALIGNMENT_CENTER, false);
-        break;
-    case BTN_ADJCOLOR: {
-        for (int i = 0; i < 3; ++i) {
-            float y = cy - px(6) + i * px(6);
-            rt->DrawLine(P(cx - px(9), y), P(cx + px(9), y), br, s);
-            float kx = cx + (i == 0 ? -px(3) : i == 1 ? px(4) : -px(6));
-            rt->FillEllipse(D2D1::Ellipse(P(kx, y), px(2.2f), px(2.2f)), br);
-        }
-        break;
-    }
-    case BTN_CROP: {
-        // 兩個交錯的 L
-        auto geo = renderer_.device().pathGeometry([&](ID2D1GeometrySink& sink) {
-            sink.BeginFigure(P(cx - px(5), cy - px(9)), D2D1_FIGURE_BEGIN_HOLLOW);
-            sink.AddLine(P(cx - px(5), cy + px(5)));
-            sink.AddLine(P(cx + px(9), cy + px(5)));
-            sink.EndFigure(D2D1_FIGURE_END_OPEN);
-            sink.BeginFigure(P(cx - px(9), cy - px(5)), D2D1_FIGURE_BEGIN_HOLLOW);
-            sink.AddLine(P(cx + px(5), cy - px(5)));
-            sink.AddLine(P(cx + px(5), cy + px(9)));
-            sink.EndFigure(D2D1_FIGURE_END_OPEN);
-        });
-        if (geo) rt->DrawGeometry(geo.Get(), br, s);
-        break;
-    }
-    case BTN_ADJSIZE:
-        rt->DrawRectangle(D2D1::RectF(cx - px(9), cy - px(7), cx + px(9), cy + px(7)), br, s);
-        rt->DrawLine(P(cx - px(5), cy + px(3)), P(cx + px(5), cy - px(3)), br, s);
-        rt->DrawLine(P(cx + px(5), cy - px(3)), P(cx + px(1), cy - px(3)), br, s);
-        rt->DrawLine(P(cx + px(5), cy - px(3)), P(cx + px(5), cy + px(1)), br, s);
-        break;
-    case BTN_LINESTYLE:
-        for (int i = 0; i < 3; ++i) {
-            float y = cy - px(6) + i * px(6);
-            rt->DrawLine(P(cx - px(9), y), P(cx + px(7), y), br, px(1 + i * 1.5f));
-        }
-        break;
-    case BTN_LINECOLOR: {
-        float r = px(7);
-        Color sc = editor_.currentStroke().stroke;
-        if (sc.none()) {
-            rt->DrawEllipse(D2D1::Ellipse(P(cx - px(1), cy), r, r), br, s);
-            rt->DrawLine(P(cx - px(1) - r * 0.7f, cy + r * 0.7f), P(cx - px(1) + r * 0.7f, cy - r * 0.7f), renderer_.brush(D2D1::ColorF(0.85f, 0.1f, 0.1f)), s);
-        } else {
-            rt->DrawEllipse(D2D1::Ellipse(P(cx - px(1), cy), r, r), renderer_.brush(sc), px(3.5f));
-        }
-        break;
-    }
-    case BTN_FILL: {
-        D2D1_RECT_F box = D2D1::RectF(cx - px(8), cy - px(7), cx + px(6), cy + px(7));
-        Color fc = editor_.currentStroke().fill;
-        if (fc.none()) {
-            rt->DrawRectangle(box, br, s);
-            rt->DrawLine(P(box.left, box.bottom), P(box.right, box.top), renderer_.brush(D2D1::ColorF(0.85f, 0.1f, 0.1f)), s);
-        } else {
-            rt->FillRectangle(box, renderer_.brush(fc));
-            rt->DrawRectangle(box, br, px(1));
-        }
-        break;
-    }
-    case BTN_FORMAT:
-        renderer_.drawUiText(L"Aa", D2D1::RectF(b.rect.left, b.rect.top, b.rect.right - px(5), b.rect.bottom), px(14), c,
-                             DWRITE_TEXT_ALIGNMENT_CENTER, true);
-        break;
-    default: break;
-    }
+    renderer_.drawUiText(name, nameRc_, px(kUiTextSize), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+    toolbar_.draw(renderer_.surface(), px);
 }
 
 void MainWindow::drawCanvas() {
     auto* rt = renderer_.rt();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
-    rt->FillRectangle(canvasRc_, renderer_.brush(kCanvasBg));
+    rt->FillRectangle(canvasRc_, renderer_.brush(theme::kCanvasBg));
     auto img = currentImage();
     if (!img) {
         if (!loadError_.empty())
-            renderer_.drawUiText(loadError_, canvasRc_, px(14), kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+            renderer_.drawUiText(loadError_, canvasRc_, px(14), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
         return;
     }
     rt->PushAxisAlignedClip(canvasRc_, D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1860,7 +1621,7 @@ void MainWindow::drawCanvas() {
     auto shadow = [&](const Rc& r) {
         rt->SetTransform(D2D1::Matrix3x2F::Identity());
         POINT tl = toClient({r.left, r.top}), brp = toClient({r.right, r.bottom});
-        rt->DrawRectangle(D2D1::RectF(tl.x - 0.5f, tl.y - 0.5f, brp.x + 0.5f, brp.y + 0.5f), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.25f)), 1.0f);
+        rt->DrawRectangle(D2D1::RectF(tl.x - 0.5f, tl.y - 0.5f, brp.x + 0.5f, brp.y + 0.5f), renderer_.brush(theme::kHairline), 1.0f);
     };
     PaintCtx ctx = renderer_.paintCtx(img, bitmapFor(img));
     // 兩頁並排：第二頁先畫（它不帶標註），再畫第一頁與它的標註。第一頁的位置由 pageRect 決定。
@@ -1879,7 +1640,7 @@ void MainWindow::drawCanvas() {
     for (const auto& a : editor_.visibleItems()) {
         if (a.id == editor_.editingId()) {
             Annotation copy = a;
-            copy.textValue.clear();
+            if (auto* t = copy.as<TextShape>()) t->value.clear();
             drawAnnotation(ctx, copy);
         } else {
             drawAnnotation(ctx, a);
@@ -1901,7 +1662,7 @@ void MainWindow::drawSelection() {
     if (editor_.drag() == DragKind::Handle) {
         // 綠點按下時畫它的可動軌跡：繞圈的畫圈，直線的畫線。
         HandleGuide g = handleGuide(*a, editor_.dragHandleId());
-        auto* gb = renderer_.brush(D2D1::ColorF(0.04f, 0.52f, 1.0f, 0.40f));
+        auto* gb = renderer_.brush(theme::kAccentGuide);
         if (g.kind == GuideKind::Circle) {
             POINT tl = toClient({g.ellipse.left, g.ellipse.top}), br = toClient({g.ellipse.right, g.ellipse.bottom});
             D2D1_ELLIPSE e = D2D1::Ellipse(D2D1::Point2F((tl.x + br.x) * 0.5f, (tl.y + br.y) * 0.5f),
@@ -1916,8 +1677,8 @@ void MainWindow::drawSelection() {
     for (const auto& h : handles(*a)) {
         POINT c = toClient(h.pos);
         D2D1_ELLIPSE e = D2D1::Ellipse(D2D1::Point2F(static_cast<float>(c.x), static_cast<float>(c.y)), r, r);
-        rt->FillEllipse(e, renderer_.brush(h.kind == HandleKind::Blue ? kHandleBlue : kHandleGreen));
-        rt->DrawEllipse(e, renderer_.brush(D2D1::ColorF(1, 1, 1)), px(1.5f));
+        rt->FillEllipse(e, renderer_.brush(h.kind == HandleKind::Blue ? theme::kAccent : theme::kHandleGreen));
+        rt->DrawEllipse(e, renderer_.brush(theme::kWhite), px(1.5f));
     }
 }
 
@@ -1926,7 +1687,7 @@ void MainWindow::drawSelection() {
 
 void MainWindow::onButton(int id) {
     // 彈出選單開著時再點同一顆按鈕：選單已因失去焦點關閉，這一下視為「收起」，不要再開。
-    if (id == popupBtn_ && GetTickCount64() - lastPopupCloseTick() < 300) { popupBtn_ = BTN_NONE; return; }
+    if (id == popupBtn_ && GetTickCount64() - popups_.lastCloseTick() < 300) { popupBtn_ = BTN_NONE; return; }
     auto anchor = [&]() { popupBtn_ = id; return buttonScreenRect(id); };
     // 裁切模式中按了縮放、資訊、裁切以外的按鈕：先取消裁切，再做那顆按鈕的事。
     if (editor_.cropping() && id != BTN_CROP && id != BTN_CROP_APPLY && id != BTN_ZOOMOUT && id != BTN_ZOOM100 && id != BTN_ZOOMIN &&
@@ -1961,7 +1722,7 @@ void MainWindow::onButton(int id) {
         repaint();
         break;
     case BTN_SHAPES:
-        showShapesPopup(hwnd_, renderer_.device(), anchor(), ui_, [this](Kind k) { addShape(k); });
+        popups_.showShapes(hwnd_, renderer_.device(), anchor(), px, [this](Kind k) { addShape(k); });
         break;
     case BTN_TEXT: addText(); break;
     case BTN_ADJCOLOR:
@@ -1970,7 +1731,7 @@ void MainWindow::onButton(int id) {
             endTextEdit(true);
             editor_.beginAdjust();
             buildButtons();
-            showColorAdjustPanel(hwnd_, this);
+            adjustPanel_.show(hwnd_, this);
             repaint();
         }
         break;
@@ -1981,24 +1742,24 @@ void MainWindow::onButton(int id) {
         break;
     case BTN_CROP_APPLY: applyCrop(); break;
     case BTN_LINESTYLE:
-        showLineStylePopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentStroke(), [this](const StrokeStyle& s) { applyStrokeStyle(s); });
+        popups_.showLineStyle(hwnd_, renderer_.device(), anchor(), px, editor_.currentStroke(), [this](const StrokeStyle& s) { applyStrokeStyle(s); });
         break;
     case BTN_LINECOLOR:
-        showColorPopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentStroke().stroke, true, [this](Color c) {
+        popups_.showColor(hwnd_, renderer_.device(), anchor(), px, editor_.currentStroke().stroke, [this](Color c) {
             StrokeStyle s = editor_.currentStroke();
             s.stroke = c;
             applyStrokeStyle(s);
         });
         break;
     case BTN_FILL:
-        showColorPopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentStroke().fill, true, [this](Color c) {
+        popups_.showColor(hwnd_, renderer_.device(), anchor(), px, editor_.currentStroke().fill, [this](Color c) {
             StrokeStyle s = editor_.currentStroke();
             s.fill = c;
             applyStrokeStyle(s);
         });
         break;
     case BTN_FORMAT:
-        showFormatPopup(hwnd_, renderer_.device(), anchor(), ui_, editor_.currentText(), [this](const TextStyle& t) { applyTextStyle(t); });
+        popups_.showFormat(hwnd_, renderer_.device(), anchor(), px, editor_.currentText(), [this](const TextStyle& t) { applyTextStyle(t); });
         break;
     default: break;
     }
@@ -2020,19 +1781,19 @@ Pointer MainWindow::pointerAt(POINT client) const {
 
 void MainWindow::onLButtonDown(POINT pt) {
     const Button* b = nullptr;
-    int id = hitButton(pt, &b);
+    int id = toolbar_.hit(pt, &b);
     if (id != BTN_NONE) {
         // 不搶焦點：編輯文字時可以直接點格式、顏色按鈕。
         hideTip();
         KillTimer(hwnd_, kBtnTipTimer);
-        if (b->enabled) { pressBtn_ = id; repaint(); }
+        if (b->enabled) { toolbar_.pressed = id; repaint(); }
         return;
     }
     SetFocus(hwnd_);
     hideTip();
     KillTimer(hwnd_, kTipTimer);
     if (showInfo_ && inRect(infoRc_, pt)) {
-        if (infoPanelClick(infoRc_, pt, infoState_)) repaint();
+        if (info_.click(pt)) repaint();
         return;
     }
     if (!inRect(canvasRc_, pt) || !doc_.image()) return;
@@ -2041,7 +1802,7 @@ void MainWindow::onLButtonDown(POINT pt) {
     // 這一下做什麼（平移、取白點、拖裁切框、畫塗鴉、選物件）由 Editor 依目前的狀態決定。
     dragStartClient_ = pt;
     if (editor_.press(pointerAt(pt), twoPage()) == Editor::Press::PickedWhite) {
-        colorAdjustPanelSetParams(editor_.adjustParams());
+        adjustPanel_.setParams(editor_.adjustParams());
         repaint();
         return;
     }
@@ -2068,9 +1829,9 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
         trackingMouse_ = true;
     }
     if (!editor_.dragging()) {
-        int id = hitButton(pt);
-        if (id != hoverBtn_) {
-            hoverBtn_ = id;
+        int id = toolbar_.hit(pt);
+        if (id != toolbar_.hover) {
+            toolbar_.hover = id;
             repaint();
             // 按鈕名稱 tooltip：停 0.5 秒出現，每次 hover 都顯示，不計次。
             hideTip();
@@ -2092,18 +1853,18 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
         clampOffset();
         positionEdit();
     } else {
-        const bool pastClickSlop = std::abs(pt.x - dragStartClient_.x) > kClickSlopPx || std::abs(pt.y - dragStartClient_.y) > kClickSlopPx;
+        const bool pastClickSlop = std::abs(pt.x - dragStartClient_.x) > px(kClickSlop) || std::abs(pt.y - dragStartClient_.y) > px(kClickSlop);
         editor_.move(pointerAt(pt), pastClickSlop);
     }
     repaint();
 }
 
 void MainWindow::onLButtonUp(POINT pt) {
-    if (pressBtn_ != BTN_NONE) {
-        int id = pressBtn_;
-        pressBtn_ = BTN_NONE;
+    if (toolbar_.pressed != BTN_NONE) {
+        int id = toolbar_.pressed;
+        toolbar_.pressed = BTN_NONE;
         repaint();
-        if (hitButton(pt) == id) onButton(id);
+        if (toolbar_.hit(pt) == id) onButton(id);
         return;
     }
     endDrag(true);
@@ -2125,14 +1886,14 @@ void MainWindow::endInteraction(bool commitText) {
     endDrag(false);
     endTextEdit(commitText);
     cancelCrop();
-    if (editor_.adjusting()) { closeColorAdjustPanel(); cancelAdjust(); }
+    if (editor_.adjusting()) { adjustPanel_.close(); cancelAdjust(); }
 }
 
 void MainWindow::onMouseWheel(POINT ptScreen, int delta, WPARAM keys) {
     POINT pt = ptScreen;
     ScreenToClient(hwnd_, &pt);
     if (showInfo_ && inRect(infoRc_, pt)) {
-        if (infoPanelScroll(infoRc_, -delta * px(0.5f), infoState_)) repaint();
+        if (info_.scroll(-delta * px(0.5f))) repaint();
         return;
     }
     if (!inRect(canvasRc_, pt) || !doc_.image()) return;
@@ -2185,7 +1946,7 @@ void MainWindow::showTipAt(const wchar_t* text, POINT screenPt) {
         tipInfo_.uId = reinterpret_cast<UINT_PTR>(hwnd_);
         tipInfo_.lpszText = const_cast<wchar_t*>(text);
         SendMessageW(tip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tipInfo_));
-        SendMessageW(tip_, TTM_SETMAXTIPWIDTH, 0, static_cast<LPARAM>(px(420)));
+        SendMessageW(tip_, TTM_SETMAXTIPWIDTH, 0, px.round(kTipMaxW));
     } else {
         tipInfo_.lpszText = const_cast<wchar_t*>(text);
         SendMessageW(tip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tipInfo_));
@@ -2217,36 +1978,13 @@ void MainWindow::showTip(POINT pt) {
     SetTimer(hwnd_, kTipHideTimer, kTipShowMs, nullptr);
 }
 
-const wchar_t* MainWindow::buttonName(int id) {
-    switch (id) {
-    case BTN_ZOOMOUT: return tr(L"Zoom Out");
-    case BTN_ZOOM100: return tr(L"Actual Size");
-    case BTN_ZOOMIN: return tr(L"Zoom In");
-    case BTN_ROTATE: return tr(L"Rotate 90° Counterclockwise");
-    case BTN_MARKUP: return tr(L"Markup Toolbar");
-    case BTN_INFO: return tr(L"Info Panel");
-    case BTN_FREEHAND: return tr(L"Sketch");
-    case BTN_SHAPES: return tr(L"Shapes");
-    case BTN_TEXT: return tr(L"Text");
-    case BTN_ADJCOLOR: return tr(L"Adjust Color");
-    case BTN_ADJSIZE: return tr(L"Adjust Size");
-    case BTN_LINESTYLE: return tr(L"Line Style");
-    case BTN_LINECOLOR: return tr(L"Line Color");
-    case BTN_FILL: return tr(L"Fill Color");
-    case BTN_FORMAT: return tr(L"Text Format");
-    case BTN_CROP: return tr(L"Crop");
-    default: return L"";
-    }
-}
-
 void MainWindow::showButtonTip(int id) {
-    const Button* b = nullptr;
-    for (const auto& x : buttons_) if (x.id == id) b = &x;
-    if (!b || !*buttonName(id)) return; // 文字按鈕本身就寫了名字，不另外提示
+    const Button* b = toolbar_.find(id);
+    if (!b || !*Toolbar::name(id)) return; // 文字按鈕本身就寫了名字，不另外提示
     // 放在按鈕正下方，不跟著游標跑。
     POINT sp{static_cast<LONG>(b->rect.left), static_cast<LONG>(b->rect.bottom + px(4))};
     ClientToScreen(hwnd_, &sp);
-    showTipAt(buttonName(id), sp);
+    showTipAt(Toolbar::name(id), sp);
 }
 
 void MainWindow::hideTip() {
@@ -2262,90 +2000,22 @@ void MainWindow::hideTip() {
 void MainWindow::loadSettingsAndRegister() {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
-    exePath_ = exe;
-    settingsPath_ = settingsPathForExe(exePath_);
-    SettingsLoad loaded = loadSettings(settingsPath_, settings_);
-    // 設定檔在但讀不到（別的程式正獨佔它）：多半很快就放開，等一下再試。
-    for (int i = 0; i < kSettingsReadRetries && loaded == SettingsLoad::Unreadable; ++i) {
-        Sleep(kSettingsReadRetryMs);
-        loaded = loadSettings(settingsPath_, settings_);
-    }
-    settingsUnreadable_ = loaded == SettingsLoad::Unreadable;
-    settingsBase_ = settings_; // 這個視窗和檔案同步時的樣子：存檔時用它分辨哪些欄位是自己改的
+    store_.load(exe, inst_); // 讀設定檔、選語系。要在登錄之前：右鍵選單的文字跟語系走
     nav_.setPinnedNames(settings_.pinnedNames);
     doc_.setUndoLimit(settings_.undoLimit);
     doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
-    settingsWritable_ = isPathWritable(settingsPath_);
     viewMode_ = settings_.view.viewMode;
-    initLanguage(); // 要在登錄之前：右鍵選單的文字跟語系走
-    // 模式清單：第一次執行（或舊版 ini）補內建的兩個。名字要翻譯，所以在 initLanguage 之後。
+    // 模式清單：第一次執行（或舊版 ini）補內建的兩個。名字要翻譯，所以在選好語系（store_.load）之後。
     if (ensureProfiles(settings_, tr(L"General mode"), tr(L"Comic mode"))) saveSettingsQuiet();
     // portable：exe 搬了位置就把登錄改成現在的路徑。
     // 換了語言（選單文字不同）、新版多了副檔名，也要重新登錄。
     const ShellRegOptions reg = shellRegOptions();
-    if (settings_.contextMenu && !contextMenuUpToDate(exePath_, reg)) registerContextMenu(exePath_, reg);
-    if (!progIdExePath(reg).empty() && !progIdUpToDate(exePath_, reg)) registerProgId(exePath_, reg);
-}
-
-void MainWindow::saveSettingsQuiet() {
-    // 啟動時設定檔讀不到：手上是預設值，存了會把原本的設定（密碼列表、模式…）蓋掉，所以這次執行都不存。
-    if (settingsUnreadable_) { settingsWritable_ = false; return; }
-    // 別的視窗可能也改過設定檔：只把這個視窗改過的欄位寫進去，其他的留檔案裡現在的值（mergeSettings）。
-    // 寫不進去（唯讀位置）就算了，本次執行內的狀態還在。
-    Settings written;
-    settingsWritable_ = saveSettingsMerged(settingsPath_, settingsBase_, settings_, written);
-    if (!settingsWritable_) return;
-    // 別的視窗記下的東西裡，這幾樣不影響這個視窗正在顯示的畫面，直接收下：新學到的密碼馬上能用，
-    // 問過的事不再問一次。其他欄位（檢視值、模式、置頂、暫存位置…）這個視窗繼續用自己的。
-    settings_.passwords = written.passwords;
-    settings_.askedDefault = written.askedDefault;
-    settings_.tipShown = written.tipShown;
-    settings_.skipVersion = written.skipVersion;
-    settingsBase_ = settings_;
+    if (settings_.contextMenu && !contextMenuUpToDate(store_.exePath(), reg)) registerContextMenu(store_.exePath(), reg);
+    if (!progIdExePath(reg).empty() && !progIdUpToDate(store_.exePath(), reg)) registerProgId(store_.exePath(), reg);
 }
 
 // ---------------------------------------------------------------------------
 // 語言
-
-void MainWindow::initLanguage() {
-    // 內建：英文（key 本身）與繁中（RCDATA）。lang/ 底下同代碼的檔覆蓋內建，其他的加進清單。
-    langs_.clear();
-    LangTable en;
-    en.code = L"en";
-    en.name = L"English";
-    langs_.push_back(en);
-    if (HRSRC res = FindResourceW(inst_, MAKEINTRESOURCEW(IDR_LANG_ZHTW), RT_RCDATA)) {
-        if (HGLOBAL g = LoadResource(inst_, res)) {
-            const char* bytes = static_cast<const char*>(LockResource(g));
-            DWORD n = SizeofResource(inst_, res);
-            if (bytes && n) {
-                int wn = MultiByteToWideChar(CP_UTF8, 0, bytes, static_cast<int>(n), nullptr, 0);
-                std::wstring text(wn, L'\0');
-                MultiByteToWideChar(CP_UTF8, 0, bytes, static_cast<int>(n), text.data(), wn);
-                if (!text.empty() && text[0] == 0xFEFF) text.erase(0, 1);
-                LangTable zh = parseLangText(text);
-                if (!zh.code.empty()) langs_.push_back(std::move(zh));
-            }
-        }
-    }
-    size_t slash = exePath_.find_last_of(L"\\/");
-    std::wstring dir = (slash == std::wstring::npos ? L"" : exePath_.substr(0, slash + 1)) + L"lang";
-    for (auto& t : loadLangDir(dir)) {
-        bool replaced = false;
-        for (auto& b : langs_) {
-            if (_wcsicmp(b.code.c_str(), t.code.c_str()) == 0) { b = t; replaced = true; break; }
-        }
-        if (!replaced) langs_.push_back(std::move(t));
-    }
-    std::vector<std::wstring> codes;
-    for (const auto& t : langs_) codes.push_back(t.code);
-    wchar_t locale[LOCALE_NAME_MAX_LENGTH] = L"";
-    LCIDToLocaleName(MAKELCID(GetUserDefaultUILanguage(), SORT_DEFAULT), locale, LOCALE_NAME_MAX_LENGTH, 0);
-    std::wstring code = pickLanguage(settings_.language, locale, codes);
-    for (const auto& t : langs_) {
-        if (_wcsicmp(t.code.c_str(), code.c_str()) == 0) { setActiveLang(t); break; }
-    }
-}
 
 void MainWindow::selectLanguage(const std::wstring& code) {
     if (_wcsicmp(code.c_str(), settings_.language.c_str()) == 0) return;
@@ -2357,9 +2027,9 @@ void MainWindow::selectLanguage(const std::wstring& code) {
     if (!confirmDiscard()) return;
     // 重開自己並開回目前的檔案。壓縮檔用壓縮檔路徑：解出來的暫存檔在這個程式關閉時就刪了。
     std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
-    ShellExecuteW(nullptr, L"open", exePath_.c_str(), openArgs(reopen).c_str(), nullptr, SW_SHOWNORMAL);
-    closePopup();
-    closeColorAdjustPanel();
+    ShellExecuteW(nullptr, L"open", store_.exePath().c_str(), openArgs(reopen).c_str(), nullptr, SW_SHOWNORMAL);
+    popups_.close();
+    adjustPanel_.close();
     doc_.markSaved(); // 已確認過，不再問
     rememberPlacement();
     saveSettingsQuiet();
@@ -2377,7 +2047,7 @@ void MainWindow::askDefaultProgram(bool fromSettings) {
         saveSettingsQuiet();
         if (r != IDYES) return;
     }
-    registerProgId(exePath_, shellRegOptions());
+    registerProgId(store_.exePath(), shellRegOptions());
     const wchar_t* guide = isWindows11()
         ? tr(L"Windows does not let apps set defaults themselves; you choose it in the system Settings.\n\n"
              L"“OK” opens the mpainter page under Settings > Apps > Default apps:\n"
@@ -2394,13 +2064,13 @@ void MainWindow::askDefaultProgram(bool fromSettings) {
 
 void MainWindow::showSettings(int startPage) {
     endTextEdit(true);
-    settingsWritable_ = isPathWritable(settingsPath_);
+    store_.refreshWritable();
     SettingsDialogInfo info;
-    info.iniPath = settingsPath_;
-    info.iniWritable = settingsWritable_;
+    info.iniPath = store_.path();
+    info.iniWritable = store_.writable();
     info.isWin11 = isWindows11();
     info.onSetDefault = [this] { askDefaultProgram(true); };
-    for (const auto& t : langs_) info.languages.emplace_back(t.code, t.name);
+    for (const auto& t : store_.languages()) info.languages.emplace_back(t.code, t.name);
     info.exeDir = exeDir();
     if (tempDir_.valid()) {
         size_t slash = tempDir_.path().find_last_of(L"\\/");
@@ -2421,7 +2091,7 @@ void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendin
     // 面板交回整份設定：併進來，再照「哪些變了」套用。
     const DialogChanges changed = mergeDialogSettings(settings_, s, exeDir());
     if (changed.contextMenu) {
-        if (settings_.contextMenu) registerContextMenu(exePath_, shellRegOptions());
+        if (settings_.contextMenu) registerContextMenu(store_.exePath(), shellRegOptions());
         else unregisterContextMenu(shellRegOptions());
     }
     doc_.setUndoLimit(settings_.undoLimit); // 改小時立刻丟掉最舊的步驟
@@ -2488,7 +2158,7 @@ bool MainWindow::onKeyDown(WPARAM vk) {
         return true;
     case VK_RETURN:
         if (const Annotation* sel = editor_.selectedItem()) {
-            if (sel->kind == Kind::Text) { beginTextEdit(sel->id, false); return true; }
+            if (sel->as<TextShape>()) { beginTextEdit(sel->id, false); return true; }
         }
         return false;
     default: return false;
@@ -2564,8 +2234,6 @@ void MainWindow::rotateImage() {
     endInteraction(true);
     editor_.rotateCCW();
     if (readOnly()) doc_.markSaved(); // 唯讀：旋轉不算修改，標題不加 *
-    infoData_.width = doc_.image()->width;
-    infoData_.height = doc_.image()->height;
     fit_ = true;
     fitToView();
     updateTitle();
@@ -2580,9 +2248,6 @@ void MainWindow::adjustSize() {
     ResizeResult r;
     if (!showResizeDialog(hwnd_, img->width, img->height, doc_.dpi().x, r)) return;
     editor_.resize(r.width, r.height, r.dpi, r.resample);
-    infoData_.width = doc_.image()->width;
-    infoData_.height = doc_.image()->height;
-    infoData_.dpiX = infoData_.dpiY = r.dpi;
     fit_ = true;
     fitToView();
     updateTitle();
@@ -2595,7 +2260,7 @@ void MainWindow::adjustSize() {
 void MainWindow::beginCrop() {
     if (!doc_.image() || twoPage() || !editGuard()) return;
     endTextEdit(true);
-    if (editor_.adjusting()) { closeColorAdjustPanel(); cancelAdjust(); }
+    if (editor_.adjusting()) { adjustPanel_.close(); cancelAdjust(); }
     hideTip();
     if (!editor_.beginCrop()) return;
     // 整張圖放進畫布；原本的檢視記下來，取消時還原。
@@ -2628,8 +2293,6 @@ void MainWindow::applyCrop() {
     if (box == CropBox{0, 0, doc_.image()->width, doc_.image()->height}) { cancelCrop(); return; }
     if (editor_.applyCrop() != Editor::CropResult::Applied) return;
     cropFit_ = false;
-    infoData_.width = doc_.image()->width;
-    infoData_.height = doc_.image()->height;
     fit_ = true;
     fitToView();
     updateTitle();
@@ -2649,12 +2312,12 @@ void MainWindow::drawCrop() {
     float il = static_cast<float>(i0.x), it = static_cast<float>(i0.y), ir = static_cast<float>(i1.x), ib = static_cast<float>(i1.y);
     float bl = static_cast<float>(b0.x), bt = static_cast<float>(b0.y), br = static_cast<float>(b1.x), bb = static_cast<float>(b1.y);
     // 會被裁掉的部分蓋半透明深色：上、下兩條整寬，左、右夾在中間
-    auto* dim = renderer_.brush(D2D1::ColorF(0, 0, 0, 0.5f));
+    auto* dim = renderer_.brush(theme::kCropShade);
     rt->FillRectangle(D2D1::RectF(il, it, ir, bt), dim);
     rt->FillRectangle(D2D1::RectF(il, bb, ir, ib), dim);
     rt->FillRectangle(D2D1::RectF(il, bt, bl, bb), dim);
     rt->FillRectangle(D2D1::RectF(br, bt, ir, bb), dim);
-    rt->DrawRectangle(D2D1::RectF(bl + 0.5f, bt + 0.5f, br - 0.5f, bb - 0.5f), renderer_.brush(D2D1::ColorF(1, 1, 1, 0.9f)), 1.0f);
+    rt->DrawRectangle(D2D1::RectF(bl + 0.5f, bt + 0.5f, br - 0.5f, bb - 0.5f), renderer_.brush(theme::kCropFrame), 1.0f);
     // 四個角的 L 形把手畫在框內；深色底再疊白色，淺色、深色的圖上都看得到
     float len = std::min({px(kCropHandleLen), (br - bl) / 2, (bb - bt) / 2});
     float w = px(4), inset = w / 2;
@@ -2672,8 +2335,8 @@ void MainWindow::drawCrop() {
         corner(br, bb, -1, -1);
     });
     if (geo) {
-        rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.55f)), w + px(2));
-        rt->DrawGeometry(geo.Get(), renderer_.brush(D2D1::ColorF(1, 1, 1)), w);
+        rt->DrawGeometry(geo.Get(), renderer_.brush(theme::kCropHandleShadow), w + px(2));
+        rt->DrawGeometry(geo.Get(), renderer_.brush(theme::kWhite), w);
     }
     // 拖曳中：框中央顯示裁切後的像素尺寸
     if (editor_.drag() == DragKind::Crop) {
@@ -2682,8 +2345,8 @@ void MainWindow::drawCrop() {
         float tw = renderer_.measureUiText(s, px(12), true, 1e6f, &h);
         float cx = (bl + br) / 2, cy = (bt + bb) / 2;
         D2D1_RECT_F pill = D2D1::RectF(cx - tw / 2 - px(8), cy - h / 2 - px(4), cx + tw / 2 + px(8), cy + h / 2 + px(4));
-        rt->FillRoundedRectangle(D2D1::RoundedRect(pill, px(4), px(4)), renderer_.brush(D2D1::ColorF(0, 0, 0, 0.6f)));
-        renderer_.drawUiText(s, pill, px(12), D2D1::ColorF(D2D1::ColorF::White), DWRITE_TEXT_ALIGNMENT_CENTER, true);
+        rt->FillRoundedRectangle(D2D1::RoundedRect(pill, px(4), px(4)), renderer_.brush(theme::kCropSizeBg));
+        renderer_.drawUiText(s, pill, px(12), theme::kWhite, DWRITE_TEXT_ALIGNMENT_CENTER, true);
     }
 }
 
@@ -2693,9 +2356,9 @@ void MainWindow::drawCrop() {
 void MainWindow::beginTextEdit(uint32_t id, bool selectAll) {
     if (edit_) endTextEdit(true);
     if (!editor_.beginTextEdit(id)) return;
-    const Annotation* a = doc_.findItem(id);
+    const TextStyle& style = editor_.editingShape()->style;
     const std::wstring& text = editor_.editText();
-    DWORD align = a->text.align == TextAlign::Center ? ES_CENTER : a->text.align == TextAlign::Right ? ES_RIGHT : ES_LEFT;
+    DWORD align = style.align == TextAlign::Center ? ES_CENTER : style.align == TextAlign::Right ? ES_RIGHT : ES_LEFT;
     edit_ = CreateWindowExW(0, L"EDIT", text.c_str(),
                             WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | align, 0, 0, 10, 10,
                             hwnd_, nullptr, inst_, nullptr);
@@ -2710,16 +2373,17 @@ void MainWindow::beginTextEdit(uint32_t id, bool selectAll) {
 
 void MainWindow::updateEditFont() {
     if (!edit_) return;
-    const Annotation* a = doc_.findItem(editor_.editingId());
-    if (!a) return;
+    const TextShape* shape = editor_.editingShape();
+    if (!shape) return;
+    const TextStyle& ts = shape->style;
     if (editFont_) DeleteObject(editFont_);
-    int h = -static_cast<int>(std::lround(a->text.size * zoom_));
-    editFont_ = CreateFontW(h, 0, 0, 0, a->text.bold ? FW_BOLD : FW_NORMAL, a->text.italic, a->text.underline, FALSE,
+    int h = -static_cast<int>(std::lround(ts.size * zoom_));
+    editFont_ = CreateFontW(h, 0, 0, 0, ts.bold ? FW_BOLD : FW_NORMAL, ts.italic, ts.underline, FALSE,
                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
-                            a->text.font.c_str());
+                            ts.font.c_str());
     SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(editFont_), TRUE);
     LONG style = GetWindowLongW(edit_, GWL_STYLE) & ~(ES_LEFT | ES_CENTER | ES_RIGHT);
-    style |= a->text.align == TextAlign::Center ? ES_CENTER : a->text.align == TextAlign::Right ? ES_RIGHT : ES_LEFT;
+    style |= ts.align == TextAlign::Center ? ES_CENTER : ts.align == TextAlign::Right ? ES_RIGHT : ES_LEFT;
     SetWindowLongW(edit_, GWL_STYLE, style);
     positionEdit();
     InvalidateRect(edit_, nullptr, TRUE);
@@ -2727,11 +2391,11 @@ void MainWindow::updateEditFont() {
 
 void MainWindow::positionEdit() {
     if (!edit_) return;
-    const Annotation* a = doc_.findItem(editor_.editingId());
-    if (!a) return;
-    float pad = 4.0f; // 和畫文字時的留白一樣（render/AnnotationPainter.cpp 的 kTextPad）
-    POINT tl = toClient({a->rect.left + pad, a->rect.top + pad});
-    POINT brp = toClient({a->rect.right - pad, a->rect.bottom - pad});
+    const TextShape* shape = editor_.editingShape();
+    if (!shape) return;
+    const Rc& box = shape->rect;
+    POINT tl = toClient({box.left + kTextPad, box.top + kTextPad});
+    POINT brp = toClient({box.right - kTextPad, box.bottom - kTextPad});
     int w = std::max(10l, brp.x - tl.x), h = std::max(10l, brp.y - tl.y);
     SetWindowPos(edit_, HWND_TOP, tl.x, tl.y, w, h, SWP_NOACTIVATE);
 }
@@ -2791,149 +2455,35 @@ void MainWindow::beginPickWhite() {
 // ---------------------------------------------------------------------------
 // 新版本檢查與自動更新
 
-void MainWindow::startAutoUpdateCheck() {
-    // 背景執行緒只拿值，不碰 this：視窗先關了也不會出事（PostMessage 失敗就自己 delete）。
-    std::wstring url = settings_.updateUrl.empty() ? kDefaultUpdateUrl : settings_.updateUrl;
-    HWND hwnd = hwnd_;
-    std::thread([url, hwnd] {
-        ReleaseInfo r;
-        if (!fetchLatestRelease(url, r).ok()) return; // 自動檢查失敗不吭聲
-        if (!isNewerVersion(r.version, MP_VERSION_WSTRING)) return;
-        auto* p = new ReleaseInfo(std::move(r));
-        if (!PostMessageW(hwnd, WM_MP_UPDATE_FOUND, 0, reinterpret_cast<LPARAM>(p))) delete p;
-    }).detach();
-}
-
 bool MainWindow::canInterrupt() const {
     return IsWindowEnabled(hwnd_) && !menuLoop_ && !editor_.dragging() && GetCapture() != hwnd_;
 }
 
 void MainWindow::offerPendingUpdate() {
-    if (!pendingUpdate_) return;
+    if (!updates_.hasPending()) return;
     // 使用者正在做事（對話框、選單、拖曳，加上彈出選單、調色面板、文字編輯）就晚點再問。
-    if (!canInterrupt() || isPopupOpen() || isColorAdjustPanelOpen() || edit_) {
+    if (!canInterrupt() || popups_.isOpen() || adjustPanel_.isOpen() || edit_) {
         SetTimer(hwnd_, kUpdateTimer, 3000, nullptr);
         return;
     }
-    ReleaseInfo r = *pendingUpdate_;
-    pendingUpdate_.reset();
-    offerUpdate(r);
+    updates_.offerPending();
 }
 
-void MainWindow::checkForUpdatesNow() {
-    std::wstring url = settings_.updateUrl.empty() ? kDefaultUpdateUrl : settings_.updateUrl;
-    ReleaseInfo r;
-    UpdateError err = checkUpdateWithProgress(hwnd_, url, r);
-    if (!err.ok()) {
-        if (!err.cancelled())
-            MessageBoxW(hwnd_, fmt1(L"Could not check for updates: %s", updateErrorText(err)).c_str(), kAppName, MB_ICONWARNING);
-        return;
-    }
-    if (!isNewerVersion(r.version, MP_VERSION_WSTRING)) {
-        MessageBoxW(hwnd_, fmt1(L"mpainter %s is the latest version.", MP_VERSION_WSTRING).c_str(), kAppName, MB_ICONINFORMATION);
-        return;
-    }
-    offerUpdate(r);
+bool MainWindow::updateVersionSkipped(const std::wstring& version) const {
+    return _wcsicmp(version.c_str(), settings_.skipVersion.c_str()) == 0;
 }
 
-void MainWindow::offerUpdate(const ReleaseInfo& r) {
-    endTextEdit(true);
-    switch (showUpdateDialog(hwnd_, r, MP_VERSION_WSTRING)) {
-    case UpdateChoice::Skip:
-        settings_.skipVersion = r.version;
-        saveSettingsQuiet();
-        break;
-    case UpdateChoice::Install: installUpdate(r); break;
-    case UpdateChoice::Later: break;
-    }
+void MainWindow::skipUpdateVersion(const std::wstring& version) {
+    settings_.skipVersion = version;
+    saveSettingsQuiet();
 }
 
-void MainWindow::manualDownloadFallback(const std::wstring& reason, const std::wstring& pageUrl) {
-    std::wstring msg = reason + L"\n\n" + tr(L"Open the download page to update by hand?");
-    if (MessageBoxW(hwnd_, msg.c_str(), kAppName, MB_YESNO | MB_ICONINFORMATION) == IDYES)
-        ShellExecuteW(hwnd_, L"open", pageUrl.empty() ? kReleasesPage : pageUrl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-}
+// 重開時開回目前這本：壓縮檔用壓縮檔路徑（解出來的暫存檔關閉時就刪了）。
+std::wstring MainWindow::reopenAfterUpdate() const { return !archivePath_.empty() ? archivePath_ : path_; }
 
-bool MainWindow::closeOtherInstances() {
-    auto pids = otherProcessesOfImage(exePath_, GetCurrentProcessId());
-    if (pids.empty()) return true;
-    std::vector<HANDLE> procs;
-    for (auto pid : pids) {
-        if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, pid)) procs.push_back(h);
-        AllowSetForegroundWindow(pid); // 讓那邊的存檔詢問能跳到前面
-    }
-    bool ok = closeWindowsWithProgress(hwnd_, closeForUpdateMessage(), mainWindowsOf(pids), procs);
-    for (HANDLE h : procs) CloseHandle(h);
-    return ok;
-}
-
-void MainWindow::installUpdate(const ReleaseInfo& r) {
-    std::wstring app = exeDir();
-    // 不能自動更新的情況：先講清楚原因，再給下載頁。
-    if (r.zipUrl.empty() || r.shaUrl.empty()) {
-        manualDownloadFallback(tr(L"This release cannot be installed automatically."), r.pageUrl);
-        return;
-    }
-    if (!ensureArchiveLibrary()) {
-        manualDownloadFallback(tr(L"7z.dll is missing next to mpainter.exe, so the update cannot be unpacked."), r.pageUrl);
-        return;
-    }
-    // 下載之前就能知道的先看：exe 所在的資料夾能不能寫。發佈包解開之後再照實際要放的每個資料夾檢查一次。
-    if (!isDirWritable(app)) {
-        manualDownloadFallback(fmt1(L"mpainter cannot write to its folder:\n%s", app), r.pageUrl);
-        return;
-    }
-    // 同一個 exe 還有別的 mpainter 開著：先說清楚全部都會被關掉。
-    auto others = otherProcessesOfImage(exePath_, GetCurrentProcessId());
-    if (!others.empty()) {
-        wchar_t msg[640];
-        swprintf(msg, 640, tr(L"%d other mpainter windows are open. Installing the update closes all of them (each asks to save unsaved changes first); only this one opens again. Continue?"),
-                 static_cast<int>(others.size()));
-        if (!askOk(hwnd_, msg, TD_INFORMATION_ICON, true)) return;
-    }
-    if (!confirmDiscard()) return;
-
-    wchar_t tmp[MAX_PATH];
-    GetTempPathW(MAX_PATH, tmp);
-    std::wstring work = std::wstring(tmp) + L"mpainter\\update-" + std::to_wstring(GetCurrentProcessId());
-    removeDirectoryRecursive(work);
-    if (!createDirectories(work)) {
-        MessageBoxW(hwnd_, fmt1(L"Update failed: %s", L"cannot create " + work).c_str(), kAppName, MB_ICONWARNING);
-        return;
-    }
-    std::wstring staging;
-    UpdateError err = downloadUpdateWithProgress(hwnd_, r, work, staging);
-    if (!err.ok()) {
-        removeDirectoryRecursive(work);
-        if (!err.cancelled()) MessageBoxW(hwnd_, fmt1(L"Update failed: %s", updateFailureText(err)).c_str(), kAppName, MB_ICONWARNING);
-        return;
-    }
-    const std::wstring exeName = fileNameOf(exePath_);
-    auto steps = planInstall(staging, app, exeName);
-    if (UpdateError blocked = installTargetsWritable(steps); !blocked.ok()) {
-        removeDirectoryRecursive(work);
-        manualDownloadFallback(updateErrorText(blocked), r.pageUrl);
-        return;
-    }
-    // 換檔前把其他 mpainter 關掉（下載期間新開的也算）；有一個沒關就整個取消。
-    if (!closeOtherInstances()) {
-        removeDirectoryRecursive(work);
-        SetForegroundWindow(hwnd_); // 使用者剛在別的視窗按了取消，焦點在那邊
-        askOk(hwnd_, tr(L"Another mpainter window was not closed, so the update was cancelled. Nothing was changed."),
-              TD_WARNING_ICON, false);
-        return;
-    }
-    err = applyInstall(steps);
-    removeDirectoryRecursive(work);
-    if (!err.ok()) {
-        MessageBoxW(hwnd_, fmt1(L"Update failed: %s", updateErrorText(err) + L"\n\n" + tr(L"Nothing was changed.")).c_str(), kAppName,
-                    MB_ICONWARNING);
-        return;
-    }
-    // 重開時開回目前這本：壓縮檔用壓縮檔路徑（解出來的暫存檔關閉時就刪了）。
-    std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
-    relaunchArgs_ = afterUpdateArgs(GetCurrentProcessId(), reopen);
-    updating_ = true;
+void MainWindow::closeForRelaunch(const std::wstring& relaunchArgs) {
+    relaunchArgs_ = relaunchArgs;
+    updating_ = true; // 已經問過存檔，WM_CLOSE 不再問
     PostMessageW(hwnd_, WM_CLOSE, 0, 0);
 }
 

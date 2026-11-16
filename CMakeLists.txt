@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 0.9.7 LANGUAGES CXX)
+project(mpainter VERSION 0.9.8 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -51,6 +51,7 @@ add_library(mp_core STATIC
     src/core/Annotation.cpp
     src/core/Document.cpp
     src/core/Editor.cpp
+    src/core/ResizeModel.cpp
     src/core/ColorAdjust.cpp
     src/core/Settings.cpp
     src/core/ShellReg.cpp
@@ -98,13 +99,17 @@ add_executable(mpainter WIN32
     src/app/MainWindow.cpp
     src/app/Popups.cpp
     src/app/InfoPanel.cpp
+    src/app/ToolbarIcons.cpp
+    src/app/Toolbar.cpp
     src/app/DialogUtil.cpp
     src/app/ProgressDialog.cpp
     src/app/ImageDialogs.cpp
     src/app/AboutDialog.cpp
     src/app/ArchiveDialogs.cpp
     src/app/UpdateDialogs.cpp
+    src/app/UpdateFlow.cpp
     src/app/SettingsDialog.cpp
+    src/app/AppSettings.cpp
     src/app/UiText.cpp
     src/app/app.rc
 )
@@ -121,6 +126,7 @@ add_executable(mp_tests
     src/tests/test_annotation.cpp
     src/tests/test_document.cpp
     src/tests/test_editor.cpp
+    src/tests/test_resize_model.cpp
     src/tests/test_image_ops.cpp
     src/tests/test_image_io.cpp
     src/tests/test_image_format.cpp
@@ -129,6 +135,17 @@ add_executable(mp_tests
     # app 層裡不碰視窗的部分（代碼與翻譯 key 變成顯示用的句子）也編進來測。
     src/tests/test_ui_text.cpp
     src/app/UiText.cpp
+    # 資訊面板：畫在記憶體裡的 render target 上，測版面、捲動、折疊。
+    src/tests/test_info_panel.cpp
+    src/app/InfoPanel.cpp
+    # 工具列圖示的資料表與照表畫的結果。
+    src/tests/test_toolbar_icons.cpp
+    src/app/ToolbarIcons.cpp
+    src/tests/test_toolbar.cpp
+    src/app/Toolbar.cpp
+    # 一個視窗的設定：讀檔、存檔時和別的視窗合併、可選的語系。
+    src/tests/test_app_settings.cpp
+    src/app/AppSettings.cpp
     src/tests/test_folder_nav.cpp
     src/tests/test_color_adjust.cpp
     src/tests/test_settings.cpp
@@ -152,6 +169,8 @@ add_executable(mp_tests
     src/tests/test_render_pixels.cpp
     # 記憶體量測（隱藏標籤，平常不跑）。
     src/tests/test_mem.cpp
+    # 時間量測（隱藏標籤，平常不跑）。
+    src/tests/test_time.cpp
 )
 # bit7z：測試自己用它現場產 zip / 7z 當 fixture。
 target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Catch2WithMain ws2_32 d2d1 dwrite shell32)

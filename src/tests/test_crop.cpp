@@ -86,31 +86,27 @@ TEST_CASE("dragCropBox：None 原樣") {
 TEST_CASE("cropAnnotations：平移到裁切後的座標") {
     StrokeStyle s;
     Annotation rect = makeShape(Kind::Rect, {200, 150}, 100, s);
-    Rc before = rect.rect;
+    Rc before = *rectOf(rect);
     Annotation line;
-    line.kind = Kind::Line;
-    line.p0 = {150, 100};
-    line.p1 = {250, 200};
-    line.mid = {200, 150};
+    line.shape = LineShape{{150, 100}, {250, 200}, {200, 150}};
     auto out = cropAnnotations({rect, line}, kBox);
     REQUIRE(out.size() == 2);
-    CHECK(out[0].rect == before.offset(-100, -50));
-    CHECK(out[1].p0 == Pt{50, 50});
-    CHECK(out[1].p1 == Pt{150, 150});
-    CHECK(out[1].mid == Pt{100, 100});
+    CHECK((*rectOf(out[0])) == before.offset(-100, -50));
+    CHECK(out[1].as<LineShape>()->p0 == Pt{50, 50});
+    CHECK(out[1].as<LineShape>()->p1 == Pt{150, 150});
+    CHECK(out[1].as<LineShape>()->mid == Pt{100, 100});
 }
 
 TEST_CASE("cropAnnotations：完全在框外的刪掉，跨邊界的留下") {
     Annotation inside, crossing, outside, nearEdge;
-    for (Annotation* a : {&inside, &crossing, &outside, &nearEdge}) a->kind = Kind::Rect;
     inside.id = 1;
-    inside.rect = {150, 100, 200, 150};
+    (*rectOf(inside)) = {150, 100, 200, 150};
     crossing.id = 2;
-    crossing.rect = {250, 200, 400, 400}; // 跨右下角
+    (*rectOf(crossing)) = {250, 200, 400, 400}; // 跨右下角
     outside.id = 3;
-    outside.rect = {500, 500, 600, 600};
+    (*rectOf(outside)) = {500, 500, 600, 600};
     nearEdge.id = 4;
-    nearEdge.rect = {50, 100, 99, 150}; // 外框在框外 1 像素，但線寬碰得到
+    (*rectOf(nearEdge)) = {50, 100, 99, 150}; // 外框在框外 1 像素，但線寬碰得到
     auto out = cropAnnotations({inside, crossing, outside, nearEdge}, kBox);
     REQUIRE(out.size() == 3);
     CHECK(out[0].id == 1);
@@ -120,12 +116,19 @@ TEST_CASE("cropAnnotations：完全在框外的刪掉，跨邊界的留下") {
 
 TEST_CASE("cropAnnotations：放大鏡用圓心與半徑判斷") {
     Annotation mag;
-    mag.kind = Kind::Magnifier;
-    mag.center = {320, 270}; // 圓心在框外，半徑伸進框內
-    mag.radius = 50;
+    mag.shape = MagnifierShape{{320, 270}, 50}; // 圓心在框外，半徑伸進框內
     auto out = cropAnnotations({mag}, kBox);
     REQUIRE(out.size() == 1);
-    CHECK(out[0].center == Pt{220, 220});
-    mag.center = {500, 500};
+    CHECK(out[0].as<MagnifierShape>()->center == Pt{220, 220});
+    mag.as<MagnifierShape>()->center = {500, 500};
     CHECK(cropAnnotations({mag}, kBox).empty());
+}
+
+TEST_CASE("B-18：拉大的塗鴉，裁切用畫出來的線寬判斷在不在框內") {
+    StrokeStyle s;
+    s.width = 18;
+    Annotation a = makeFreehand({{100, 100}, {200, 100}}, s);
+    REQUIRE(dragHandle(a, H_BR, {500, 105})); // 縱向 5 倍：線往下畫到 y = 145
+    CHECK(cropAnnotations({a}, CropBox{0, 130, 600, 300}).size() == 1);
+    CHECK(cropAnnotations({a}, CropBox{0, 200, 600, 300}).empty());
 }

@@ -23,7 +23,7 @@ constexpr Color kWhite = {255, 255, 255, 255};
 StrokeStyle redStroke(int level = 4) {
     StrokeStyle s;
     s.stroke = kRed;
-    s.widthLevel = level;
+    s.width = strokeWidthForLevel(level);
     return s;
 }
 
@@ -32,10 +32,11 @@ StrokeStyle redStroke(int level = 4) {
 Annotation shape(Kind k, Pt c, const StrokeStyle& s) {
     Annotation a = makeShape(k, c, 400, s);
     a.id = 1;
-    auto snap = [](float& v) { v = std::round(v); };
-    for (float* v : {&a.rect.left, &a.rect.top, &a.rect.right, &a.rect.bottom, &a.radius, &a.p0.x, &a.p0.y, &a.p1.x, &a.p1.y,
-                     &a.mid.x, &a.mid.y, &a.tailTip.x, &a.tailTip.y})
-        snap(*v);
+    auto snap = [](Pt& p) { p = {std::round(p.x), std::round(p.y)}; };
+    if (Rc* r = rectOf(a)) *r = {std::round(r->left), std::round(r->top), std::round(r->right), std::round(r->bottom)};
+    if (auto* m = a.as<MagnifierShape>()) m->radius = std::round(m->radius);
+    if (auto* l = a.as<LineShape>()) { snap(l->p0); snap(l->p1); snap(l->mid); }
+    if (auto* bubble = a.as<BubbleShape>()) snap(bubble->tailTip);
     return a;
 }
 
@@ -88,7 +89,7 @@ TEST_CASE("flatten：圓角矩形的角落是空的，邊的中段有線") {
 TEST_CASE("flatten：橢圓") {
     RenderFixture f;
     Annotation a = shape(Kind::Ellipse, {100, 100}, redStroke());
-    a.rect = {20, 60, 180, 140}; // 寬 160、高 80
+    (*rectOf(a)) = {20, 60, 180, 140}; // 寬 160、高 80
     a.stroke.fill = kBlue;
     Image out = f.flat(whiteImage(200, 200), {a});
     CHECK(isNear(pixel(out, 20, 100), kRed));
@@ -111,7 +112,7 @@ TEST_CASE("flatten：直線、彎曲的線") {
     CHECK(isNear(pixel(out, 100, 110), kWhite));
     CHECK(isNear(pixel(out, 20, 100), kWhite));
 
-    a.mid = {100, 60}; // 曲線通過 mid
+    a.as<LineShape>()->mid = {100, 60}; // 曲線通過 mid
     out = f.flat(whiteImage(200, 200), {a});
     CHECK(isNear(pixel(out, 100, 60), kRed));
     CHECK(isNear(pixel(out, 100, 100), kWhite));
@@ -196,7 +197,7 @@ TEST_CASE("flatten：塗鴉照筆跡畫；外框改了大小，筆跡跟著縮�
     CHECK(isNear(pixel(out, 100, 100), kWhite));
     CHECK(isNear(pixel(out, 50, 150), kWhite));
 
-    a.rect = {50, 50, 100, 100}; // 縮成一半
+    (*rectOf(a)) = {50, 50, 100, 100}; // 縮成一半
     out = f.flat(whiteImage(200, 200), {a});
     CHECK(isNear(pixel(out, 75, 50), kRed));
     CHECK(isNear(pixel(out, 100, 75), kRed));
@@ -217,7 +218,7 @@ TEST_CASE("flatten：對話框的本體與尾巴") {
     Image out = f.flat(whiteImage(300, 300), {a});
     CHECK(isNear(pixel(out, 150, 150), kBlue));
     Pt ra, rb, tip;
-    bubbleTail(a, ra, rb, tip);
+    bubbleTail(*a.as<BubbleShape>(), ra, rb, tip);
     Pt root = lerp(ra, rb, 0.5f);
     Pt inTail = lerp(root, tip, 0.5f); // 尾巴三角形的中間
     CHECK(isNear(pixel(out, static_cast<int>(inTail.x), static_cast<int>(inTail.y)), kBlue));
@@ -233,9 +234,9 @@ TEST_CASE("flatten：星形的凹處是空的，正多邊形同一個位置在�
     star.stroke.fill = kBlue;
     Image out = f.flat(whiteImage(200, 200), {star});
     CHECK(isNear(pixel(out, 100, 100), kBlue));
-    auto pts = starPoints(star);
+    auto pts = starPoints(*star.as<StarShape>());
     REQUIRE(pts.size() == 10);
-    Pt c = star.rect.center();
+    Pt c = rectOf(star)->center();
     for (size_t i = 0; i < pts.size(); i += 2) { // 外側的五個頂點：往中心縮一點就在形狀裡
         Pt p = lerp(pts[i], c, 0.25f);
         CAPTURE(i);
@@ -245,7 +246,7 @@ TEST_CASE("flatten：星形的凹處是空的，正多邊形同一個位置在�
     CHECK(isNear(pixel(out, static_cast<int>(notch.x), static_cast<int>(notch.y)), kWhite));
 
     Annotation poly = shape(Kind::Polygon, {100, 100}, redStroke(2));
-    poly.pointCount = 5;
+    poly.as<PolygonShape>()->pointCount = 5;
     poly.stroke.fill = kBlue;
     out = f.flat(whiteImage(200, 200), {poly});
     Pt inside = lerp(notch, c, 0.2f);
@@ -262,8 +263,8 @@ TEST_CASE("flatten：放大鏡把圓內的底圖放大，圓外不動") {
     for (int y = 0; y < 200; ++y)
         for (int x = 0; x < 200; ++x) setPixel(*base, x, y, x >= 100 && x < 110 ? green : gray);
     Annotation a = shape(Kind::Magnifier, {100, 100}, redStroke(2)); // 半徑 60、zoom 2
-    REQUIRE(a.radius == 60.0f);
-    REQUIRE(a.zoom == 2.0f);
+    REQUIRE(a.as<MagnifierShape>()->radius == 60.0f);
+    REQUIRE(a.as<MagnifierShape>()->zoom == 2.0f);
     Image out = f.flat(base, {a});
     CHECK(isNear(pixel(out, 105, 100), green));
     CHECK(isNear(pixel(out, 115, 100), green)); // 底圖這裡是灰的
@@ -283,7 +284,7 @@ TEST_CASE("flatten：馬賽克把矩形裡的底圖變成一格一格，矩形�
     RenderFixture f;
     auto base = gradientImage(200, 200);
     Annotation a = shape(Kind::Mosaic, {100, 100}, StrokeStyle{}); // 40..160
-    a.blockSize = 16;
+    a.as<MosaicShape>()->blockSize = 16;
     Image out = f.flat(base, {a});
     // 同一格裡顏色一樣
     CHECK(pixel(out, 41, 41) == pixel(out, 55, 55));
@@ -305,7 +306,7 @@ TEST_CASE("flatten：馬賽克把矩形裡的底圖變成一格一格，矩形�
     CHECK(changedOutside == 0);
 
     // 格子大小不同，結果不同
-    a.blockSize = 32;
+    a.as<MosaicShape>()->blockSize = 32;
     Image out32 = f.flat(base, {a});
     CHECK(pixel(out32, 41, 41) == pixel(out32, 70, 70));
     CHECK(pixel(out, 41, 41) != pixel(out, 70, 70));
@@ -320,7 +321,7 @@ TEST_CASE("flatten：馬賽克跨在圖的邊界上只處理圖內的部分") {
     CHECK(pixel(out, 1, 1) == pixel(out, 14, 14));
     CHECK(pixel(out, 80, 80) == pixel(*base, 80, 80));
     // 整個在圖外：不畫，也不出錯
-    a.rect = {300, 300, 400, 400};
+    (*rectOf(a)) = {300, 300, 400, 400};
     out = f.flat(base, {a});
     CHECK(out.pixels == base->pixels);
 }
@@ -331,12 +332,12 @@ TEST_CASE("flatten：文字畫在方塊裡，方塊外不動；背景色與外�
     ts.size = 32;
     Annotation a = makeText({150, 100}, 600, StrokeStyle{}, ts, L"Hello");
     a.id = 1;
-    a.rect.bottom = a.rect.top + f.textHeight(a);
+    rectOf(a)->bottom = rectOf(a)->top + f.textHeight(a);
     Image out = f.flat(whiteImage(300, 200), {a});
     int inkInside = 0, changedOutside = 0;
     for (int y = 0; y < 200; ++y)
         for (int x = 0; x < 300; ++x) {
-            bool inside = x >= a.rect.left && x < a.rect.right && y >= a.rect.top && y < a.rect.bottom;
+            bool inside = x >= rectOf(a)->left && x < rectOf(a)->right && y >= rectOf(a)->top && y < rectOf(a)->bottom;
             Color c = pixel(out, x, y);
             if (inside && c.r < 80 && c.g < 80 && c.b < 80) ++inkInside;
             if (!inside && c != kWhite) ++changedOutside;
@@ -345,21 +346,21 @@ TEST_CASE("flatten：文字畫在方塊裡，方塊外不動；背景色與外�
     CHECK(changedOutside == 0);
 
     a.stroke.fill = kBlue;
-    a.text.color = kWhite;
+    a.as<TextShape>()->style.color = kWhite;
     out = f.flat(whiteImage(300, 200), {a});
-    CHECK(isNear(pixel(out, static_cast<int>(a.rect.left) + 1, static_cast<int>(a.rect.top) + 1), kBlue));
-    CHECK(countNear(out, kWhite, a.rect, kInkTol) > 100); // 白色的字畫在藍底上
+    CHECK(isNear(pixel(out, static_cast<int>(rectOf(a)->left) + 1, static_cast<int>(rectOf(a)->top) + 1), kBlue));
+    CHECK(countNear(out, kWhite, (*rectOf(a)), kInkTol) > 100); // 白色的字畫在藍底上
 
     a.stroke.stroke = kRed;
-    a.stroke.widthLevel = 4;
+    a.stroke.width = strokeWidthForLevel(4);
     out = f.flat(whiteImage(300, 200), {a});
-    CHECK(isNear(pixel(out, static_cast<int>(a.rect.left), 100), kRed));
+    CHECK(isNear(pixel(out, static_cast<int>(rectOf(a)->left), 100), kRed));
 
     // 空字串：只有背景
-    a.textValue.clear();
+    a.as<TextShape>()->value.clear();
     a.stroke.stroke = Color::noColor();
     out = f.flat(whiteImage(300, 200), {a});
-    CHECK(countNear(out, kWhite, a.rect, kInkTol) == 0);
+    CHECK(countNear(out, kWhite, (*rectOf(a)), kInkTol) == 0);
 }
 
 TEST_CASE("flatten：文字的粗體、底線、對齊") {
@@ -368,40 +369,40 @@ TEST_CASE("flatten：文字的粗體、底線、對齊") {
     ts.size = 28;
     Annotation a = makeText({200, 100}, 1500, StrokeStyle{}, ts, L"Hill"); // 方塊寬 600，字只佔左邊一小段
     a.id = 1;
-    a.rect = {50, 60, 350, 0};
-    a.rect.bottom = a.rect.top + f.textHeight(a);
+    (*rectOf(a)) = {50, 60, 350, 0};
+    rectOf(a)->bottom = rectOf(a)->top + f.textHeight(a);
     const Color black = {0, 0, 0, 255};
     auto ink = [&](const Annotation& t, Rc area) { return countNear(f.flat(whiteImage(400, 200), {t}), black, area, kInkTol); };
-    Rc leftHalf = {50, 60, 200, a.rect.bottom}, rightHalf = {200, 60, 350, a.rect.bottom};
+    Rc leftHalf = {50, 60, 200, rectOf(a)->bottom}, rightHalf = {200, 60, 350, rectOf(a)->bottom};
 
-    int plain = ink(a, a.rect);
+    int plain = ink(a, (*rectOf(a)));
     REQUIRE(plain > 50);
     CHECK(ink(a, leftHalf) == plain); // 靠左：字都在左半
     CHECK(ink(a, rightHalf) == 0);
 
     Annotation right = a;
-    right.text.align = TextAlign::Right;
+    right.as<TextShape>()->style.align = TextAlign::Right;
     CHECK(ink(right, leftHalf) == 0);
     CHECK(ink(right, rightHalf) > 50);
 
     Annotation center = a;
-    center.text.align = TextAlign::Center;
-    CHECK(ink(center, {50, 60, 150, a.rect.bottom}) == 0);
-    CHECK(ink(center, {150, 60, 250, a.rect.bottom}) > 50);
-    CHECK(ink(center, {250, 60, 350, a.rect.bottom}) == 0);
+    center.as<TextShape>()->style.align = TextAlign::Center;
+    CHECK(ink(center, {50, 60, 150, rectOf(a)->bottom}) == 0);
+    CHECK(ink(center, {150, 60, 250, rectOf(a)->bottom}) > 50);
+    CHECK(ink(center, {250, 60, 350, rectOf(a)->bottom}) == 0);
 
     Annotation bold = a;
-    bold.text.bold = true;
-    CHECK(ink(bold, a.rect) > plain);
+    bold.as<TextShape>()->style.bold = true;
+    CHECK(ink(bold, (*rectOf(a))) > plain);
 
     Annotation under = a;
-    under.text.underline = true;
-    CHECK(ink(under, a.rect) > plain);
+    under.as<TextShape>()->style.underline = true;
+    CHECK(ink(under, (*rectOf(a))) > plain);
 
     Annotation big = a;
-    big.text.size = 56;
-    big.rect.bottom = big.rect.top + f.textHeight(big);
-    CHECK(ink(big, big.rect) > plain * 2);
+    big.as<TextShape>()->style.size = 56;
+    rectOf(big)->bottom = rectOf(big)->top + f.textHeight(big);
+    CHECK(ink(big, (*rectOf(big))) > plain * 2);
 }
 
 TEST_CASE("textHeight：行數、換行寬度、字級") {
@@ -409,28 +410,28 @@ TEST_CASE("textHeight：行數、換行寬度、字級") {
     TextStyle ts;
     ts.size = 24;
     Annotation a = makeText({200, 100}, 1500, StrokeStyle{}, ts, L"one");
-    a.rect = {0, 0, 400, 0};
+    (*rectOf(a)) = {0, 0, 400, 0};
     float one = f.textHeight(a);
     CHECK(one > 24.0f);
     CHECK(one < 24.0f * 2.5f);
 
     Annotation two = a;
-    two.textValue = L"one\ntwo";
+    two.as<TextShape>()->value = L"one\ntwo";
     float h2 = f.textHeight(two);
     CHECK(h2 > one * 1.5f);
 
     Annotation narrow = a; // 一行放不下就換行
-    narrow.textValue = L"aaaa bbbb cccc dddd eeee ffff gggg hhhh";
+    narrow.as<TextShape>()->value = L"aaaa bbbb cccc dddd eeee ffff gggg hhhh";
     float wide = f.textHeight(narrow);
-    narrow.rect.right = 120;
+    rectOf(narrow)->right = 120;
     CHECK(f.textHeight(narrow) > wide * 1.5f);
 
     Annotation big = a;
-    big.text.size = 48;
+    big.as<TextShape>()->style.size = 48;
     CHECK(f.textHeight(big) > one * 1.6f);
 
     Annotation empty = a; // 空的方塊仍有一行高
-    empty.textValue.clear();
+    empty.as<TextShape>()->value.clear();
     CHECK(f.textHeight(empty) == one);
 }
 
@@ -481,11 +482,11 @@ TEST_CASE("flatten：輸出和底圖一樣大，底圖本身不被改動") {
 TEST_CASE("drawAnnotations：skipId 的物件不畫（文字編輯中由 EDIT 控制項顯示）") {
     RenderFixture f;
     Annotation a = shape(Kind::Rect, {30, 30}, redStroke());
-    a.rect = {10, 10, 50, 50};
+    (*rectOf(a)) = {10, 10, 50, 50};
     a.stroke.fill = kRed;
     Annotation b = a;
     b.id = 2;
-    b.rect = {60, 10, 100, 50};
+    (*rectOf(b)) = {60, 10, 100, 50};
     b.stroke.stroke = kBlue;
     b.stroke.fill = kBlue;
     Image out = f.drawItems(whiteImage(128, 64), {a, b}, 2);

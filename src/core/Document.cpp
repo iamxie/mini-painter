@@ -91,6 +91,40 @@ void Document::commitItems(std::vector<Annotation> items) {
     commit(std::move(next));
 }
 
+uint32_t Document::addItem(Annotation a) {
+    a.id = nextId();
+    const uint32_t id = a.id;
+    auto items = cur_.items;
+    items.push_back(std::move(a));
+    commitItems(std::move(items));
+    return id;
+}
+
+bool Document::replaceItem(const Annotation& a) {
+    const int i = indexOf(a.id);
+    if (i < 0) return false;
+    auto items = cur_.items;
+    items[i] = a;
+    commitItems(std::move(items));
+    return true;
+}
+
+bool Document::removeItem(uint32_t id) {
+    const int i = indexOf(id);
+    if (i < 0) return false;
+    auto items = cur_.items;
+    items.erase(items.begin() + i);
+    commitItems(std::move(items));
+    return true;
+}
+
+bool Document::amendItem(const Annotation& a) {
+    const int i = indexOf(a.id);
+    if (i < 0) return false;
+    cur_.items[i] = a;
+    return true;
+}
+
 void Document::commitImage(ImagePtr image) {
     DocState next;
     next.image = std::move(image);

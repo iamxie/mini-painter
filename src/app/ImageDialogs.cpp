@@ -1,5 +1,7 @@
 #include "app/ImageDialogs.h"
 
+#include "app/Theme.h"
+
 #include <commctrl.h>
 #include <windowsx.h>
 
@@ -10,6 +12,7 @@
 #include "app/DialogUtil.h"
 #include "app/resource.h"
 #include "core/Lang.h"
+#include "core/ResizeModel.h"
 
 namespace mp {
 
@@ -18,45 +21,17 @@ namespace {
 // ---------------------------------------------------------------------------
 // 調整尺寸
 
+// 對話框的狀態：算法在 core/ResizeModel，這裡只有「正在由程式改欄位」的旗標與結果。
 struct ResizeState {
-    int origW, origH;
-    double origDpi;
+    ResizeModel model;
     ResizeResult out;
-    bool updating = false;
-    bool lock = true;
-    int unit = 0;    // 0 像素 1 % 2 英寸 3 公分 4 公釐 5 點
-    int dpiUnit = 0; // 0 像素/英寸 1 像素/公分
-    double w, h;     // 目前欄位值（以像素為準）
-    double dpi;      // 像素/英寸
+    bool updating = false; // 程式在改欄位：這時的 EN_CHANGE 不是使用者打的
 };
 
-const int kPresets[] = {0, 320, 640, 800, 1024, 1280, 1920};
-
-double pxToUnit(double pxv, int unit, double dpi, int total) {
-    switch (unit) {
-    case 1: return pxv * 100.0 / total;
-    case 2: return pxv / dpi;
-    case 3: return pxv / dpi * 2.54;
-    case 4: return pxv / dpi * 25.4;
-    case 5: return pxv / dpi * 72.0;
-    default: return pxv;
-    }
-}
-
-double unitToPx(double v, int unit, double dpi, int total) {
-    switch (unit) {
-    case 1: return v * total / 100.0;
-    case 2: return v * dpi;
-    case 3: return v / 2.54 * dpi;
-    case 4: return v / 25.4 * dpi;
-    case 5: return v / 72.0 * dpi;
-    default: return v;
-    }
-}
-
-std::wstring fmtNum(double v, int unit) {
+// 像素顯示整數，其他單位三位有效數字。
+std::wstring fmtNum(double v, bool integer) {
     wchar_t buf[32];
-    if (unit == 0) swprintf(buf, 32, L"%d", static_cast<int>(std::lround(v)));
+    if (integer) swprintf(buf, 32, L"%d", static_cast<int>(std::lround(v)));
     else swprintf(buf, 32, L"%.3g", v);
     return buf;
 }
@@ -67,135 +42,121 @@ double readNum(HWND dlg, int id) {
     return _wtof(buf);
 }
 
-void resizeSync(HWND dlg, ResizeState& s) {
+bool checked(HWND dlg, int id) { return Button_GetCheck(GetDlgItem(dlg, id)) == BST_CHECKED; }
+
+// 把 model 的值寫回欄位。fields：要寫哪幾個欄位（使用者正在打的那一格不要動）。「結果」那一行一定更新。
+enum : unsigned { kFieldW = 1, kFieldH = 2, kFieldDpi = 4, kAllFields = kFieldW | kFieldH | kFieldDpi };
+void resizeSync(HWND dlg, ResizeState& s, unsigned fields = kAllFields) {
+    const ResizeModel& m = s.model;
+    const bool pixels = m.unit == LengthUnit::Pixels;
     s.updating = true;
-    double dpi = s.dpi;
-    SetDlgItemTextW(dlg, IDC_W, fmtNum(pxToUnit(s.w, s.unit, dpi, s.origW), s.unit).c_str());
-    SetDlgItemTextW(dlg, IDC_H, fmtNum(pxToUnit(s.h, s.unit, dpi, s.origH), s.unit).c_str());
-    SetDlgItemTextW(dlg, IDC_DPI, fmtNum(s.dpiUnit == 0 ? dpi : dpi / 2.54, s.dpiUnit == 0 ? 0 : 5).c_str());
+    if (fields & kFieldW) SetDlgItemTextW(dlg, IDC_W, fmtNum(m.widthInUnit(), pixels).c_str());
+    if (fields & kFieldH) SetDlgItemTextW(dlg, IDC_H, fmtNum(m.heightInUnit(), pixels).c_str());
+    if (fields & kFieldDpi) SetDlgItemTextW(dlg, IDC_DPI, fmtNum(m.dpiInUnit(), m.dpiUnit == DpiUnit::PerInch).c_str());
     wchar_t buf[64];
-    swprintf(buf, 64, tr(L"%d × %d pixels"), std::max(1, static_cast<int>(std::lround(s.w))), std::max(1, static_cast<int>(std::lround(s.h))));
+    swprintf(buf, 64, tr(L"%d × %d pixels"), m.previewWidth(), m.previewHeight());
     SetDlgItemTextW(dlg, IDC_RESULT, buf);
     s.updating = false;
+}
+
+void resizeInit(HWND dlg, ResizeState& s) {
+    translateDialog(dlg);
+    HWND fit = GetDlgItem(dlg, IDC_FIT);
+    ComboBox_AddString(fit, tr(L"Custom")); // 第 0 項；之後依序是 kResizePresets
+    for (int preset : kResizePresets) {
+        wchar_t b[32];
+        swprintf(b, 32, L"%d × %d", preset, preset);
+        ComboBox_AddString(fit, b);
+    }
+    ComboBox_SetCurSel(fit, 0);
+    HWND unit = GetDlgItem(dlg, IDC_UNIT); // 順序同 LengthUnit
+    for (auto* u : {tr(L"pixels"), L"%", tr(L"inches"), tr(L"cm"), tr(L"mm"), tr(L"points")}) ComboBox_AddString(unit, u);
+    ComboBox_SetCurSel(unit, 0);
+    HWND du = GetDlgItem(dlg, IDC_DPIUNIT); // 順序同 DpiUnit
+    ComboBox_AddString(du, tr(L"pixels/inch"));
+    ComboBox_AddString(du, tr(L"pixels/cm"));
+    ComboBox_SetCurSel(du, 0);
+    Button_SetCheck(GetDlgItem(dlg, IDC_LOCK), BST_CHECKED);
+    Button_SetCheck(GetDlgItem(dlg, IDC_RESAMPLE), BST_CHECKED);
+    resizeSync(dlg, s);
+}
+
+// 一個控制項的通知。回傳有沒有處理。
+bool resizeCommand(HWND dlg, ResizeState& s, int id, int code) {
+    ResizeModel& m = s.model;
+    switch (id) {
+    case IDC_FIT:
+        if (code == CBN_SELCHANGE) {
+            const int sel = ComboBox_GetCurSel(GetDlgItem(dlg, IDC_FIT));
+            if (sel > 0) {
+                m.fitInto(kResizePresets[sel - 1]);
+                resizeSync(dlg, s);
+            }
+        }
+        return true;
+    case IDC_W:
+    case IDC_H:
+        if (code == EN_CHANGE) {
+            const double v = readNum(dlg, id);
+            if (v <= 0) return true;
+            if (id == IDC_W) m.setWidth(v); else m.setHeight(v);
+            ComboBox_SetCurSel(GetDlgItem(dlg, IDC_FIT), 0); // 自己打了數字：不再是預設尺寸
+            resizeSync(dlg, s, id == IDC_W ? kFieldH : kFieldW);
+        }
+        return true;
+    case IDC_UNIT:
+        if (code == CBN_SELCHANGE) {
+            m.unit = static_cast<LengthUnit>(ComboBox_GetCurSel(GetDlgItem(dlg, IDC_UNIT)));
+            resizeSync(dlg, s);
+        }
+        return true;
+    case IDC_LOCK:
+        m.lock = checked(dlg, IDC_LOCK);
+        return true;
+    case IDC_DPI:
+        if (code == EN_CHANGE) {
+            const double v = readNum(dlg, IDC_DPI);
+            if (v <= 0) return true;
+            m.setDpi(v);
+            resizeSync(dlg, s, kFieldW | kFieldH);
+        }
+        return true;
+    case IDC_DPIUNIT:
+        if (code == CBN_SELCHANGE) {
+            m.dpiUnit = static_cast<DpiUnit>(ComboBox_GetCurSel(GetDlgItem(dlg, IDC_DPIUNIT)));
+            resizeSync(dlg, s);
+        }
+        return true;
+    case IDC_RESAMPLE: {
+        m.setResample(checked(dlg, IDC_RESAMPLE));
+        for (int field : {IDC_W, IDC_H, IDC_FIT}) EnableWindow(GetDlgItem(dlg, field), m.resample);
+        resizeSync(dlg, s);
+        return true;
+    }
+    case IDOK:
+        s.out.resample = m.resample;
+        s.out.width = m.resultWidth();
+        s.out.height = m.resultHeight();
+        s.out.dpi = m.dpi;
+        EndDialog(dlg, IDOK);
+        return true;
+    case IDCANCEL:
+        EndDialog(dlg, IDCANCEL);
+        return true;
+    default: return false;
+    }
 }
 
 INT_PTR CALLBACK resizeProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     auto* s = reinterpret_cast<ResizeState*>(GetWindowLongPtrW(dlg, DWLP_USER));
     switch (msg) {
-    case WM_INITDIALOG: {
-        s = reinterpret_cast<ResizeState*>(lp);
+    case WM_INITDIALOG:
         SetWindowLongPtrW(dlg, DWLP_USER, lp);
-        translateDialog(dlg);
-        HWND fit = GetDlgItem(dlg, IDC_FIT);
-        ComboBox_AddString(fit, tr(L"Custom"));
-        for (int i = 1; i < 7; ++i) {
-            wchar_t b[32];
-            swprintf(b, 32, L"%d × %d", kPresets[i], kPresets[i]);
-            ComboBox_AddString(fit, b);
-        }
-        ComboBox_SetCurSel(fit, 0);
-        HWND unit = GetDlgItem(dlg, IDC_UNIT);
-        for (auto* u : {tr(L"pixels"), L"%", tr(L"inches"), tr(L"cm"), tr(L"mm"), tr(L"points")}) ComboBox_AddString(unit, u);
-        ComboBox_SetCurSel(unit, 0);
-        HWND du = GetDlgItem(dlg, IDC_DPIUNIT);
-        ComboBox_AddString(du, tr(L"pixels/inch"));
-        ComboBox_AddString(du, tr(L"pixels/cm"));
-        ComboBox_SetCurSel(du, 0);
-        Button_SetCheck(GetDlgItem(dlg, IDC_LOCK), BST_CHECKED);
-        Button_SetCheck(GetDlgItem(dlg, IDC_RESAMPLE), BST_CHECKED);
-        resizeSync(dlg, *s);
+        resizeInit(dlg, *reinterpret_cast<ResizeState*>(lp));
         return TRUE;
-    }
-    case WM_COMMAND: {
+    case WM_COMMAND:
         if (!s || s->updating) return FALSE;
-        int id = LOWORD(wp), code = HIWORD(wp);
-        switch (id) {
-        case IDC_FIT:
-            if (code == CBN_SELCHANGE) {
-                int sel = ComboBox_GetCurSel(GetDlgItem(dlg, IDC_FIT));
-                if (sel > 0) {
-                    double box = kPresets[sel];
-                    double scale = std::min(box / s->origW, box / s->origH);
-                    s->w = s->origW * scale;
-                    s->h = s->origH * scale;
-                    resizeSync(dlg, *s);
-                }
-            }
-            return TRUE;
-        case IDC_W:
-        case IDC_H:
-            if (code == EN_CHANGE) {
-                double v = readNum(dlg, id);
-                if (v <= 0) return TRUE;
-                bool isW = id == IDC_W;
-                double pxv = unitToPx(v, s->unit, s->dpi, isW ? s->origW : s->origH);
-                if (isW) s->w = pxv; else s->h = pxv;
-                if (s->lock) {
-                    if (isW) s->h = pxv * s->origH / s->origW;
-                    else s->w = pxv * s->origW / s->origH;
-                }
-                ComboBox_SetCurSel(GetDlgItem(dlg, IDC_FIT), 0);
-                s->updating = true;
-                SetDlgItemTextW(dlg, isW ? IDC_H : IDC_W,
-                                fmtNum(pxToUnit(isW ? s->h : s->w, s->unit, s->dpi, isW ? s->origH : s->origW), s->unit).c_str());
-                wchar_t buf[64];
-                swprintf(buf, 64, tr(L"%d × %d pixels"), std::max(1, static_cast<int>(std::lround(s->w))), std::max(1, static_cast<int>(std::lround(s->h))));
-                SetDlgItemTextW(dlg, IDC_RESULT, buf);
-                s->updating = false;
-            }
-            return TRUE;
-        case IDC_UNIT:
-            if (code == CBN_SELCHANGE) { s->unit = ComboBox_GetCurSel(GetDlgItem(dlg, IDC_UNIT)); resizeSync(dlg, *s); }
-            return TRUE;
-        case IDC_LOCK:
-            s->lock = Button_GetCheck(GetDlgItem(dlg, IDC_LOCK)) == BST_CHECKED;
-            return TRUE;
-        case IDC_DPI:
-            if (code == EN_CHANGE) {
-                double v = readNum(dlg, IDC_DPI);
-                if (v <= 0) return TRUE;
-                double newDpi = s->dpiUnit == 0 ? v : v * 2.54;
-                bool resample = Button_GetCheck(GetDlgItem(dlg, IDC_RESAMPLE)) == BST_CHECKED;
-                if (resample && s->unit >= 2) {
-                    // 實體尺寸不變，像素跟著 DPI 變
-                    s->w = s->w * newDpi / s->dpi;
-                    s->h = s->h * newDpi / s->dpi;
-                }
-                s->dpi = newDpi;
-                s->updating = true;
-                SetDlgItemTextW(dlg, IDC_W, fmtNum(pxToUnit(s->w, s->unit, s->dpi, s->origW), s->unit).c_str());
-                SetDlgItemTextW(dlg, IDC_H, fmtNum(pxToUnit(s->h, s->unit, s->dpi, s->origH), s->unit).c_str());
-                wchar_t buf[64];
-                swprintf(buf, 64, tr(L"%d × %d pixels"), std::max(1, static_cast<int>(std::lround(s->w))), std::max(1, static_cast<int>(std::lround(s->h))));
-                SetDlgItemTextW(dlg, IDC_RESULT, buf);
-                s->updating = false;
-            }
-            return TRUE;
-        case IDC_DPIUNIT:
-            if (code == CBN_SELCHANGE) { s->dpiUnit = ComboBox_GetCurSel(GetDlgItem(dlg, IDC_DPIUNIT)); resizeSync(dlg, *s); }
-            return TRUE;
-        case IDC_RESAMPLE: {
-            bool resample = Button_GetCheck(GetDlgItem(dlg, IDC_RESAMPLE)) == BST_CHECKED;
-            if (!resample) { s->w = s->origW; s->h = s->origH; }
-            EnableWindow(GetDlgItem(dlg, IDC_W), resample);
-            EnableWindow(GetDlgItem(dlg, IDC_H), resample);
-            EnableWindow(GetDlgItem(dlg, IDC_FIT), resample);
-            resizeSync(dlg, *s);
-            return TRUE;
-        }
-        case IDOK:
-            s->out.resample = Button_GetCheck(GetDlgItem(dlg, IDC_RESAMPLE)) == BST_CHECKED;
-            s->out.width = std::clamp(static_cast<int>(std::lround(s->w)), 1, 30000);
-            s->out.height = std::clamp(static_cast<int>(std::lround(s->h)), 1, 30000);
-            s->out.dpi = s->dpi;
-            EndDialog(dlg, IDOK);
-            return TRUE;
-        case IDCANCEL:
-            EndDialog(dlg, IDCANCEL);
-            return TRUE;
-        default: return FALSE;
-        }
-    }
+        return resizeCommand(dlg, *s, LOWORD(wp), HIWORD(wp)) ? TRUE : FALSE;
     default: return FALSE;
     }
 }
@@ -203,7 +164,10 @@ INT_PTR CALLBACK resizeProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 // ---------------------------------------------------------------------------
 // 調整顏色
 
-struct ColorPanel {
+} // namespace
+
+// 面板的狀態。由 ColorAdjustPanel 握著，對話框關掉後還在（hwnd 變回 nullptr）。
+struct ColorPanelState {
     HWND hwnd = nullptr;
     HWND owner = nullptr;
     ColorAdjustHost* host = nullptr;
@@ -212,7 +176,10 @@ struct ColorPanel {
     bool updating = false;
     bool done = false;
 };
-ColorPanel* g_panel = nullptr;
+
+namespace {
+
+using ColorPanel = ColorPanelState;
 
 struct SliderDef {
     int id;
@@ -302,10 +269,11 @@ LRESULT CALLBACK sliderNoWheelProc(HWND h, UINT msg, WPARAM wp, LPARAM lp, UINT_
 }
 
 INT_PTR CALLBACK colorProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
-    ColorPanel* p = g_panel;
+    auto* p = reinterpret_cast<ColorPanel*>(GetWindowLongPtrW(dlg, DWLP_USER)); // WM_INITDIALOG 之前是 nullptr
     switch (msg) {
     case WM_INITDIALOG:
         p = reinterpret_cast<ColorPanel*>(lp);
+        SetWindowLongPtrW(dlg, DWLP_USER, lp);
         p->hwnd = dlg;
         translateDialog(dlg);
         fitDialogToWorkArea(dlg);
@@ -368,8 +336,8 @@ INT_PTR CALLBACK colorProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         DestroyWindow(dlg);
         return TRUE;
     case WM_DESTROY:
-        if (g_panel == p) g_panel = nullptr;
-        delete p;
+        if (p) p->hwnd = nullptr; // 狀態留著，由 ColorAdjustPanel 放掉
+        SetWindowLongPtrW(dlg, DWLP_USER, 0);
         return TRUE;
     default: return FALSE;
     }
@@ -378,13 +346,8 @@ INT_PTR CALLBACK colorProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 } // namespace
 
 bool showResizeDialog(HWND owner, int curW, int curH, double curDpi, ResizeResult& out) {
-    ResizeState s{};
-    s.origW = curW;
-    s.origH = curH;
-    s.origDpi = curDpi > 0 ? curDpi : 72;
-    s.w = curW;
-    s.h = curH;
-    s.dpi = s.origDpi;
+    ResizeState s;
+    s.model = ResizeModel::forImage(curW, curH, curDpi);
     HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
     INT_PTR r = DialogBoxParamW(inst, MAKEINTRESOURCEW(IDD_RESIZE), owner, resizeProc, reinterpret_cast<LPARAM>(&s));
     if (r != IDOK) return false;
@@ -392,21 +355,27 @@ bool showResizeDialog(HWND owner, int curW, int curH, double curDpi, ResizeResul
     return true;
 }
 
-void showColorAdjustPanel(HWND owner, ColorAdjustHost* host) {
-    if (g_panel) { SetForegroundWindow(g_panel->hwnd); return; }
-    auto* p = new ColorPanel;
-    p->owner = owner;
-    p->host = host;
-    g_panel = p;
+ColorAdjustPanel::ColorAdjustPanel() = default;
+
+ColorAdjustPanel::~ColorAdjustPanel() { close(); }
+
+HWND ColorAdjustPanel::hwnd() const { return state_ ? state_->hwnd : nullptr; }
+
+void ColorAdjustPanel::show(HWND owner, ColorAdjustHost* host) {
+    if (isOpen()) { SetForegroundWindow(state_->hwnd); return; }
+    state_ = std::make_unique<ColorPanelState>();
+    state_->owner = owner;
+    state_->host = host;
     HINSTANCE inst = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(owner, GWLP_HINSTANCE));
-    HWND dlg = CreateDialogParamW(inst, MAKEINTRESOURCEW(IDD_COLOR), owner, colorProc, reinterpret_cast<LPARAM>(p));
-    if (!dlg) { g_panel = nullptr; delete p; host->cancelAdjust(); return; }
+    HWND dlg = CreateDialogParamW(inst, MAKEINTRESOURCEW(IDD_COLOR), owner, colorProc, reinterpret_cast<LPARAM>(state_.get()));
+    if (!dlg) { state_.reset(); host->cancelAdjust(); return; }
     // 放在主視窗右上角旁邊
     RECT orc, drc;
     GetWindowRect(owner, &orc);
     GetWindowRect(dlg, &drc);
     int w = drc.right - drc.left, h = drc.bottom - drc.top;
-    int x = orc.right - w - 40, y = orc.top + 120;
+    const UiScale px = UiScale::forDpi(GetDpiForWindow(owner));
+    int x = orc.right - w - px.round(40), y = orc.top + px.round(120);
     MONITORINFO mi{sizeof(mi)};
     GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &mi);
     x = std::clamp<int>(x, mi.rcWork.left, std::max<int>(mi.rcWork.left, mi.rcWork.right - w));
@@ -415,21 +384,17 @@ void showColorAdjustPanel(HWND owner, ColorAdjustHost* host) {
     ShowWindow(dlg, SW_SHOW);
 }
 
-bool isColorAdjustPanelOpen() { return g_panel != nullptr; }
-
-HWND colorAdjustPanelHwnd() { return g_panel ? g_panel->hwnd : nullptr; }
-
-void colorAdjustPanelSetParams(const ColorAdjustParams& p) {
-    if (!g_panel) return;
-    g_panel->params = p;
-    slidersFromParams(*g_panel);
-    InvalidateRect(GetDlgItem(g_panel->hwnd, IDC_HIST), nullptr, FALSE);
+void ColorAdjustPanel::setParams(const ColorAdjustParams& p) {
+    if (!isOpen()) return;
+    state_->params = p;
+    slidersFromParams(*state_);
+    InvalidateRect(GetDlgItem(state_->hwnd, IDC_HIST), nullptr, FALSE);
 }
 
-void closeColorAdjustPanel() {
-    if (!g_panel) return;
-    g_panel->done = true;
-    DestroyWindow(g_panel->hwnd);
+void ColorAdjustPanel::close() {
+    if (!isOpen()) return;
+    state_->done = true;
+    DestroyWindow(state_->hwnd);
 }
 
 } // namespace mp

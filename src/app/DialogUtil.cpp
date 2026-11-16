@@ -5,6 +5,8 @@
 
 #include <algorithm>
 
+#include "app/AppIds.h"
+
 #include "core/Lang.h"
 
 namespace mp {
@@ -90,6 +92,22 @@ void translateDialog(HWND dlg) {
         (*reinterpret_cast<decltype(translate)*>(lp))(h);
         return TRUE;
     }, reinterpret_cast<LPARAM>(&translate));
+}
+
+bool askOk(HWND owner, const std::wstring& text, PCWSTR icon, bool withCancel) {
+    TASKDIALOG_BUTTON ok{IDOK, tr(L"OK")};
+    TASKDIALOGCONFIG td{sizeof(td)};
+    td.hwndParent = owner;
+    td.dwFlags = TDF_POSITION_RELATIVE_TO_WINDOW | (withCancel ? TDF_ALLOW_DIALOG_CANCELLATION : 0);
+    td.dwCommonButtons = withCancel ? TDCBF_CANCEL_BUTTON : 0;
+    td.cButtons = 1;
+    td.pButtons = &ok;
+    td.pszWindowTitle = kAppName;
+    td.pszMainIcon = icon;
+    td.pszContent = text.c_str();
+    int pressed = IDCANCEL;
+    if (FAILED(TaskDialogIndirect(&td, &pressed, nullptr, nullptr))) return false;
+    return pressed == IDOK;
 }
 
 } // namespace mp

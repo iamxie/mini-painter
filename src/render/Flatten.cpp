@@ -48,7 +48,7 @@ bool flatten(RenderDevice& device, const DocState& state, Image& out) {
         // 放大鏡要拿底圖當來源畫，才需要另外上傳一張底圖的點陣圖。
         ImageBitmap base;
         const bool needBase = std::any_of(state.items.begin(), state.items.end(),
-                                          [](const Annotation& a) { return a.kind == Kind::Magnifier; });
+                                          [](const Annotation& a) { return a.as<MagnifierShape>() != nullptr; });
         if (needBase) {
             base.bitmap = makeBitmap(surface.rt(), src, &base.scale);
             // 建不起來：放大鏡裡會是空的。被縮小過：放大的內容不是原本的像素。兩種都不能拿去存。

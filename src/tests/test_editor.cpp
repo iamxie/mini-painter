@@ -16,9 +16,9 @@ struct Fixture {
     Editor ed;
     ImagePtr image = std::make_shared<Image>(400, 300);
     Fixture() {
-        ed.setTextMeasurer([](const Annotation& a) {
+        ed.setTextMeasurer([](const TextShape& t) {
             int lines = 1;
-            for (wchar_t ch : a.textValue)
+            for (wchar_t ch : t.value)
                 if (ch == L'\n') ++lines;
             return 20.0f * lines + 8.0f;
         });
@@ -80,7 +80,7 @@ TEST_CASE("Editor：點物件選取並搬移；只點不拖不產生 undo 步驟
     f.ed.move(Fixture::at(41, 100), false);
     CHECK_FALSE(f.ed.release());
     CHECK(f.ed.doc().undoCount() == undoBefore);
-    CHECK(nearly(f.item(id).rect.left, 40.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 40.0f));
 
     // 拖 30、20。按在物件裡面、離控制點遠的地方（按在邊的中點會拖到控制點）
     f.ed.press(Fixture::at(70, 75), false);
@@ -88,16 +88,16 @@ TEST_CASE("Editor：點物件選取並搬移；只點不拖不產生 undo 步驟
     f.ed.move(Fixture::at(100, 95), true);
     // 拖曳中：畫面上是拖到一半的樣子，文件還沒動
     REQUIRE(f.ed.selectedItem() != nullptr);
-    CHECK(nearly(f.ed.selectedItem()->rect.left, 70.0f));
-    CHECK(nearly(f.item(id).rect.left, 40.0f));
+    CHECK(nearly(rectOf(*f.ed.selectedItem())->left, 70.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 40.0f));
     CHECK(f.ed.release());
-    CHECK(nearly(f.item(id).rect.left, 70.0f));
-    CHECK(nearly(f.item(id).rect.top, 60.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 70.0f));
+    CHECK(nearly(rectOf(f.item(id))->top, 60.0f));
     CHECK(f.ed.doc().undoCount() == undoBefore + 1);
     CHECK(f.ed.visibleItems().size() == 1); // 放開後畫面用的是文件裡的
 
     f.ed.undo();
-    CHECK(nearly(f.item(id).rect.left, 40.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 40.0f));
 }
 
 TEST_CASE("Editor：上層的物件優先被點到") {
@@ -125,9 +125,9 @@ TEST_CASE("Editor：選取物件的控制點優先於物件本身；拖控制點
     CHECK(f.ed.dragHandleId() == H_BR);
     f.ed.move(Fixture::at(200, 220), true);
     CHECK(f.ed.release());
-    CHECK(nearly(f.item(id).rect.right, 200.0f));
-    CHECK(nearly(f.item(id).rect.bottom, 220.0f));
-    CHECK(nearly(f.item(id).rect.left, 40.0f));
+    CHECK(nearly(rectOf(f.item(id))->right, 200.0f));
+    CHECK(nearly(rectOf(f.item(id))->bottom, 220.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 40.0f));
     // 沒有選取時同一個位置點不到控制點（200,220 這個角在框線上：變成搬移）
     f.ed.select(0);
     f.ed.press(Fixture::at(200, 220), false);
@@ -142,10 +142,10 @@ TEST_CASE("Editor：cancelDrag 丟掉拖到一半的東西") {
     f.ed.press(Fixture::at(70, 75), false);
     REQUIRE(f.ed.drag() == DragKind::Move);
     f.ed.move(Fixture::at(120, 125), true);
-    CHECK(nearly(f.ed.selectedItem()->rect.left, 90.0f));
+    CHECK(nearly(rectOf(*f.ed.selectedItem())->left, 90.0f));
     f.ed.cancelDrag();
     CHECK_FALSE(f.ed.dragging());
-    CHECK(nearly(f.item(id).rect.left, 40.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 40.0f));
     CHECK(f.ed.doc().undoCount() == undoBefore);
     CHECK(f.ed.visibleItems().size() == 1);
     CHECK_FALSE(f.ed.release()); // 沒有在拖：放開什麼都不做
@@ -164,7 +164,7 @@ TEST_CASE("Editor：塗鴉工具拖一筆就是一個物件，用目前的線條
     Fixture f;
     StrokeStyle s;
     s.stroke = Color::rgb(0, 128, 0);
-    s.widthLevel = 5;
+    s.width = strokeWidthForLevel(5);
     f.ed.applyStrokeStyle(s);
     uint32_t shape = f.ed.addShape(Kind::Rect, {300, 200}, 200);
     CHECK(f.ed.toggleFreehand());
@@ -180,13 +180,13 @@ TEST_CASE("Editor：塗鴉工具拖一筆就是一個物件，用目前的線條
     CHECK(f.ed.release());
     REQUIRE(f.ed.doc().items().size() == 2);
     const Annotation& a = f.ed.doc().items().back();
-    CHECK(a.kind == Kind::Freehand);
-    CHECK(a.strokePoints.size() == 3);
+    CHECK(a.kind() == Kind::Freehand);
+    CHECK(a.as<FreehandShape>()->points.size() == 3);
     CHECK(a.stroke.stroke == Color::rgb(0, 128, 0));
-    CHECK(a.stroke.widthLevel == 5);
-    CHECK(a.rect.left == 20.0f);
-    CHECK(a.rect.right == 60.0f);
-    CHECK(a.rect.bottom == 80.0f);
+    CHECK(a.stroke.width == strokeWidthForLevel(5));
+    CHECK(rectOf(a)->left == 20.0f);
+    CHECK(rectOf(a)->right == 60.0f);
+    CHECK(rectOf(a)->bottom == 80.0f);
     CHECK(a.id != shape);
     CHECK(a.id != 0);
 
@@ -195,7 +195,7 @@ TEST_CASE("Editor：塗鴉工具拖一筆就是一個物件，用目前的線條
     CHECK(f.ed.drag() == DragKind::Draw);
     CHECK(f.ed.release()); // 只點一下：一個點
     CHECK(f.ed.doc().items().size() == 3);
-    CHECK(f.ed.doc().items().back().strokePoints.size() == 1);
+    CHECK(f.ed.doc().items().back().as<FreehandShape>()->points.size() == 1);
     CHECK(f.ed.selected() == 0);
 
     CHECK_FALSE(f.ed.toggleFreehand());
@@ -252,7 +252,7 @@ TEST_CASE("Editor：裁切模式的進出與拖框") {
     CHECK_FALSE(f.ed.dragging());
     CHECK(f.ed.tool() == Tool::Select);
     CHECK_FALSE(f.ed.cancelCrop()); // 已經不在裁切模式
-    CHECK(nearly(f.item(id).rect.left, 40.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 40.0f));
 
     Editor empty;
     CHECK_FALSE(empty.beginCrop()); // 沒有圖
@@ -279,12 +279,12 @@ TEST_CASE("Editor：套用裁切換掉底圖、標註跟著平移，一個 undo 
     CHECK(f.ed.doc().image()->width == 380);
     CHECK(f.ed.doc().image()->height == 290);
     CHECK(f.ed.doc().dpi() == Dpi{300, 150});
-    CHECK(nearly(f.item(id).rect.left, 20.0f));
-    CHECK(nearly(f.item(id).rect.top, 30.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 20.0f));
+    CHECK(nearly(rectOf(f.item(id))->top, 30.0f));
     CHECK(f.ed.doc().undoCount() == undoBefore + 1);
     f.ed.undo();
     CHECK(f.ed.doc().image()->width == 400);
-    CHECK(nearly(f.item(id).rect.left, 40.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 40.0f));
 }
 
 TEST_CASE("Editor：Esc 一次取消一樣，順序是裁切、取白點、選取、塗鴉") {
@@ -320,17 +320,17 @@ TEST_CASE("Editor：加形狀與文字方塊") {
     REQUIRE(a != 0);
     CHECK_FALSE(f.ed.freehand()); // 加物件就離開塗鴉
     CHECK(f.ed.selected() == a);
-    CHECK(f.item(a).kind == Kind::Ellipse);
-    CHECK(nearly(f.item(a).rect.center().x, 200.0f));
+    CHECK(f.item(a).kind() == Kind::Ellipse);
+    CHECK(nearly(rectOf(f.item(a))->center().x, 200.0f));
     CHECK(f.ed.doc().undoCount() == 1);
 
     uint32_t t = f.ed.addText({200, 150}, 200, L"Hello");
     REQUIRE(t != 0);
     CHECK(t != a);
     CHECK(f.ed.selected() == t);
-    CHECK(f.item(t).kind == Kind::Text);
-    CHECK(f.item(t).textValue == L"Hello");
-    CHECK(nearly(f.item(t).rect.height(), 28.0f)); // 排版後的高度（一行）
+    CHECK(f.item(t).kind() == Kind::Text);
+    CHECK(f.item(t).as<TextShape>()->value == L"Hello");
+    CHECK(nearly(rectOf(f.item(t))->height(), 28.0f)); // 排版後的高度（一行）
     CHECK(f.item(t).stroke.stroke.none());   // 文字方塊預設沒有外框
     CHECK(f.ed.doc().undoCount() == 2);
 
@@ -345,8 +345,8 @@ TEST_CASE("Editor：方向鍵微移、刪除") {
     CHECK_FALSE(f.ed.deleteSelected());
     uint32_t id = f.ed.addShape(Kind::Rect, {100, 100}, 400);
     CHECK(f.ed.nudgeSelected(10, -1));
-    CHECK(nearly(f.item(id).rect.left, 50.0f));
-    CHECK(nearly(f.item(id).rect.top, 39.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 50.0f));
+    CHECK(nearly(rectOf(f.item(id))->top, 39.0f));
     CHECK(f.ed.doc().undoCount() == 2);
     CHECK(f.ed.deleteSelected());
     CHECK(f.ed.doc().items().empty());
@@ -391,12 +391,12 @@ TEST_CASE("Editor：文字樣式變成預設，選取的是文字方塊才套上
     (void)shape;
 
     uint32_t text = f.ed.addText({200, 200}, 400, L"x");
-    CHECK(f.item(text).text.size == 48.0f);
+    CHECK(f.item(text).as<TextShape>()->style.size == 48.0f);
     TextStyle bold = big;
     bold.bold = true;
     const size_t undoBefore = f.ed.doc().undoCount();
     CHECK(f.ed.applyTextStyle(bold));
-    CHECK(f.item(text).text.bold);
+    CHECK(f.item(text).as<TextShape>()->style.bold);
     CHECK(f.ed.doc().undoCount() == undoBefore + 1);
 }
 
@@ -404,9 +404,9 @@ TEST_CASE("Editor：commitItem 換掉同一個 id 的物件；不在文件裡的
     Fixture f;
     uint32_t id = f.ed.addShape(Kind::Rect, {100, 100}, 400);
     Annotation a = f.item(id);
-    a.rect.right = 300;
+    rectOf(a)->right = 300;
     CHECK(f.ed.commitItem(a));
-    CHECK(nearly(f.item(id).rect.right, 300.0f));
+    CHECK(nearly(rectOf(f.item(id))->right, 300.0f));
     a.id = 999;
     const size_t undoBefore = f.ed.doc().undoCount();
     CHECK_FALSE(f.ed.commitItem(a));
@@ -421,8 +421,8 @@ TEST_CASE("Editor：旋轉整張圖，寬高與解析度對調，標註跟著轉
     CHECK(f.ed.doc().image()->height == 400);
     CHECK(f.ed.doc().dpi() == Dpi{150, 300});
     // 逆時針 90 度：(x, y) → (y, W − x)
-    CHECK(std::abs(f.item(id).rect.center().x - 50.0f) < 0.01f);
-    CHECK(std::abs(f.item(id).rect.center().y - 300.0f) < 0.01f);
+    CHECK(std::abs(rectOf(f.item(id))->center().x - 50.0f) < 0.01f);
+    CHECK(std::abs(rectOf(f.item(id))->center().y - 300.0f) < 0.01f);
     f.ed.undo();
     CHECK(f.ed.doc().image()->width == 400);
     CHECK(f.ed.doc().dpi() == Dpi{300, 150});
@@ -438,8 +438,8 @@ TEST_CASE("Editor：調整尺寸。重新取樣時標註跟著縮放；只改解
     CHECK(f.ed.doc().image()->width == 200);
     CHECK(f.ed.doc().image()->height == 150);
     CHECK(f.ed.doc().dpi() == Dpi{72, 72});
-    CHECK(nearly(f.item(id).rect.left, 20.0f));
-    CHECK(nearly(f.item(id).rect.right, 80.0f));
+    CHECK(nearly(rectOf(f.item(id))->left, 20.0f));
+    CHECK(nearly(rectOf(f.item(id))->right, 80.0f));
 
     ImagePtr before = f.ed.doc().image();
     const size_t bytes = f.ed.doc().historyBytes();
@@ -563,21 +563,24 @@ TEST_CASE("Editor：文字編輯。打字時方塊長高但不進 undo，結束�
     CHECK(f.ed.textEditing());
     CHECK(f.ed.editingId() == id);
     CHECK(f.ed.editText() == L"one");
+    REQUIRE(f.ed.editingShape() != nullptr);
+    CHECK(f.ed.editingShape() == f.item(id).as<TextShape>()); // 文件裡的那個方塊
     CHECK_FALSE(f.ed.deleteSelected()); // 編輯中不刪物件（Delete 是給輸入框用的）
 
     CHECK_FALSE(f.ed.setEditText(L"onex")); // 還是一行：高度沒變
     CHECK(f.ed.setEditText(L"one\r\ntwo"));  // EDIT 控制項給 CRLF
     CHECK(f.ed.editText() == L"one\ntwo");
-    CHECK(nearly(f.item(id).rect.height(), 48.0f));
-    CHECK(f.item(id).textValue == L"one"); // 文件裡的字還沒換
+    CHECK(nearly(rectOf(f.item(id))->height(), 48.0f));
+    CHECK(f.item(id).as<TextShape>()->value == L"one"); // 文件裡的字還沒換
     CHECK(f.ed.doc().undoCount() == undoBefore);
 
     CHECK(f.ed.endTextEdit(true));
     CHECK_FALSE(f.ed.textEditing());
-    CHECK(f.item(id).textValue == L"one\ntwo");
+    CHECK(f.ed.editingShape() == nullptr);
+    CHECK(f.item(id).as<TextShape>()->value == L"one\ntwo");
     CHECK(f.ed.doc().undoCount() == undoBefore + 1);
     f.ed.undo();
-    CHECK(f.item(id).textValue == L"one");
+    CHECK(f.item(id).as<TextShape>()->value == L"one");
 }
 
 TEST_CASE("Editor：結束文字編輯。沒改不進 undo；打成空的刪掉方塊；不 commit 就丟掉打的字") {
@@ -592,7 +595,7 @@ TEST_CASE("Editor：結束文字編輯。沒改不進 undo；打成空的刪掉�
     REQUIRE(f.ed.beginTextEdit(id));
     f.ed.setEditText(L"changed");
     CHECK_FALSE(f.ed.endTextEdit(false)); // 換圖時：丟掉
-    CHECK(f.item(id).textValue == L"one");
+    CHECK(f.item(id).as<TextShape>()->value == L"one");
     CHECK(f.ed.doc().undoCount() == undoBefore);
 
     REQUIRE(f.ed.beginTextEdit(id));
@@ -655,7 +658,7 @@ TEST_CASE("Editor：itemBoxAt / tipItemAt / textItemAt") {
     Fixture f;
     uint32_t shape = f.ed.addShape(Kind::Rect, {100, 100}, 400);
     uint32_t text = f.ed.addText({300, 200}, 400, L"x");
-    Pt inShape{100, 100}, inText = f.item(text).rect.center(), nowhere{390, 10};
+    Pt inShape{100, 100}, inText = rectOf(f.item(text))->center(), nowhere{390, 10};
     CHECK(f.ed.itemBoxAt(inShape) == shape);
     CHECK(f.ed.itemBoxAt(inText) == text);
     CHECK(f.ed.itemBoxAt(nowhere) == 0);

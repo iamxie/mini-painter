@@ -239,12 +239,7 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
         EndPaint(hwnd_, &ps);
         return 0;
     }
-    case WM_SIZE:
-        renderer_.resize(LOWORD(lp), HIWORD(lp));
-        layout();
-        reflowView(false);
-        positionEdit();
-        return 0;
+    case WM_SIZE: onSize(); return 0;
     case WM_DPICHANGED: onDpiChanged(HIWORD(wp), *reinterpret_cast<const RECT*>(lp)); return 0;
     case WM_GETMINMAXINFO: {
         auto* mmi = reinterpret_cast<MINMAXINFO*>(lp);
@@ -355,6 +350,15 @@ LRESULT MainWindow::onCloseForUpdate(DWORD pid, HWND progress) {
     updating_ = true; // WM_CLOSE 不再問
     PostMessageW(hwnd_, WM_CLOSE, 0, 0);
     return 1;
+}
+
+void MainWindow::onSize() {
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    renderer_.resize(static_cast<UINT>(rc.right), static_cast<UINT>(rc.bottom));
+    layout();
+    reflowView(false);
+    positionEdit();
 }
 
 void MainWindow::onDpiChanged(unsigned dpi, const RECT& suggested) {
@@ -1587,6 +1591,11 @@ float MainWindow::imageTol() const { return px(kHitTol) / view_.zoom(); }
 
 void MainWindow::paint() {
     if (!renderer_.ensureHwndTarget(hwnd_)) return;
+    // 遠端桌面在 ShowWindow 途中就送 WM_PAINT：視窗已經變大，WM_SIZE 還沒來。照舊版面畫的話，
+    // 這一次重畫用掉了變大時的重畫要求，之後的 WM_SIZE 不會再畫，畫面就停在舊版面。所以先照目前的大小重排。
+    RECT rc;
+    GetClientRect(hwnd_, &rc);
+    if (rc.right != static_cast<LONG>(toolbarRc_.right) || rc.bottom != static_cast<LONG>(canvasRc_.bottom)) onSize();
     auto* rt = renderer_.rt();
     rt->BeginDraw();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());

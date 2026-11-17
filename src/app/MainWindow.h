@@ -57,6 +57,7 @@ private:
     LRESULT handle(UINT msg, WPARAM wp, LPARAM lp);
     // handle 裡比較長的幾個訊息
     LRESULT onCloseForUpdate(DWORD pid, HWND progress);
+    void onSize(); // 照目前的工作區大小調 render target、重排版面與檢視（WM_SIZE，或重畫時發現版面還是舊的）
     void onDpiChanged(unsigned dpi, const RECT& suggested);
     bool onTimer(UINT_PTR id);
     HBRUSH editColors(HDC dc);

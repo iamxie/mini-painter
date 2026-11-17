@@ -19,6 +19,7 @@ ToolbarState withImage() {
     ToolbarState st;
     st.hasImage = true;
     st.commands.hasImage = true;
+    st.commands.hasView = true;
     st.commands.hasPages = true;
     return st;
 }
@@ -113,6 +114,25 @@ TEST_CASE("Toolbar：每顆按鈕能不能按、有沒有亮起跟著狀態") {
     st.commands.dragging = true; // 拖曳中指令都不能用，但按鈕不跟著變灰
     t.layout(st);
     CHECK(t.button(BTN_ROTATE).enabled);
+}
+
+TEST_CASE("Toolbar：兩頁並排、第一頁讀不到只有第二頁時，縮放三顆能按，旋轉與工具按鈕不能") {
+    Fixture t;
+    ToolbarState st; // 文件沒有圖
+    st.showMarkup = true;
+    st.commands.hasView = true; // 第二頁讀得到
+    st.commands.twoPage = true;
+    st.commands.hasPages = true;
+    t.layout(st);
+    CHECK(t.button(BTN_ZOOMOUT).enabled);
+    CHECK(t.button(BTN_ZOOM100).enabled);
+    CHECK(t.button(BTN_ZOOMIN).enabled);
+    CHECK_FALSE(t.button(BTN_ROTATE).enabled);
+    CHECK_FALSE(t.button(BTN_FREEHAND).enabled);
+
+    st.zoomIsActual = true; // 已經是 1:1 時「1:1」照樣不能按
+    t.layout(st);
+    CHECK_FALSE(t.button(BTN_ZOOM100).enabled);
 }
 
 TEST_CASE("Toolbar：命中。按鈕上回它的 id，空隙回 BTN_NONE") {

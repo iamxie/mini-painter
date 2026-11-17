@@ -53,6 +53,12 @@ struct SaveResult {
 SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptions& opt = {});
 // 接手 img 的版本：有透明時直接在 img 上換算，不另外複製。呼叫後 img 的內容不能再用。
 SaveResult saveImage(Image&& img, const std::wstring& path, const SaveOptions& opt = {});
+// 存檔時，path 旁邊的暫存檔都叫 <path>.<行程編號>-<序號>.mp-saving.tmp：每次存檔一個新的名字，
+// 兩個視窗同時存同一個檔也不會拿到同一個暫存檔；存完（成功或失敗）只刪自己的那一個。
+// 存檔開始時順便刪掉同一個 path 的、名字裡的行程已經結束的暫存檔（存到一半當掉留下的）；還在跑的行程的不碰。
+
+// 建好下一個暫存檔（空檔，用「已經有就失敗」的方式建，不會蓋掉別人的）並回傳路徑。建不起來回空字串，lastError 填原因。
+std::wstring claimSaveTemp(const std::wstring& path, unsigned long& lastError);
 
 // source 格式的檔存成 target 格式時，section 這種區塊帶不帶得過去。同格式全部帶。
 // 存檔（saveImage）與事前的警告（metadataLossOnSave）都看這一個函式。

@@ -66,6 +66,7 @@ inline bool isProfileCommand(int id) { return id >= IDM_PROFILE_FIRST && id <= I
 // 判斷指令能不能用要看的狀態。app 每次要判斷時填一份。
 struct CommandState {
     bool hasImage = false;
+    bool hasView = false;         // 畫面上有頁可以排：有圖，或兩頁並排時有一頁讀得到。縮放與檢視模式看這個
     bool dirty = false;           // 有沒存的修改
     bool canUndo = false;
     bool canRedo = false;

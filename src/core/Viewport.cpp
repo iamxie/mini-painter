@@ -44,4 +44,11 @@ Rc pageRectInSpread(PageSize first, const PageSize* second, bool wantSecond, boo
     return {x2, h - h2, x2 + w2, h};
 }
 
+bool spreadWithPlaceholder(const PageSize* first, const PageSize* second, PageSize& outFirst, PageSize& outSecond) {
+    if (!first && !second) return false;
+    outFirst = first ? *first : *second;
+    outSecond = second ? *second : *first;
+    return true;
+}
+
 } // namespace mp

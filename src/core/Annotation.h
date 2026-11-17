@@ -28,6 +28,8 @@ inline bool operator!=(Color a, Color b) { return !(a == b); }
 // 線型選單的七級粗細對應的像素寬度。
 constexpr int kStrokeLevels = 7;
 float strokeWidthForLevel(int level);
+// 物件種類的英文名（"Rect"、"Mosaic"…）。不翻譯：放在錯誤訊息裡給回報問題用，跟 HRESULT 一樣是技術資訊。
+const wchar_t* kindName(Kind kind);
 // 這個線寬是選單的第幾級；不是選單上的值回 -1。
 int strokeLevelForWidth(float width);
 

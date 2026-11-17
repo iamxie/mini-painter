@@ -22,9 +22,12 @@ struct PaintCtx {
 };
 
 void drawImage(const PaintCtx& ctx);
-// skipId：這個 id 的物件不畫（文字編輯中的那個由 EDIT 控制項顯示）。
-void drawAnnotations(const PaintCtx& ctx, const std::vector<Annotation>& items, uint32_t skipId = 0);
-void drawAnnotation(const PaintCtx& ctx, const Annotation& a);
+// 畫標註。回 S_OK 是畫好了（或本來就沒東西可畫，例如馬賽克整個在圖外）；失敗是要的資源（幾何、畫刷、
+// 文字排版、馬賽克小圖）建不出來，那個物件沒畫完整。畫在畫面上時可以不管；存檔的壓平要當成失敗。
+// drawAnnotations：skipId 這個 id 的物件不畫（文字編輯中的那個由 EDIT 控制項顯示）。有畫不出來的照樣畫完其他的，
+// 回第一個失敗的原因，failedId 不是 nullptr 就填那個物件的 id。
+HRESULT drawAnnotations(const PaintCtx& ctx, const std::vector<Annotation>& items, uint32_t skipId = 0, uint32_t* failedId = nullptr);
+HRESULT drawAnnotation(const PaintCtx& ctx, const Annotation& a);
 
 // 文字物件依目前寬度排版後的高度（圖片像素，含上下留白）。排不出來時用字級估一行的高度。
 float textHeight(RenderDevice& device, const TextShape& t);

@@ -38,5 +38,8 @@ Pt spreadSize(PageSize first, const PageSize* second);
 // 某一頁在虛擬畫面裡的位置：兩頁底對齊；閱讀順序左到右時第一頁在左，右到左（日漫）時第一頁在右。
 // wantSecond 為 true 取第二頁（沒有第二頁時回空的矩形）。
 Rc pageRectInSpread(PageSize first, const PageSize* second, bool wantSecond, bool rightToLeft);
+// 兩頁並排的一屏裡有一頁讀不到時，那一頁的位置畫佔位框，大小用另一頁的（版面不跳）。
+// first / second 是讀到的頁的大小，讀不到給 nullptr。兩頁都讀不到回 false（沒有可排的）。
+bool spreadWithPlaceholder(const PageSize* first, const PageSize* second, PageSize& outFirst, PageSize& outSecond);
 
 } // namespace mp

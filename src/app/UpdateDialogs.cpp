@@ -122,7 +122,8 @@ UpdateError downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, c
         err = downloadUpdate(release, workDir, stagingDir, hooks);
     };
     if (!runWithProgress(owner, st)) st.work(st);
-    if (!err.ok() && st.cancel.load()) err.code = UpdateErrorCode::Cancelled;
+    // 按了取消就算取消，即使剛好下載、解壓完了（不然會照樣換檔重開）。
+    if (st.cancel.load()) err.code = UpdateErrorCode::Cancelled;
     return err;
 }
 

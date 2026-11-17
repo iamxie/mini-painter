@@ -207,6 +207,8 @@ Image resample(const Image& src, int newW, int newH) {
     if (src.empty()) return out;
 
     // 先水平（src.height 列 -> newW 寬），再垂直。中間用 8 位元，誤差可接受。
+    // Lanczos 有負的權重，明暗差很大的邊緣會算過頭：premultiplied 的色版不能大於 alpha，
+    // 兩個方向算完都先夾 alpha，再把色版夾在 alpha 以下（不然鋪白底時 c + (255 − a) 會超過 255）。
     std::vector<Taps> tx = makeTaps(src.width, newW);
     std::vector<Taps> ty = makeTaps(src.height, newH);
     Image mid(newW, src.height);
@@ -222,7 +224,9 @@ Image resample(const Image& src, int newW, int newH) {
                     acc[0] += w * p[0]; acc[1] += w * p[1]; acc[2] += w * p[2]; acc[3] += w * p[3];
                     p += 4;
                 }
-                for (int c = 0; c < 4; ++c) o[c] = static_cast<uint8_t>(std::clamp(acc[c] + 0.5f, 0.0f, 255.0f));
+                o[3] = static_cast<uint8_t>(std::clamp(acc[3] + 0.5f, 0.0f, 255.0f));
+                const float cap = o[3];
+                for (int c = 0; c < 3; ++c) o[c] = static_cast<uint8_t>(std::clamp(acc[c] + 0.5f, 0.0f, cap));
             }
         }
     });
@@ -237,7 +241,11 @@ Image resample(const Image& src, int newW, int newH) {
                 for (size_t i = 0; i < acc.size(); ++i) acc[i] += w * s[i];
             }
             uint8_t* o = out.row(y);
-            for (size_t i = 0; i < acc.size(); ++i) o[i] = static_cast<uint8_t>(std::clamp(acc[i] + 0.5f, 0.0f, 255.0f));
+            for (size_t i = 0; i < acc.size(); i += 4) {
+                o[i + 3] = static_cast<uint8_t>(std::clamp(acc[i + 3] + 0.5f, 0.0f, 255.0f));
+                const float cap = o[i + 3];
+                for (size_t c = 0; c < 3; ++c) o[i + c] = static_cast<uint8_t>(std::clamp(acc[i + c] + 0.5f, 0.0f, cap));
+            }
         }
     });
     return out;

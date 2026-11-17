@@ -23,6 +23,9 @@ std::wstring updateErrorText(const UpdateError& e);
 std::wstring updateFailureText(const UpdateError& e);
 // Win32 錯誤碼的系統說明（系統語言），去掉結尾的換行與句點。查不到回 L"error <碼>"。
 std::wstring systemErrorText(unsigned long code);
+// 標註壓不上去（render/Flatten 的 FlattenResult）時給使用者看的原因：說明句，加上失敗的物件種類（英文，不翻譯）、
+// 「(HRESULT 0x…)」與系統的說明（查得到才加）。kind 是 nullptr、hr 是 0 的部分不加。
+std::wstring flattenErrorText(const wchar_t* kind, long hr);
 
 // 資訊面板的欄位名與值。
 std::wstring metaLabelText(const MetaItem& item);

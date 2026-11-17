@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 #include "render/AnnotationPainter.h"
 
@@ -24,27 +25,34 @@ bool forEachRow(IWICBitmap* bmp, int width, int height, DWORD mode, Row row) {
 }
 } // namespace
 
-bool flatten(RenderDevice& device, const DocState& state, Image& out) {
+static FlattenResult flattenImpl(RenderDevice& device, const DocState& state, Image& out) {
+    FlattenResult fail;
+    auto failed = [&](HRESULT hr) {
+        fail.hr = hr;
+        return fail;
+    };
     const Image& src = *state.image;
     if (state.items.empty()) {
         out = src;
-        return true;
+        return {true};
     }
-    if (src.width > kFlattenMaxSide || src.height > kFlattenMaxSide) return false;
+    if (src.width > kFlattenMaxSide || src.height > kFlattenMaxSide) return fail;
 
     ComPtr<IWICImagingFactory> wic;
-    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic)))) return false;
+    HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wic));
+    if (FAILED(hr)) return failed(hr);
     // 畫布一開始就是底圖的像素（直接複製，不經過繪製），標註畫在上面。
     ComPtr<IWICBitmap> canvas;
-    if (FAILED(wic->CreateBitmap(src.width, src.height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &canvas))) return false;
+    hr = wic->CreateBitmap(src.width, src.height, GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad, &canvas);
+    if (FAILED(hr)) return failed(hr);
     if (!forEachRow(canvas.Get(), src.width, src.height, WICBitmapLockWrite,
                     [&](int y, BYTE* line) { memcpy(line, src.row(y), src.stride()); }))
-        return false;
+        return fail;
 
     {
         Surface surface(device);
         surface.attach(device.createWicTarget(canvas.Get()));
-        if (!surface) return false;
+        if (!surface) return fail;
         // 放大鏡要拿底圖當來源畫，才需要另外上傳一張底圖的點陣圖。
         ImageBitmap base;
         const bool needBase = std::any_of(state.items.begin(), state.items.end(),
@@ -52,21 +60,42 @@ bool flatten(RenderDevice& device, const DocState& state, Image& out) {
         if (needBase) {
             base.bitmap = makeBitmap(surface.rt(), src, &base.scale);
             // 建不起來：放大鏡裡會是空的。被縮小過：放大的內容不是原本的像素。兩種都不能拿去存。
-            if (!base.bitmap || base.scale != 1.0f) return false;
+            if (!base.bitmap || base.scale != 1.0f) {
+                fail.kind = kindName(Kind::Magnifier);
+                return fail;
+            }
         }
         MosaicCache mosaic;
         PaintCtx ctx{&surface, state.image, needBase ? &base : nullptr, &mosaic};
         surface.rt()->BeginDraw();
-        drawAnnotations(ctx, state.items);
-        if (FAILED(surface.rt()->EndDraw())) return false;
+        uint32_t failedId = 0;
+        HRESULT drawn = drawAnnotations(ctx, state.items, 0, &failedId);
+        hr = surface.rt()->EndDraw(); // 先結束這一輪繪製，再看標註有沒有畫不完整
+        if (FAILED(drawn)) {
+            for (const Annotation& a : state.items)
+                if (a.id == failedId) fail.kind = kindName(a.kind());
+            return failed(drawn);
+        }
+        if (FAILED(hr)) return failed(hr);
     } // target 與它的點陣圖在這裡放掉，再配置 out
 
     Image result(src.width, src.height);
     if (!forEachRow(canvas.Get(), src.width, src.height, WICBitmapLockRead,
                     [&](int y, BYTE* line) { memcpy(result.row(y), line, result.stride()); }))
-        return false;
+        return fail;
     out = std::move(result);
-    return true;
+    return {true};
+}
+
+FlattenResult flatten(RenderDevice& device, const DocState& state, Image& out) {
+    try {
+        return flattenImpl(device, state, out);
+    } catch (const std::bad_alloc&) {
+        // 複製底圖、配置 out 時記憶體不夠：和畫不出來一樣回報失敗（存檔的訊息帶 E_OUTOFMEMORY）。
+        FlattenResult r;
+        r.hr = E_OUTOFMEMORY;
+        return r;
+    }
 }
 
 } // namespace mp

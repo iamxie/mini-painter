@@ -7,6 +7,8 @@
 #include <thread>
 
 #include "core/ImageIO.h"
+#include "core/ImageOps.h"
+#include "core/PathUtil.h"
 #include "test_util.h"
 
 using namespace mp;
@@ -27,6 +29,18 @@ static Image testImage(bool withAlpha) {
             p[3] = a;
         }
     return img;
+}
+
+// path 旁邊所有的存檔暫存檔（<檔名>.*.mp-saving.tmp）的檔名。
+static std::vector<std::wstring> saveTemps(const std::wstring& path) {
+    std::vector<std::wstring> out;
+    const size_t slash = path.find_last_of(L'\\');
+    const std::wstring pattern = path.substr(slash + 1) + L".*.mp-saving.tmp";
+    forEachDirEntry(path.substr(0, slash), [&](const DirEntry& e) {
+        out.push_back(e.name);
+        return true;
+    }, pattern.c_str());
+    return out;
 }
 
 static int maxDiff(const Image& a, const Image& b) {
@@ -185,11 +199,150 @@ TEST_CASE("存檔失敗時不會動到原檔") {
     CHECK_FALSE(res);
     CHECK(res.error.code == IoErrorCode::ReplaceFailed);
     CHECK(res.error.systemError != 0); // 帶著系統的錯誤碼：分得出被占用、沒權限、磁碟滿
-    CHECK_FALSE(mp::test::exists(path + L".mp-saving.tmp"));
+    CHECK(saveTemps(path).empty());    // 自己的暫存檔刪掉了
     auto r = loadImage(path);
     REQUIRE(r.image);
     CHECK(r.image->width == 16);
     DeleteFileW(path.c_str());
+}
+
+// 一個已經結束的行程的編號（開一個馬上結束的 cmd，等它結束再放掉 handle）。
+static unsigned long deadPid() {
+    wchar_t cmd[] = L"cmd.exe /c exit 0";
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    REQUIRE(CreateProcessW(nullptr, cmd, nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi));
+    WaitForSingleObject(pi.hProcess, 10000);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return pi.dwProcessId;
+}
+
+TEST_CASE("存檔：每次用自己的暫存檔，別人的不碰；結束的行程留下的刪掉；存完不留自己的") {
+    // v0.9.9：暫存檔名固定是 <檔名>.mp-saving.tmp，旁邊已經有的（別的視窗正在存同一個檔）會被拿走。
+    auto path = tempPath(L"race.png");
+    auto other = tempPath(L"race-other.png");
+    // 先開「還在跑的別的行程」（同一個測試程式的 [sleeper]），再拿結束的行程編號：編號才不會剛好被它重用。
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    std::wstring sleeperCmd = L"\"" + std::wstring(exe) + L"\" \"[sleeper]\"";
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION live{};
+    REQUIRE(CreateProcessW(exe, sleeperCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &live));
+    const std::wstring self = std::to_wstring(GetCurrentProcessId()), dead = std::to_wstring(deadPid());
+
+    struct Planted {
+        std::wstring path;
+        std::string content;
+    };
+    const std::vector<Planted> kept = {
+        {path + L".mp-saving.tmp", "old fixed name"},                                         // v0.9.9 的名字：不是這個格式
+        {path + L"." + std::to_wstring(live.dwProcessId) + L"-1.mp-saving.tmp", "live other"}, // 別的視窗正在存
+        {path + L".4-1.mp-saving.tmp", "system"},                                             // 查不到權限：當成還在跑
+        {path + L"." + self + L"-999999.mp-saving.tmp", "mine"},                              // 自己這個行程的
+        {other + L"." + dead + L"-1.mp-saving.tmp", "other target"},                          // 別的檔的
+        {path + L".abc.mp-saving.tmp", "malformed"},
+        {path + L".12-.mp-saving.tmp", "malformed"},
+        {path + L"." + dead + L"-1-2.mp-saving.tmp", "malformed"},
+    };
+    const std::wstring crashed = path + L"." + dead + L"-7.mp-saving.tmp"; // 存到一半當掉留下的
+    for (const auto& p : kept) mp::test::writeBytes(p.path, p.content);
+    mp::test::writeBytes(crashed, "crashed");
+
+    Image img = testImage(false);
+    SaveResult res = saveImage(img, path);
+    TerminateProcess(live.hProcess, 0);
+    WaitForSingleObject(live.hProcess, 5000);
+    CloseHandle(live.hThread);
+    CloseHandle(live.hProcess);
+
+    CHECK(res);
+    auto r = loadImage(path);
+    REQUIRE(r.image);
+    CHECK(r.image->width == img.width);
+    CHECK(r.image->height == img.height);
+    CHECK(r.image->pixels == img.pixels);
+    CHECK_FALSE(mp::test::exists(crashed));
+    for (const auto& p : kept) {
+        CAPTURE(p.content);
+        CHECK(mp::test::readBytes(p.path) == p.content);
+    }
+    // 自己這次存檔用的暫存檔沒有留下（自己這個行程的只剩事先放的那一個）
+    const std::wstring mine = L"race.png." + self + L"-";
+    int mineLeft = 0;
+    for (const auto& name : saveTemps(path))
+        if (name.rfind(mine, 0) == 0) ++mineLeft;
+    CHECK(mineLeft == 1);
+
+    DeleteFileW(path.c_str());
+    for (const auto& p : kept) DeleteFileW(p.path.c_str());
+}
+
+TEST_CASE("claimSaveTemp：每次一個新的名字，建好空檔；資料夾不存在回空字串並帶原因") {
+    auto path = tempPath(L"claim.png");
+    unsigned long err = 1;
+    std::wstring a = claimSaveTemp(path, err), b = claimSaveTemp(path, err);
+    CHECK(err == 0);
+    REQUIRE_FALSE(a.empty());
+    REQUIRE_FALSE(b.empty());
+    CHECK(a != b);
+    const std::wstring head = path + L"." + std::to_wstring(GetCurrentProcessId()) + L"-";
+    for (const auto& t : {a, b}) {
+        CHECK(t.rfind(head, 0) == 0);
+        CHECK(t.size() > head.size() + 14);
+        CHECK(t.compare(t.size() - 14, 14, L".mp-saving.tmp") == 0);
+        CHECK(mp::test::exists(t));
+        CHECK(mp::test::readBytes(t).empty());
+    }
+    DeleteFileW(a.c_str());
+    DeleteFileW(b.c_str());
+
+    std::wstring none = claimSaveTemp(tempPath(L"no-such-dir") + L"\\x.png", err);
+    CHECK(none.empty());
+    CHECK(err == ERROR_PATH_NOT_FOUND);
+}
+
+TEST_CASE("Lanczos 放大後存 BMP / JPEG：半透明邊緣鋪白底後接近白，不是暗點（完整存檔路徑）") {
+    // v0.9.9：放大後第一點是 (145, 145, 145, 111)，鋪白底溢位，存成 BMP / JPEG 讀回來是 33。
+    Image src(3, 1);
+    auto set = [](Image& im, int x, uint8_t c, uint8_t a) {
+        uint8_t* p = im.px(x, 0);
+        p[0] = p[1] = p[2] = c;
+        p[3] = a;
+    };
+    set(src, 0, 128, 128); // 半透明白（premultiplied）
+    set(src, 1, 0, 255);   // 不透明黑
+    set(src, 2, 0, 255);
+    Image big = resample(src, 6, 1);
+    for (int x = 0; x < 6; ++x) {
+        const uint8_t* p = big.px(x, 0);
+        CAPTURE(x, int(p[0]), int(p[1]), int(p[2]), int(p[3]));
+        CHECK(p[0] <= p[3]);
+        CHECK(p[1] <= p[3]);
+        CHECK(p[2] <= p[3]);
+    }
+    for (int jpeg = 0; jpeg < 2; ++jpeg) {
+        CAPTURE(jpeg);
+        auto path = tempPath(jpeg ? L"edge.jpg" : L"edge.bmp");
+        REQUIRE(saveImage(big, path));
+        auto r = loadImage(path);
+        REQUIRE(r.image);
+        REQUIRE(r.image->width == 6);
+        REQUIRE(r.image->height == 1);
+        const uint8_t* p = r.image->px(0, 0);
+        CAPTURE(int(p[0]), int(p[1]), int(p[2]), int(p[3]));
+        CHECK(p[2] >= 150); // 半透明白疊在白底上應該接近白，不是暗灰
+        // BMP 不失真：每一點都正好是 c + (255 − a)
+        if (!jpeg)
+            for (int x = 0; x < 6; ++x) {
+                const uint8_t* s = big.px(x, 0);
+                const uint8_t* q = r.image->px(x, 0);
+                CAPTURE(x);
+                for (int c = 0; c < 3; ++c) CHECK(int(q[c]) == s[c] + 255 - s[3]);
+                CHECK(int(q[3]) == 255);
+            }
+        DeleteFileW(path.c_str());
+    }
 }
 
 TEST_CASE("readImageSize：PNG / JPEG / WebP 只讀檔頭，不存在回傳 false") {

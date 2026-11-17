@@ -1,6 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_floating_point.hpp>
 
+#include <iterator>
+#include <set>
+#include <string>
+
 #include "core/Annotation.h"
 
 using namespace mp;
@@ -36,6 +40,20 @@ TEST_CASE("strokeLevelForWidth：選單上的值回那一級，其他回 -1") {
     CHECK(strokeLevelForWidth(4.0f) == -1);
     CHECK(strokeLevelForWidth(0.0f) == -1);
     CHECK(strokeLevelForWidth(StrokeStyle{}.width) == 2); // 預設線寬是選單的第三級
+}
+
+TEST_CASE("kindName：每一種都有自己的英文名") {
+    std::set<std::wstring> names;
+    for (Kind k : kAllKinds) {
+        std::wstring n = kindName(k);
+        CHECK(!n.empty());
+        CHECK(n != L"?");
+        names.insert(n);
+    }
+    CHECK(names.size() == std::size(kAllKinds));
+    CHECK(std::wstring(kindName(Kind::Rect)) == L"Rect");
+    CHECK(std::wstring(kindName(Kind::Mosaic)) == L"Mosaic");
+    CHECK(std::wstring(kindName(Kind::Text)) == L"Text");
 }
 
 TEST_CASE("makeShape：每一種都建得出來，kind() 是要的那一種") {

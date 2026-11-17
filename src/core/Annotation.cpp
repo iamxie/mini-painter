@@ -380,6 +380,23 @@ int strokeLevelForWidth(float width) {
     return -1;
 }
 
+const wchar_t* kindName(Kind kind) {
+    switch (kind) {
+    case Kind::Freehand: return L"Freehand";
+    case Kind::Line: return L"Line";
+    case Kind::Rect: return L"Rect";
+    case Kind::RoundRect: return L"RoundRect";
+    case Kind::Ellipse: return L"Ellipse";
+    case Kind::Bubble: return L"Bubble";
+    case Kind::Star: return L"Star";
+    case Kind::Polygon: return L"Polygon";
+    case Kind::Magnifier: return L"Magnifier";
+    case Kind::Mosaic: return L"Mosaic";
+    case Kind::Text: return L"Text";
+    }
+    return L"?";
+}
+
 // ---- 建立 ----
 
 Annotation makeShape(Kind kind, Pt c, float size, const StrokeStyle& style) {

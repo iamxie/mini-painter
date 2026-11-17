@@ -12,6 +12,7 @@
 #include <webp/mux.h>
 #include <shlwapi.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <new>
@@ -21,6 +22,7 @@
 #include "core/ImageOps.h"
 #include "core/Lang.h"
 #include "core/PathUtil.h"
+#include "core/TextUtil.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -1349,6 +1351,42 @@ bool readImageSize(const std::wstring& path, int& width, int& height) {
 
 namespace {
 
+constexpr wchar_t kSaveTempSuffix[] = L".mp-saving.tmp";
+
+// 這個行程已經結束了嗎。查不到權限（別的使用者的行程）當成還在跑。
+bool processGone(unsigned long pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return GetLastError() == ERROR_INVALID_PARAMETER; // 沒有這個行程
+    DWORD code = 0;
+    const bool gone = GetExitCodeProcess(h, &code) && code != STILL_ACTIVE;
+    CloseHandle(h);
+    return gone;
+}
+
+// 刪掉 path 的、名字裡的行程已經結束的暫存檔（<檔名>.<pid>-<序號>.mp-saving.tmp）。自己這個行程的不碰。
+void removeStaleSaveTemps(const std::wstring& path) {
+    const size_t slash = path.find_last_of(L"\\/");
+    const std::wstring dir = slash == std::wstring::npos ? L"." : path.substr(0, slash);
+    const std::wstring prefix = lowerCopy((slash == std::wstring::npos ? path : path.substr(slash + 1)) + L".");
+    const std::wstring suffix = kSaveTempSuffix;
+    const std::wstring pattern = prefix + L"*" + suffix;
+    const unsigned long self = GetCurrentProcessId();
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        const std::wstring name = lowerCopy(e.name);
+        if (e.directory || name.size() <= prefix.size() + suffix.size() || name.compare(0, prefix.size(), prefix) != 0 ||
+            name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+            return true;
+        const std::wstring mid = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size()); // <pid>-<序號>
+        const size_t dash = mid.find(L'-');
+        if (dash == 0 || dash == std::wstring::npos || dash + 1 == mid.size() ||
+            mid.find_first_not_of(L"0123456789-") != std::wstring::npos || mid.find(L'-', dash + 1) != std::wstring::npos)
+            return true;
+        const unsigned long pid = wcstoul(mid.substr(0, dash).c_str(), nullptr, 10);
+        if (pid != self && processGone(pid)) DeleteFileW(joinPath(dir, e.name).c_str());
+        return true;
+    }, pattern.c_str());
+}
+
 // 存檔的本體。img 沒有透明時直接拿它編碼（不複製）；有透明時要改像素（鋪白底、換成 straight），
 // 改的是 scratch（呼叫端給的、可以弄髒的那一份，內容和 img 相同）。
 SaveResult encodeAndReplace(const Image& img, Image* scratch, const std::wstring& path, const SaveOptions& opt) {
@@ -1361,7 +1399,13 @@ SaveResult encodeAndReplace(const Image& img, Image* scratch, const std::wstring
         res.error.detail = ext;
         return res;
     }
-    const std::wstring tmp = path + L".mp-saving.tmp";
+    removeStaleSaveTemps(path);
+    unsigned long claimError = 0;
+    const std::wstring tmp = claimSaveTemp(path, claimError);
+    if (tmp.empty()) {
+        res.error = systemFailure(IoErrorCode::CreateFileFailed, claimError);
+        return res;
+    }
     try {
         auto factory = makeFactory();
         if (!factory && target != ImageFormat::WebP) { res.error = failure(IoErrorCode::WicUnavailable); return res; }
@@ -1410,6 +1454,24 @@ SaveResult encodeAndReplace(const Image& img, Image* scratch, const std::wstring
 }
 
 } // namespace
+
+std::wstring claimSaveTemp(const std::wstring& path, unsigned long& lastError) {
+    static std::atomic<unsigned> seq{0};
+    const std::wstring base = path + L"." + std::to_wstring(GetCurrentProcessId()) + L"-";
+    lastError = 0;
+    // 序號撞到（同一個 pid 以前的行程留下的）就換下一個；其他原因（資料夾不能寫…）直接放棄。
+    for (int tries = 0; tries < 100; ++tries) {
+        std::wstring tmp = base + std::to_wstring(++seq) + kSaveTempSuffix;
+        HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+            return tmp;
+        }
+        lastError = GetLastError();
+        if (lastError != ERROR_FILE_EXISTS && lastError != ERROR_ALREADY_EXISTS) break;
+    }
+    return L"";
+}
 
 SaveResult saveImage(Image&& img, const std::wstring& path, const SaveOptions& opt) {
     return encodeAndReplace(img, hasTransparency(img) ? &img : nullptr, path, opt);

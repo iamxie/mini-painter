@@ -171,6 +171,7 @@ public:
 
 private:
     void fitText(Annotation& a) const; // 文字方塊：照目前的寬度與內容重算高度；其他物件不動
+    void restoreEditBase();            // 編輯中的方塊的高度改回 editBaseBottom_（不進 undo）
 
     std::function<float(const TextShape&)> measure_;
     Document doc_;
@@ -203,6 +204,9 @@ private:
     uint32_t editingId_ = 0;
     std::wstring editOriginal_;
     std::wstring editText_;
+    // 編輯中的方塊「打字長高之前」的底邊：開始編輯、或編輯中改樣式而 commit 時的值。
+    // 打字時的高度是直接改在文件裡的（不進 undo），結束編輯時先改回這個值。
+    float editBaseBottom_ = 0;
 };
 
 } // namespace mp

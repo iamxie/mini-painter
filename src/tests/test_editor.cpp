@@ -1,8 +1,10 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <new>
 
 #include "core/Editor.h"
+#include "test_util.h"
 
 using namespace mp;
 
@@ -581,6 +583,167 @@ TEST_CASE("Editor：文字編輯。打字時方塊長高但不進 undo，結束�
     CHECK(f.ed.doc().undoCount() == undoBefore + 1);
     f.ed.undo();
     CHECK(f.item(id).as<TextShape>()->value == L"one");
+}
+
+// 整個文件狀態（圖與每個物件）一模一樣嗎：比的是 undo 回來的狀態和編輯前記下的。
+static bool sameItems(const std::vector<Annotation>& a, const std::vector<Annotation>& b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i].id != b[i].id || a[i].kind() != b[i].kind() || !(bounds(a[i]) == bounds(b[i]))) return false;
+        const TextShape *ta = a[i].as<TextShape>(), *tb = b[i].as<TextShape>();
+        if (ta && (ta->value != tb->value || ta->style.size != tb->style.size || ta->style.bold != tb->style.bold)) return false;
+    }
+    return true;
+}
+
+TEST_CASE("Editor：文字編輯後 undo，方塊的高度也回到編輯前；不 commit、字改回原樣時高度也回去") {
+    // v0.9.9：undo 只還原字，方塊留在打字時的高度（serial 回到存檔時，標題卻沒有 *）；不 commit 時高度也留著。
+    Fixture f;
+    uint32_t other = f.ed.addShape(Kind::Rect, {100, 100}, 400);
+    uint32_t id = f.ed.addText({200, 150}, 400, L"one");
+    f.ed.doc().markSaved();
+    const DocState saved = f.ed.doc().state();
+    const Rc rect0 = *rectOf(f.item(id));
+
+    REQUIRE(f.ed.beginTextEdit(id));
+    REQUIRE(f.ed.setEditText(L"one\r\ntwo")); // 長高一行
+    REQUIRE(f.ed.endTextEdit(true));
+    CHECK(f.item(id).as<TextShape>()->value == L"one\ntwo");
+    CHECK(rectOf(f.item(id))->bottom > rect0.bottom);
+    CHECK(f.ed.doc().dirty());
+
+    f.ed.undo();
+    CHECK(f.item(id).as<TextShape>()->value == L"one");
+    CHECK(*rectOf(f.item(id)) == rect0); // 編輯前的高度
+    CHECK(sameItems(f.ed.doc().items(), saved.items));
+    CHECK(f.ed.doc().image() == saved.image);
+    CHECK(f.ed.doc().state().serial == saved.serial);
+    CHECK_FALSE(f.ed.doc().dirty());
+
+    f.ed.redo();
+    CHECK(f.item(id).as<TextShape>()->value == L"one\ntwo");
+    CHECK(rectOf(f.item(id))->bottom > rect0.bottom);
+    f.ed.undo();
+    CHECK(*rectOf(f.item(id)) == rect0);
+
+    // 不 commit（換圖時）：字和高度都回到編輯前，沒有新的 undo 步驟，也不算修改
+    const size_t undo0 = f.ed.doc().undoCount();
+    REQUIRE(f.ed.beginTextEdit(id));
+    REQUIRE(f.ed.setEditText(L"one\r\ntwo\r\nthree"));
+    CHECK_FALSE(f.ed.endTextEdit(false));
+    CHECK(sameItems(f.ed.doc().items(), saved.items));
+    CHECK(f.ed.doc().undoCount() == undo0);
+    CHECK_FALSE(f.ed.doc().dirty());
+
+    // 打了又刪回原本的字：不算修改，高度也回去
+    REQUIRE(f.ed.beginTextEdit(id));
+    REQUIRE(f.ed.setEditText(L"one\r\ntwo"));
+    f.ed.setEditText(L"one");
+    CHECK_FALSE(f.ed.endTextEdit(true));
+    CHECK(sameItems(f.ed.doc().items(), saved.items));
+    CHECK_FALSE(f.ed.doc().dirty());
+
+    // 字全刪光：方塊刪掉；undo 回來的是編輯前的方塊（原本的高度）
+    REQUIRE(f.ed.beginTextEdit(id));
+    REQUIRE(f.ed.setEditText(L"one\r\ntwo"));
+    REQUIRE(f.ed.setEditText(L""));
+    CHECK(f.ed.endTextEdit(true));
+    CHECK(f.ed.doc().findItem(id) == nullptr);
+    CHECK(f.ed.doc().findItem(other) != nullptr);
+    f.ed.undo();
+    CHECK(sameItems(f.ed.doc().items(), saved.items));
+    CHECK_FALSE(f.ed.doc().dirty());
+}
+
+TEST_CASE("Editor：整張圖的動作配置不到記憶體時丟 std::bad_alloc，文件、裁切框、調色狀態都不動") {
+    // v0.9.9：例外從 UI 執行緒的訊息處理一路逃出去（沒有人接），程式可能當掉。這裡驗證 Editor 這一層：
+    // 丟出來之前沒有改到任何狀態，所以 MainWindow 接住、說一聲就好。
+    Fixture f;
+    uint32_t id = f.ed.addShape(Kind::Rect, {100, 100}, 400);
+    f.ed.doc().markSaved();
+    const DocState before = f.ed.doc().state();
+    const size_t undo0 = f.ed.doc().undoCount();
+    auto unchanged = [&] {
+        CHECK(f.ed.doc().image() == before.image);
+        CHECK(sameItems(f.ed.doc().items(), before.items));
+        CHECK(f.ed.doc().dpi() == before.dpi);
+        CHECK(f.ed.doc().state().serial == before.serial);
+        CHECK(f.ed.doc().undoCount() == undo0);
+        CHECK_FALSE(f.ed.doc().dirty());
+    };
+    ColorAdjustParams warm;
+    warm.temperature = 0.5f;
+    {
+        mp::test::ImageAllocLimit limit(1); // 任何新的圖都配置不到
+        CHECK_THROWS_AS(f.ed.rotateCCW(), std::bad_alloc);
+        unchanged();
+        CHECK_THROWS_AS(f.ed.resize(800, 600, 96, true), std::bad_alloc);
+        unchanged();
+
+        REQUIRE(f.ed.beginCrop());
+        f.ed.press(Fixture::at(1, 1), false);
+        f.ed.move(Fixture::at(21, 11), true);
+        f.ed.release();
+        REQUIRE(f.ed.cropBox() == CropBox{20, 10, 400, 300});
+        CHECK_THROWS_AS(f.ed.applyCrop(), std::bad_alloc);
+        unchanged();
+        CHECK(f.ed.cropping()); // 還在裁切，框也還在：可以再按一次或取消
+        CHECK(f.ed.cropBox() == CropBox{20, 10, 400, 300});
+        REQUIRE(f.ed.cancelCrop());
+
+        REQUIRE(f.ed.beginAdjust());
+        CHECK_THROWS_AS(f.ed.previewAdjust(warm), std::bad_alloc);
+        CHECK(f.ed.adjusting());
+        CHECK(f.ed.displayImage() == before.image); // 沒有預覽：畫面顯示原圖（不會留著別的參數的預覽）
+        CHECK_THROWS_AS(f.ed.commitAdjust(warm), std::bad_alloc);
+        CHECK(f.ed.adjusting());
+        unchanged();
+        f.ed.cancelAdjust();
+    }
+    // 配置得到之後每個動作都照常
+    CHECK(f.ed.rotateCCW());
+    CHECK(f.ed.doc().image()->width == 300);
+    f.ed.undo();
+    CHECK(f.ed.resize(800, 600, 96, true));
+    CHECK(f.ed.doc().image()->width == 800);
+    f.ed.undo();
+    REQUIRE(f.ed.beginAdjust());
+    f.ed.previewAdjust(warm);
+    CHECK(f.ed.displayImage() != before.image);
+    CHECK(f.ed.commitAdjust(warm));
+    CHECK(f.ed.doc().image() != before.image);
+    f.ed.undo();
+    CHECK(f.item(id).id == id);
+    unchanged();
+}
+
+TEST_CASE("Editor：文字編輯中改樣式，undo 的每一步都不帶打字時的高度") {
+    Fixture f;
+    uint32_t id = f.ed.addText({200, 150}, 400, L"one");
+    f.ed.doc().markSaved();
+    const DocState saved = f.ed.doc().state();
+    f.ed.select(id);
+
+    REQUIRE(f.ed.beginTextEdit(id));
+    REQUIRE(f.ed.setEditText(L"one\r\ntwo\r\nthree")); // 長高兩行
+    TextStyle bold = f.item(id).as<TextShape>()->style;
+    bold.bold = true;
+    REQUIRE(f.ed.applyTextStyle(bold)); // 編輯中改樣式：commit 一步
+    const DocState styled = f.ed.doc().state();
+    CHECK(styled.items[0].as<TextShape>()->style.bold);
+    CHECK(styled.items[0].as<TextShape>()->value == L"one"); // 文件裡還是編輯前的字
+    CHECK(*rectOf(styled.items[0]) == *rectOf(saved.items[0])); // 高度照編輯前的字算
+
+    REQUIRE(f.ed.setEditText(L"one\r\ntwo\r\nthree"));
+    REQUIRE(f.ed.endTextEdit(true));
+    CHECK(f.item(id).as<TextShape>()->value == L"one\ntwo\nthree");
+    CHECK(f.item(id).as<TextShape>()->style.bold);
+
+    f.ed.undo(); // 回到改完樣式、還沒換字
+    CHECK(sameItems(f.ed.doc().items(), styled.items));
+    f.ed.undo(); // 回到編輯前
+    CHECK(sameItems(f.ed.doc().items(), saved.items));
+    CHECK_FALSE(f.ed.doc().dirty());
 }
 
 TEST_CASE("Editor：結束文字編輯。沒改不進 undo；打成空的刪掉方塊；不 commit 就丟掉打的字") {

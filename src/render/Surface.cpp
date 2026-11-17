@@ -7,14 +7,17 @@ void Surface::attach(ComPtr<ID2D1RenderTarget> rt) {
     rt_ = std::move(rt);
 }
 
-ID2D1SolidColorBrush* Surface::brush(D2D1_COLOR_F color) {
-    if (!rt_) return nullptr;
-    auto& b = brushes_[{color.r, color.g, color.b, color.a}];
-    if (!b && FAILED(rt_->CreateSolidColorBrush(color, &b))) {
-        brushes_.erase({color.r, color.g, color.b, color.a});
-        return nullptr;
+ID2D1SolidColorBrush* Surface::brush(D2D1_COLOR_F color, HRESULT* error) {
+    HRESULT hr = rt_ ? S_OK : E_FAIL;
+    ID2D1SolidColorBrush* out = nullptr;
+    if (SUCCEEDED(hr)) {
+        auto& b = brushes_[{color.r, color.g, color.b, color.a}];
+        if (!b) hr = device_ && device_->testFaults.brush ? E_OUTOFMEMORY : rt_->CreateSolidColorBrush(color, &b);
+        if (SUCCEEDED(hr)) out = b.Get();
+        else brushes_.erase({color.r, color.g, color.b, color.a});
     }
-    return b.Get();
+    if (error) *error = hr;
+    return out;
 }
 
 void Surface::drawUiText(const std::wstring& text, const D2D1_RECT_F& rect, float size, D2D1_COLOR_F color,

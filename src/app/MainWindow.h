@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <commctrl.h>
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <string>
@@ -116,6 +117,8 @@ private:
     bool insideArchive(const std::wstring& path) const; // path 是不是目前壓縮檔解出來的檔
     bool readOnly() const { return !archivePath_.empty(); }
     bool editGuard();                            // 唯讀時提示並回傳 false
+    // 整張圖的動作（裁切、旋轉、調整尺寸、調色）。記憶體不夠時 Editor 丟 std::bad_alloc、文件不動：說一聲，回 false。
+    bool runImageOp(const std::function<void()>& op);
     std::wstring displayName(const std::wstring& path) const; // 檔名；壓縮檔內的檔顯示「壓縮檔名 › 內部路徑」
     std::wstring archiveNameOf(const std::wstring& path) const; // 壓縮檔內的名字（/ 分隔）；不是壓縮檔內的檔回空字串
 
@@ -168,11 +171,19 @@ private:
 
     // 兩頁並排：不能編輯，只看。
     bool twoPage() const { return viewMode_ == ViewMode::TwoPage && doc_.image() != nullptr; }
+    // 兩頁並排模式、有開著的檔（第一頁讀不到也算）：翻頁、預先解碼、重新配對都照「屏」算。
+    // 和 twoPage() 分開：第一頁讀不到時 twoPage() 是 false，照單頁翻會在同一屏來回（開第二頁又被導回第一頁）。
+    bool pagingBySpread() const { return viewMode_ == ViewMode::TwoPage && !path_.empty(); }
     void updateSpreads();          // 依資料夾清單與每頁寬高算配對（結果在 spreadCache_）
     const std::vector<Spread>& spreads() const { return spreadCache_.spreads(); }
     int currentSpread() const;     // 目前這頁所在的屏，-1 表示不在清單
     bool confirmSpreadMove();      // spreads_ 算好後：目前這頁不是那屏的第一頁就要換圖，照 confirmLeaveImage 問
-    void loadSecond();             // 載入同一屏的另一頁
+    void loadSecond();             // 載入同一屏的另一頁（讀不到時記下原因，畫佔位框）
+    // 兩頁並排、這一屏有第二頁的位置：讀到了，或讀不到要畫佔位框。第一頁讀不到時也算（那時 twoPage() 是 false）。
+    bool spreadHasSecond() const;
+    // 這一屏的版面：兩頁並排時讀不到的那一頁用另一頁的大小佔位。沒有可排的（沒有圖、兩頁都讀不到）回 false。
+    bool spreadLayout(PageSize& first, PageSize& second, bool& two) const;
+    bool hasView() const;          // 畫布上有東西可排（spreadLayout 成功）：縮放、捲動、平移要有這個
     float viewW() const;           // 虛擬畫面（圖片座標）的寬高：單頁就是圖片，兩頁是並排後的
     float viewH() const;
     Rc pageRect(bool second) const; // 某頁在虛擬畫面裡的位置（底對齊；右到左時第一頁在右）
@@ -312,6 +323,7 @@ private:
     // 兩頁並排
     ImagePtr second_;              // 同一屏的另一頁；沒有就是 nullptr
     std::wstring secondPath_;
+    std::wstring secondError_;     // 另一頁讀不到時的原因（畫在它的佔位框裡）；讀到了或沒有另一頁是空的
     SpreadCache spreadCache_;      // 目前這本的配對與每頁是不是寬圖；清單或選項變了會自己重算
     bool shiftOne_ = false;        // 「錯開一頁」，不存 ini
 

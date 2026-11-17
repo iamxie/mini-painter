@@ -107,7 +107,7 @@ bool commandEnabled(int id, const CommandState& s) {
     case IDM_ZOOMFIT:
     case IDM_FITWIDTH:
     case IDM_FITHEIGHT:
-    case IDM_TWOPAGE: return s.hasImage;
+    case IDM_TWOPAGE: return s.hasView;
     case IDM_PREV:
     case IDM_NEXT: return s.hasPages;
     case IDM_PROFILE_SAVE: return s.profileModified;

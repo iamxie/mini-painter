@@ -90,3 +90,19 @@ TEST_CASE("spreadSize / pageRectInSpread：單頁、兩頁、左右順序、底�
         CHECK((near(first.right, second.left) || near(second.right, first.left)));
     }
 }
+
+TEST_CASE("spreadWithPlaceholder：讀不到的那一頁用另一頁的大小佔位；兩頁都讀不到回 false") {
+    PageSize a{600, 800}, b{500, 700}, f{}, s{};
+    REQUIRE(spreadWithPlaceholder(&a, &b, f, s)); // 兩頁都讀到：照原樣
+    CHECK((f.width == 600 && f.height == 800 && s.width == 500 && s.height == 700));
+    REQUIRE(spreadWithPlaceholder(&a, nullptr, f, s)); // 第二頁讀不到
+    CHECK((f.width == 600 && f.height == 800 && s.width == 600 && s.height == 800));
+    REQUIRE(spreadWithPlaceholder(nullptr, &b, f, s)); // 第一頁讀不到
+    CHECK((f.width == 500 && f.height == 700 && s.width == 500 && s.height == 700));
+    CHECK_FALSE(spreadWithPlaceholder(nullptr, nullptr, f, s));
+    // 佔位之後的版面：和兩頁同大一樣，第二頁照常排在旁邊
+    REQUIRE(spreadWithPlaceholder(&a, nullptr, f, s));
+    CHECK(samePt(spreadSize(f, &s), {1200, 800}));
+    CHECK(sameRc(pageRectInSpread(f, &s, true, false), {600, 0, 1200, 800}));
+    CHECK(sameRc(pageRectInSpread(f, &s, true, true), {0, 0, 600, 800}));
+}

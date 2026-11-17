@@ -50,8 +50,11 @@ public:
         int x0 = 0, y0 = 0;         // 小圖對應的圖片區域左上角
     };
     // 馬賽克物件 m（id 是那個物件的 id）蓋住的那塊底圖做成的小圖。物件的矩形、格子大小或底圖變了就重做。
-    // 沒有可畫的（整個在圖外、建不出點陣圖）回 nullptr。回傳的指標到下一次 get / endFrame / clear 前有效。
-    const Tile* get(ID2D1RenderTarget* rt, const ImagePtr& image, uint32_t id, const MosaicShape& m);
+    // 沒有可畫的（整個在圖外）或建不出點陣圖回 nullptr；error 不是 nullptr 就分得出兩者：整個在圖外填 S_OK，
+    // 建不出來填原因。failForTest：測試用，當成點陣圖建不出來（RenderDevice::testFaults.bitmap）。
+    // 回傳的指標到下一次 get / endFrame / clear 前有效。
+    const Tile* get(ID2D1RenderTarget* rt, const ImagePtr& image, uint32_t id, const MosaicShape& m, HRESULT* error = nullptr,
+                    bool failForTest = false);
     void endFrame();
     void clear() { entries_.clear(); }
     size_t size() const { return entries_.size(); }

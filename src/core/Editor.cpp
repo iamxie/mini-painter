@@ -83,12 +83,13 @@ Editor::CropResult Editor::applyCrop() {
         cancelCrop();
         return CropResult::Unchanged;
     }
-    if (drag_ == DragKind::Crop) drag_ = DragKind::None;
-    tool_ = Tool::Select;
+    // 先做出裁好的圖再離開裁切模式：配置失敗（std::bad_alloc）時文件和裁切框都不動。
     DocState next;
     next.image = std::make_shared<Image>(cropImage(*img, box.left, box.top, box.width(), box.height()));
     next.dpi = doc_.dpi();
     next.items = cropAnnotations(doc_.items(), box);
+    if (drag_ == DragKind::Crop) drag_ = DragKind::None;
+    tool_ = Tool::Select;
     doc_.commit(std::move(next));
     return CropResult::Applied;
 }
@@ -299,7 +300,13 @@ uint32_t Editor::addText(Pt center, float viewSize, const std::wstring& label) {
 bool Editor::commitItem(const Annotation& updated) {
     Annotation a = updated;
     fitText(a);
-    return doc_.replaceItem(a);
+    // 編輯中的方塊改了樣式：打字時改在文件裡的高度先改回去，這一步記下的「之前」才不會帶著打字時的高度；
+    // 改完的樣子就是新的「編輯前」（內容仍是編輯前的字）。
+    const bool editing = editingId_ != 0 && a.id == editingId_;
+    if (editing) restoreEditBase();
+    if (!doc_.replaceItem(a)) return false;
+    if (editing) editBaseBottom_ = a.as<TextShape>()->rect.bottom;
+    return true;
 }
 
 bool Editor::nudgeSelected(float dx, float dy) {
@@ -395,6 +402,8 @@ bool Editor::beginAdjust() {
 
 void Editor::previewAdjust(const ColorAdjustParams& p) {
     adjustParams_ = p;
+    // 先丟掉舊的預覽：這次配置失敗（std::bad_alloc）時，不能留著別的參數的預覽讓 commitAdjust 拿去用。
+    adjustPreview_.reset();
     if (!adjustBase_) return;
     adjustPreview_ = p.isIdentity() ? adjustBase_ : std::make_shared<Image>(applyColorAdjust(*adjustBase_, p));
 }
@@ -428,6 +437,7 @@ bool Editor::beginTextEdit(uint32_t id) {
     editingId_ = id;
     editOriginal_ = t->value;
     editText_ = t->value;
+    editBaseBottom_ = t->rect.bottom;
     return true;
 }
 
@@ -456,17 +466,32 @@ bool Editor::setEditText(const std::wstring& text) {
     return true;
 }
 
+void Editor::restoreEditBase() {
+    const Annotation* a = doc_.findItem(editingId_);
+    if (!a) return;
+    Annotation before = *a;
+    before.as<TextShape>()->rect.bottom = editBaseBottom_;
+    doc_.amendItem(before);
+}
+
 bool Editor::endTextEdit(bool commit) {
     const uint32_t id = editingId_;
-    editingId_ = 0;
     const Annotation* a = doc_.findItem(id);
-    if (!a || !commit) return false;
+    if (!a) {
+        editingId_ = 0;
+        return false;
+    }
+    // 先把打字時長高（或縮短）的高度改回編輯前：undo 記下的「編輯前」才真的是編輯前，
+    // 不 commit 或字沒改時方塊也回到原本的大小。
+    Annotation typed = *a;
+    restoreEditBase();
+    editingId_ = 0;
+    if (!commit) return false;
     if (editText_.empty()) {
         if (selected_ == id) selected_ = 0;
         return doc_.removeItem(id);
     }
     if (editText_ == editOriginal_) return false;
-    Annotation typed = *a;
     typed.as<TextShape>()->value = editText_;
     return commitItem(typed);
 }

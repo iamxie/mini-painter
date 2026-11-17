@@ -46,16 +46,30 @@ public:
     // 畫在記憶體裡的 WIC 點陣圖上（存檔的壓平、測試）。建不出來回 nullptr。
     ComPtr<ID2D1RenderTarget> createWicTarget(IWICBitmap* bitmap) const;
 
+    // 測試用的故障開關：打開的那一類建立一律當成失敗（E_OUTOFMEMORY），用來驗證失敗會一路回報到 flatten。
+    // 這些失敗實際上只有記憶體不足才會發生，測試造不出來。平常永遠是關的。
+    // geometry：pathGeometry 與 AnnotationPainter 建的幾何；brush：Surface::brush；text：標註的文字排版；
+    // bitmap：馬賽克的小圖（MosaicCache::get）。
+    struct TestFaults {
+        bool geometry = false, brush = false, text = false, bitmap = false;
+    };
+    TestFaults testFaults;
+
     // 建一個路徑幾何：build 收到 ID2D1GeometrySink&，在裡面 BeginFigure … EndFigure。
-    // 建不出來（記憶體不足）回 nullptr，呼叫端要檢查。
+    // 建不出來（記憶體不足）回 nullptr，呼叫端要檢查；error 不是 nullptr 就填原因（成功填 S_OK）。
     template <class Build>
-    ComPtr<ID2D1PathGeometry> pathGeometry(Build build) const {
+    ComPtr<ID2D1PathGeometry> pathGeometry(Build build, HRESULT* error = nullptr) const {
+        HRESULT hr = testFaults.geometry ? E_OUTOFMEMORY : d2d_ ? S_OK : E_FAIL;
         ComPtr<ID2D1PathGeometry> geo;
         ComPtr<ID2D1GeometrySink> sink;
-        if (!d2d_ || FAILED(d2d_->CreatePathGeometry(&geo)) || FAILED(geo->Open(&sink))) return nullptr;
-        build(*sink.Get());
-        if (FAILED(sink->Close())) return nullptr;
-        return geo;
+        if (SUCCEEDED(hr)) hr = d2d_->CreatePathGeometry(&geo);
+        if (SUCCEEDED(hr)) hr = geo->Open(&sink);
+        if (SUCCEEDED(hr)) {
+            build(*sink.Get());
+            hr = sink->Close();
+        }
+        if (error) *error = hr;
+        return SUCCEEDED(hr) ? geo : nullptr;
     }
 
     // UI 文字的格式。每種組合一個物件，建好之後不再改，所以拿去用的人不會互相影響。

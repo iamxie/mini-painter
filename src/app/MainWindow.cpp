@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <new>
 
 #include "app/AboutDialog.h"
 #include "app/ArchiveDialogs.h"
@@ -112,7 +113,7 @@ bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCm
             sweepStaleTempDirs(root);
             if (_wcsicmp(root.c_str(), def.c_str()) != 0) sweepStaleTempDirs(def);
             sweepStaleTempDirs(fb);
-            // 上次自動更新換下來的 .old：舊程式剛結束時可能還刪不掉，多試幾次。
+            // 上次自動更新換下來的 .mpainter.tempold：舊程式剛結束時可能還刪不掉，多試幾次。
             for (int i = 0; i < 10 && removeOldFiles(app) > 0; ++i) Sleep(500);
         }).detach();
     }
@@ -484,6 +485,7 @@ void MainWindow::buildButtons() {
 CommandState MainWindow::commandState() const {
     CommandState st;
     st.hasImage = doc_.image() != nullptr;
+    st.hasView = hasView();
     st.dirty = doc_.dirty();
     st.canUndo = doc_.canUndo();
     st.canRedo = doc_.canRedo();
@@ -595,7 +597,7 @@ void MainWindow::switchProfile(const Profile& p) {
     if (!setViewMode(settings_.view.viewMode)) { // 會存 ini、重算配對、重新符合、更新標題、重畫
         // 套用後要換掉正在改的圖，使用者取消：檢視值回到套用前
         settings_ = before;
-        if (twoPage()) updateSpreads();
+        if (pagingBySpread()) updateSpreads();
         updateTitle();
     }
 }
@@ -678,7 +680,7 @@ void MainWindow::onCommand(int id) {
     case IDM_RTL:
         settings_.view.rightToLeft = !settings_.view.rightToLeft;
         saveSettingsQuiet();
-        if (twoPage()) fitToView();
+        if (pagingBySpread()) fitToView();
         updateTitle();
         repaint();
         break;
@@ -724,7 +726,7 @@ void MainWindow::undoRedo(bool undo) {
 // 兩頁並排的配對選項（「第一張單獨顯示」「錯開一頁」）開或關。flag 是那個選項；saved：它存不存進設定檔。
 void MainWindow::togglePairing(bool& flag, bool saved) {
     flag = !flag;
-    if (twoPage()) {
+    if (pagingBySpread()) {
         // 配對變了：重算，目前這頁可能變成某屏的第二頁，重開到那屏的第一頁（換圖前先問，取消就不改）。
         updateSpreads();
         if (!confirmSpreadMove()) {
@@ -734,7 +736,7 @@ void MainWindow::togglePairing(bool& flag, bool saved) {
         }
     }
     if (saved) { saveSettingsQuiet(); updateTitle(); }
-    if (twoPage()) {
+    if (pagingBySpread()) {
         if (const int first = spreadStartIfSecond(); first >= 0) openPath(nav_.at(first));
         else { loadSecond(); fitToView(); updateTitle(); repaint(); }
     }
@@ -764,6 +766,7 @@ void MainWindow::showLoadError(const std::wstring& path, const std::wstring& mes
     editor_.reset(nullptr);
     second_.reset();
     secondPath_.clear();
+    secondError_.clear();
     updateTitle();
     layout();
     repaint();
@@ -808,6 +811,16 @@ bool MainWindow::showPage(const std::wstring& path, bool inArchive, bool landAtB
     info_.setData(facts); // 圖開不了時面板仍有檔案的部分
     if (!r.image) {
         showLoadError(path, fmt1(L"Cannot open: %s", ioErrorText(r.error)), false);
+        if (viewMode_ == ViewMode::TwoPage) {
+            // 兩頁並排：和開得了時一樣，開到某屏的第二頁就改開那屏的第一頁；這一頁是第一頁就照樣載入第二頁，
+            // 讀不到的這一頁畫佔位框（同一屏好的那一頁不能被跳過）。
+            updateSpreads();
+            if (const int first = spreadStartIfSecond(); first >= 0) return openPath(nav_.at(first), landAtBottom);
+            loadSecond();
+            fitToView();
+            updateTitle();
+            repaint();
+        }
         schedulePrefetch();
         return false;
     }
@@ -819,6 +832,7 @@ bool MainWindow::showPage(const std::wstring& path, bool inArchive, bool landAtB
     editor_.reset(r.image, r.dpi);
     second_.reset();
     secondPath_.clear();
+    secondError_.clear();
     if (viewMode_ == ViewMode::TwoPage) {
         updateSpreads();
         // 開到的是某屏的第二頁：改開那屏的第一頁。
@@ -858,9 +872,9 @@ void MainWindow::schedulePrefetch() {
         return;
     }
     std::vector<std::wstring> current{path_};
-    if (twoPage() && second_) current.push_back(secondPath_);
+    if (spreadHasSecond() && second_) current.push_back(secondPath_);
     // 翻頁方向的下一屏優先，再來是上一屏（翻回來也不用等）。
-    WantedPages wanted = wantedPages(nav_.files(), nav_.index(), lastDir_, twoPage() ? &spreads() : nullptr);
+    WantedPages wanted = wantedPages(nav_.files(), nav_.index(), lastDir_, pagingBySpread() ? &spreads() : nullptr);
     std::vector<std::vector<std::wstring>> others = std::move(wanted.others);
     const bool atEdge = wanted.atEdge;
     // 到一本的盡頭、開了「接著看下一本」：先準備同一層的下一本（或上一本）。
@@ -1090,9 +1104,9 @@ bool MainWindow::writeFlattened(const std::wstring& target) {
         saved = saveImage(*doc_.image(), target, opt); // 沒有標註：底圖就是要存的像素
     } else {
         Image flat;
-        if (!flatten(renderer_.device(), doc_.state(), flat)) {
+        if (FlattenResult fr = flatten(renderer_.device(), doc_.state(), flat); !fr) {
             // 標註畫不上去（多半是圖太大、記憶體不夠）：不能把少了標註的圖當成存好了。
-            showMessage(hwnd_, fmt1(L"Save failed: %s", tr(L"Could not draw the annotations onto the image")), TD_ERROR_ICON);
+            showMessage(hwnd_, fmt1(L"Save failed: %s", flattenErrorText(fr.kind, fr.hr)), TD_ERROR_ICON);
             return false;
         }
         saved = saveImage(std::move(flat), target, opt);
@@ -1225,8 +1239,8 @@ void MainWindow::goNext() { step(+1); }
 
 void MainWindow::step(int dir, bool landAtBottom) {
     if (armedDir_ && armedDir_ != dir) disarmJump();
-    if (twoPage() && currentSpread() < 0) return; // 目前這頁不在配對裡（清單讀不到）：不知道往哪翻
-    const int target = pageTurnTarget(dir, nav_.index(), nav_.count(), twoPage() ? &spreads() : nullptr);
+    if (pagingBySpread() && currentSpread() < 0) return; // 目前這頁不在配對裡（清單讀不到）：不知道往哪翻
+    const int target = pageTurnTarget(dir, nav_.index(), nav_.count(), pagingBySpread() ? &spreads() : nullptr);
     if (target < 0) { bookEdge(dir); return; }
     if (!confirmLeaveImage()) return;
     lastDir_ = dir;
@@ -1368,39 +1382,60 @@ bool MainWindow::confirmSpreadMove() {
 void MainWindow::loadSecond() {
     int cur = currentSpread();
     std::wstring path = cur >= 0 ? nav_.at(spreads()[static_cast<size_t>(cur)].second) : L"";
-    if (path == secondPath_ && (second_ || path.empty())) return;
+    if (path == secondPath_ && (second_ || path.empty())) return; // 讀不到的每次都再試一次
     second_.reset();
+    secondError_.clear();
     secondPath_ = path;
     if (path.empty()) return;
     LoadResult r = loadPage(path);
     if (r.image) second_ = r.image;
+    else secondError_ = fmt1(L"Cannot open: %s", ioErrorText(r.error));
 }
 
 namespace {
 PageSize pageSizeOf(const Image& img) { return {img.width, img.height}; }
 } // namespace
 
-float MainWindow::viewW() const {
+bool MainWindow::spreadHasSecond() const {
+    return viewMode_ == ViewMode::TwoPage && !secondPath_.empty() && (second_ || !secondError_.empty());
+}
+
+bool MainWindow::spreadLayout(PageSize& first, PageSize& second, bool& two) const {
     auto img = doc_.image();
-    if (!img) return 0;
-    PageSize second = second_ ? pageSizeOf(*second_) : PageSize{};
-    return spreadSize(pageSizeOf(*img), twoPage() && second_ ? &second : nullptr).x;
+    two = spreadHasSecond();
+    if (!two) {
+        if (!img) return false;
+        first = pageSizeOf(*img);
+        return true;
+    }
+    const PageSize a = img ? pageSizeOf(*img) : PageSize{}, b = second_ ? pageSizeOf(*second_) : PageSize{};
+    return spreadWithPlaceholder(img ? &a : nullptr, second_ ? &b : nullptr, first, second);
+}
+
+bool MainWindow::hasView() const {
+    PageSize a, b;
+    bool two = false;
+    return spreadLayout(a, b, two);
+}
+
+float MainWindow::viewW() const {
+    PageSize a, b;
+    bool two = false;
+    return spreadLayout(a, b, two) ? spreadSize(a, two ? &b : nullptr).x : 0;
 }
 
 float MainWindow::viewH() const {
-    auto img = doc_.image();
-    if (!img) return 0;
-    PageSize second = second_ ? pageSizeOf(*second_) : PageSize{};
-    return spreadSize(pageSizeOf(*img), twoPage() && second_ ? &second : nullptr).y;
+    PageSize a, b;
+    bool two = false;
+    return spreadLayout(a, b, two) ? spreadSize(a, two ? &b : nullptr).y : 0;
 }
 
 Rc MainWindow::pageRect(bool second) const {
-    auto img = doc_.image();
-    if (!img) return {};
-    PageSize other = second_ ? pageSizeOf(*second_) : PageSize{};
-    const bool two = twoPage() && second_;
+    PageSize a, b;
+    bool two = false;
+    if (!spreadLayout(a, b, two)) return {};
     // 單頁時不管問哪一頁都是整張圖。
-    return pageRectInSpread(pageSizeOf(*img), two ? &other : nullptr, two && second, settings_.view.rightToLeft);
+    return pageRectInSpread(a, two ? &b : nullptr, two && second, settings_.view.rightToLeft);
 }
 
 void MainWindow::updateTitle() {
@@ -1410,7 +1445,7 @@ void MainWindow::updateTitle() {
         t.dirty = doc_.dirty();
         t.index = nav_.index();
         t.count = nav_.count();
-        if (twoPage() && second_) {
+        if (spreadHasSecond()) { // 讀不到的那一頁也列出來（畫面上是它的佔位框）
             t.secondName = displayName(secondPath_);
             t.rightToLeft = settings_.view.rightToLeft;
             int cur = currentSpread();
@@ -1456,7 +1491,7 @@ bool MainWindow::setViewMode(ViewMode m) {
         editor_.leaveFreehand();
         showMarkup_ = false;
         layout();
-        if (doc_.image()) {
+        if (!path_.empty()) { // 目前這頁讀不到也照樣配對：同一屏的另一頁照常顯示，讀不到的畫佔位框
             updateSpreads();
             int cur = currentSpread();
             if (cur >= 0 && spreads()[static_cast<size_t>(cur)].first != nav_.index()) { openPath(nav_.at(spreads()[static_cast<size_t>(cur)].first)); return true; }
@@ -1465,6 +1500,7 @@ bool MainWindow::setViewMode(ViewMode m) {
     } else if (wasTwo) {
         second_.reset();
         secondPath_.clear();
+        secondError_.clear();
     }
     fitToView();
     positionEdit();
@@ -1488,7 +1524,7 @@ ViewFrame MainWindow::viewFrame() const {
 
 // 依檢視模式算 zoom。符合類模式預設不放大小圖，開了「小圖放大」才放大；1:1 永遠不放大。
 void MainWindow::fitToView(bool resetOffset) {
-    if (!doc_.image()) return;
+    if (!hasView()) return;
     view_.fit(viewFrame(), resetOffset);
     buildButtons();
 }
@@ -1508,7 +1544,7 @@ bool MainWindow::scrollBy(float dx, float dy) {
 
 // 上下鍵：每次捲畫布高度的 1/4。開了「捲到底翻頁」時，到底再按下翻下一張、到頂再按上翻上一張。
 void MainWindow::scrollKey(int vk) {
-    if (!doc_.image()) return;
+    if (!hasView()) return;
     float step = (canvasRc_.bottom - canvasRc_.top) / 4;
     bool down = vk == VK_DOWN;
     if (scrollBy(0, down ? -step : step)) return;
@@ -1518,7 +1554,7 @@ void MainWindow::scrollKey(int vk) {
 }
 
 void MainWindow::setZoom(float z, POINT anchor) {
-    if (!doc_.image()) return;
+    if (!hasView()) return;
     view_.zoomTo(viewFrame(), z, {anchor.x - canvasRc_.left, anchor.y - canvasRc_.top});
     buildButtons();
     positionEdit();
@@ -1586,7 +1622,7 @@ void MainWindow::drawChrome() {
     rt->DrawLine(D2D1::Point2F(0, nameRc_.bottom - 0.5f), D2D1::Point2F(nameRc_.right, nameRc_.bottom - 0.5f),
                  renderer_.brush(theme::kChromeLine), 1.0f);
     std::wstring name = path_.empty() ? trs(L"No file open — drop an image here, or use File > Open") : displayName(path_);
-    if (twoPage() && second_) {
+    if (spreadHasSecond()) { // 讀不到的那一頁也列出來（畫面上是它的佔位框）
         std::wstring a = displayName(path_), b = displayName(secondPath_);
         name = settings_.view.rightToLeft ? b + L"   |   " + a : a + L"   |   " + b;
     }
@@ -1599,7 +1635,7 @@ void MainWindow::drawCanvas() {
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
     rt->FillRectangle(canvasRc_, renderer_.brush(theme::kCanvasBg));
     auto img = currentImage();
-    if (!img) {
+    if (!hasView()) { // 沒有圖（兩頁並排時是兩頁都讀不到）：畫面中間寫原因
         if (!loadError_.empty())
             renderer_.drawUiText(loadError_, canvasRc_, px(kLoadErrorText), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
         return;
@@ -1620,17 +1656,40 @@ void MainWindow::drawCanvas() {
         POINT tl = toClient({r.left, r.top}), brp = toClient({r.right, r.bottom});
         rt->DrawRectangle(D2D1::RectF(tl.x - 0.5f, tl.y - 0.5f, brp.x + 0.5f, brp.y + 0.5f), renderer_.brush(theme::kHairline), 1.0f);
     };
-    PaintCtx ctx = renderer_.paintCtx(img, bitmapFor(img));
+    // 兩頁並排時讀不到的那一頁：在它的位置畫框，框裡寫檔名與原因（不要無聲略過）。
+    auto placeholder = [&](const Rc& r, const std::wstring& name, const std::wstring& why) {
+        rt->SetTransform(D2D1::Matrix3x2F::Identity());
+        POINT tl = toClient({r.left, r.top}), brp = toClient({r.right, r.bottom});
+        D2D1_RECT_F box = D2D1::RectF(static_cast<float>(tl.x), static_cast<float>(tl.y), static_cast<float>(brp.x),
+                                      static_cast<float>(brp.y));
+        rt->FillRectangle(box, renderer_.brush(theme::kChromeBg));
+        rt->DrawRectangle(box, renderer_.brush(theme::kChromeLine), 1.0f);
+        const float pad = px(kLoadErrorText);
+        D2D1_RECT_F text = D2D1::RectF(box.left + pad, box.top + pad, box.right - pad, box.bottom - pad);
+        renderer_.drawUiText(name + L"\n\n" + why, text, px(kLoadErrorText), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER, false,
+                             DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true, true);
+    };
     // 兩頁並排：第二頁先畫（它不帶標註），再畫第一頁與它的標註。第一頁的位置由 pageRect 決定。
     Rc r1 = pageRect(false);
-    if (twoPage() && second_) {
+    if (spreadHasSecond()) {
         Rc r2 = pageRect(true);
-        shadow(r2);
-        rt->SetTransform(D2D1::Matrix3x2F::Translation(r2.left, r2.top) * viewMatrix());
-        PaintCtx ctx2 = renderer_.paintCtx(second_, bitmapFor(second_));
-        ctx2.mosaic = nullptr; // 第二頁不帶標註
-        drawImage(ctx2);
+        if (second_) {
+            shadow(r2);
+            rt->SetTransform(D2D1::Matrix3x2F::Translation(r2.left, r2.top) * viewMatrix());
+            PaintCtx ctx2 = renderer_.paintCtx(second_, bitmapFor(second_));
+            ctx2.mosaic = nullptr; // 第二頁不帶標註
+            drawImage(ctx2);
+        } else {
+            placeholder(r2, displayName(secondPath_), secondError_);
+        }
     }
+    if (!img) { // 第一頁讀不到（兩頁並排，另一頁讀到了）
+        placeholder(r1, displayName(path_), loadError_);
+        rt->SetTransform(D2D1::Matrix3x2F::Identity());
+        rt->PopAxisAlignedClip();
+        return;
+    }
+    PaintCtx ctx = renderer_.paintCtx(img, bitmapFor(img));
     shadow(r1);
     rt->SetTransform(D2D1::Matrix3x2F::Translation(r1.left, r1.top) * viewMatrix());
     drawImage(ctx);
@@ -1794,7 +1853,7 @@ void MainWindow::onLButtonDown(POINT pt) {
         if (info_.click(pt)) repaint();
         return;
     }
-    if (!inRect(canvasRc_, pt) || !doc_.image()) return;
+    if (!inRect(canvasRc_, pt) || !hasView()) return;
     if (edit_) endTextEdit(true);
 
     // 這一下做什麼（平移、取白點、拖裁切框、畫塗鴉、選物件）由 Editor 依目前的狀態決定。
@@ -1893,7 +1952,7 @@ void MainWindow::onMouseWheel(POINT ptScreen, int delta, WPARAM keys) {
         if (info_.scroll(-delta * px(kInfoWheelScale))) repaint();
         return;
     }
-    if (!inRect(canvasRc_, pt) || !doc_.image()) return;
+    if (!inRect(canvasRc_, pt) || !hasView()) return;
     if (keys & MK_CONTROL) {
         setZoom(view_.zoom() * std::pow(kWheelZoomFactor, delta / static_cast<float>(WHEEL_DELTA)), pt);
         return;
@@ -2132,7 +2191,7 @@ void MainWindow::applyPinnedNow() {
     } else {
         nav_.load(path_);
     }
-    if (twoPage()) { updateSpreads(); loadSecond(); fitToView(); }
+    if (pagingBySpread()) { updateSpreads(); loadSecond(); fitToView(); }
     updateTitle();
     repaint();
 }
@@ -2238,10 +2297,20 @@ void MainWindow::applyTextStyle(const TextStyle& t) {
     repaint();
 }
 
+bool MainWindow::runImageOp(const std::function<void()>& op) {
+    try {
+        op();
+        return true;
+    } catch (const std::bad_alloc&) {
+        showMessage(hwnd_, tr(L"The image is too large: not enough memory"), TD_ERROR_ICON);
+        return false;
+    }
+}
+
 void MainWindow::rotateImage() {
     if (!doc_.image()) return; // 壓縮檔內也能轉：當成檢視動作，翻頁就重置
     endInteraction(true);
-    editor_.rotateCCW();
+    if (!runImageOp([&] { editor_.rotateCCW(); })) return;
     if (readOnly()) doc_.markSaved(); // 唯讀：旋轉不算修改，標題不加 *
     fitToView();
     updateTitle();
@@ -2255,7 +2324,7 @@ void MainWindow::adjustSize() {
     endInteraction(true);
     ResizeResult r;
     if (!showResizeDialog(hwnd_, img->width, img->height, doc_.dpi().x, r)) return;
-    editor_.resize(r.width, r.height, r.dpi, r.resample);
+    if (!runImageOp([&] { editor_.resize(r.width, r.height, r.dpi, r.resample); })) return;
     fitToView();
     updateTitle();
     repaint();
@@ -2290,7 +2359,12 @@ void MainWindow::applyCrop() {
     // 框就是整張圖：等於取消，檢視也要還原。先用同一個框比，再決定走哪一邊。
     const CropBox box = editor_.cropBox();
     if (box == CropBox{0, 0, doc_.image()->width, doc_.image()->height}) { cancelCrop(); return; }
-    if (editor_.applyCrop() != Editor::CropResult::Applied) return;
+    Editor::CropResult result = Editor::CropResult::NotCropping;
+    if (!runImageOp([&] { result = editor_.applyCrop(); })) { // 還在裁切：可以改框或取消
+        repaint();
+        return;
+    }
+    if (result != Editor::CropResult::Applied) return;
     view_.endCropFit();
     fitToView();
     updateTitle();
@@ -2430,12 +2504,20 @@ const Image& MainWindow::baseImage() { return *editor_.adjustBase(); }
 
 void MainWindow::previewChanged(const ColorAdjustParams& p) {
     if (editor_.adjustBase()) SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-    editor_.previewAdjust(p);
+    try {
+        editor_.previewAdjust(p);
+    } catch (const std::bad_alloc&) {
+        // 拖滑桿時會一直來：不跳對話框，提示一下；畫面先顯示原圖。
+        showToast(tr(L"The image is too large: not enough memory"), false);
+    }
     repaint();
 }
 
 void MainWindow::commitAdjust(const ColorAdjustParams& p) {
-    if (editor_.commitAdjust(p)) updateTitle();
+    bool changed = false;
+    if (!runImageOp([&] { changed = editor_.commitAdjust(p); }))
+        editor_.cancelAdjust(); // 面板已經關了：這次調色不套用
+    if (changed) updateTitle();
     buildButtons();
     repaint();
 }

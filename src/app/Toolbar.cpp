@@ -26,6 +26,7 @@ int commandOf(int button) {
     switch (button) {
     case BTN_ZOOMIN: return IDM_ZOOMIN;
     case BTN_ZOOMOUT: return IDM_ZOOMOUT;
+    case BTN_ZOOM100: return IDM_ZOOM100;
     case BTN_ROTATE: return IDM_ROTATE;
     case BTN_MARKUP: return IDM_MARKUP;
     case BTN_INFO: return IDM_INFO;
@@ -97,9 +98,9 @@ void Toolbar::layout(const D2D1_RECT_F& toolbar, const D2D1_RECT_F& markup, cons
         case BTN_CROP: b.pressed = state.cropping; break;
         default: break;
         }
-        // 對應到指令的按鈕用指令的可用條件；其他的工具按鈕要有圖才能按。
+        // 對應到指令的按鈕還要指令能用（「1:1」另外要倍率不是 1）；其他的工具按鈕要有圖才能按。
         const int command = commandOf(b.id);
-        if (command != IDM_NONE) b.enabled = commandEnabled(command, commands);
+        if (command != IDM_NONE) b.enabled = b.enabled && commandEnabled(command, commands);
         else if (!state.hasImage) b.enabled = false;
     }
 }

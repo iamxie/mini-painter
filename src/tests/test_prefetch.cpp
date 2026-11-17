@@ -584,6 +584,34 @@ TEST_CASE("Prefetch：算縮圖尺寸的函式在背景執行緒、不持鎖的�
     CHECK(pf.scaled(im, 20, 20));
 }
 
+TEST_CASE("Prefetch：背景高品質縮圖配置不到 → 那一頁不縮、不一直重試，程式照常；尺寸換了再試") {
+    // v0.9.9：配置失敗的例外逃出背景執行緒 → terminate，整個程式結束（實測結束碼 0xC0000409）。
+    std::wstring root = testRoot(L"scalefail");
+    writePng(root + L"\\1.png", 100, 100);
+    writePng(root + L"\\2.png", 100, 100);
+    std::wstring p1 = root + L"\\1.png", p2 = root + L"\\2.png";
+    Prefetcher pf;
+    TargetSizes twice = [](const std::vector<Size2>& pages) { return std::vector<Size2>(pages.size(), Size2{200, 200}); };
+    TargetSizes triple = [](const std::vector<Size2>& pages) { return std::vector<Size2>(pages.size(), Size2{300, 300}); };
+    {
+        mp::test::ImageAllocLimit limit(100 * 100 * 4); // 原圖解得出來，放大兩倍的縮圖配置不到
+        pf.setWanted({p1}, {{p2}}, std::nullopt, twice, SIZE_MAX);
+        pf.waitIdle(); // 失敗後還一直重試的話會卡在這裡（每個測試有時間上限）
+        auto r = pf.get(p2);
+        REQUIRE(r);
+        REQUIRE(r->image);
+        CHECK(r->image->width == 100);
+        CHECK_FALSE(pf.scaled(r->image, 200, 200));
+        CHECK(pf.heldBytes() == 40000); // 只有原圖，沒有縮圖
+    }
+    // 同一個尺寸不再試；尺寸換了（倍率變了）才再試，這次配置得到
+    ImagePtr im = pf.get(p2)->image;
+    pf.setWanted({p1}, {{p2}}, std::nullopt, triple, SIZE_MAX);
+    pf.waitIdle();
+    REQUIRE(pf.scaled(im, 300, 300));
+    CHECK(pf.scaled(im, 300, 300)->width == 300);
+}
+
 TEST_CASE("Prefetch：縮圖放不下就不縮，原圖留著") {
     std::wstring root = testRoot(L"scalelimit");
     writePng(root + L"\\1.png", 100, 100);

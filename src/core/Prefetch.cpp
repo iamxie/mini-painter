@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <new>
 
 #include "core/ImageOps.h"
 
@@ -188,11 +189,15 @@ void Prefetcher::run() {
             idle_ = false;
             busy_ = t;
         }
-        switch (t.kind) {
-        case Kind::Decode: runDecode(t); break;
-        case Kind::Targets: runTargets(t); break;
-        case Kind::Scale: runScale(t); break;
-        case Kind::None: break;
+        // 例外逃出這條執行緒會讓整個程式結束：配置失敗就放掉這一件（解碼與縮圖各自已經處理）。
+        try {
+            switch (t.kind) {
+            case Kind::Decode: runDecode(t); break;
+            case Kind::Targets: runTargets(t); break;
+            case Kind::Scale: runScale(t); break;
+            case Kind::None: break;
+            }
+        } catch (const std::bad_alloc&) {
         }
         {
             std::lock_guard<std::mutex> lk(m_);
@@ -266,7 +271,19 @@ void Prefetcher::runScale(const Task& t) {
             return;
         }
     }
-    auto out = std::make_shared<const Image>(resample(*t.image, t.tw, t.th));
+    ImagePtr out;
+    try {
+        out = std::make_shared<const Image>(resample(*t.image, t.tw, t.th));
+    } catch (const std::bad_alloc&) {
+        // 記憶體不夠縮：這一頁不縮（畫面顯示時會自己縮，再不行就用快速縮放）。想要的尺寸沒變就不再試。
+        std::lock_guard<std::mutex> lk(m_);
+        auto it = entries_.find(t.path);
+        if (it != entries_.end() && it->second.result.image == t.image) {
+            it->second.scaled.reset();
+            it->second.want = {0, 0};
+        }
+        return;
+    }
     std::lock_guard<std::mutex> lk(m_);
     auto it = entries_.find(t.path);
     if (it == entries_.end() || it->second.result.image != t.image || !isWantedLocked(t.path)) return;

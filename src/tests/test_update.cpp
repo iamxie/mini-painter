@@ -443,6 +443,45 @@ TEST_CASE("downloadUpdate：下載、核對 .sha256、解開，並確認裡面�
     }
 }
 
+TEST_CASE("downloadUpdate：解壓途中按取消 → 回報取消，不交出解好的發佈包") {
+    // v0.9.9：解完不再看取消，回報成功並交出 staging，UI 就照樣換檔重開。
+    mp::test::requireArchiveLibrary();
+    std::wstring root = testRoot(L"unpackcancel");
+    std::wstring zipPath = root + L"\\src.zip";
+    mp::test::makeArchive(zipPath, bit7z::BitFormat::Zip, {{"mpainter.exe", "new exe"}});
+    TestServer srv;
+    srv.ok("/pkg.zip", mp::test::readBytes(zipPath));
+    srv.ok("/pkg.zip.sha256", sha256OfFile(zipPath) + "\n");
+    ReleaseInfo rel;
+    rel.version = L"9.9.9";
+    rel.zipUrl = srv.url("/pkg.zip");
+    rel.shaUrl = srv.url("/pkg.zip.sha256");
+    HttpCancel cancel;
+    DownloadHooks hooks;
+    hooks.cancel = &cancel;
+    // 解壓本身停不下來：在進入解壓階段時按取消，等同「解壓期間按了取消」。
+    hooks.onStage = [&](DownloadStage st) {
+        if (st == DownloadStage::Unpacking) cancel.cancel();
+    };
+    std::wstring work = root + L"\\w", staging;
+    REQUIRE(createDirectories(work));
+    UpdateError e = downloadUpdate(rel, work, staging, hooks);
+    CHECK(e.cancelled());
+    CHECK(e.code == UpdateErrorCode::Cancelled);
+    CHECK(staging.empty());
+
+    // 沒按取消：照樣解好交出去（同一個伺服器、同一個發佈包）
+    HttpCancel fresh;
+    hooks.cancel = &fresh;
+    hooks.onStage = nullptr;
+    std::wstring work2 = root + L"\\w2";
+    REQUIRE(createDirectories(work2));
+    e = downloadUpdate(rel, work2, staging, hooks);
+    CHECK(e.ok());
+    CHECK(staging == work2 + L"\\pkg");
+    CHECK(mp::test::readBytes(staging + L"\\mpainter.exe") == "new exe");
+}
+
 TEST_CASE("updateErrorMessage：每個代碼都有說明，取消與沒有錯誤是空的") {
     CHECK(std::wstring(updateErrorMessage(UpdateErrorCode::None)).empty());
     CHECK(std::wstring(updateErrorMessage(UpdateErrorCode::Cancelled)).empty());
@@ -512,8 +551,8 @@ TEST_CASE("planInstall / applyInstall / removeOldFiles：換掉發佈包的檔�
     writeBytes(app + L"\\mpainter.ini", "settings");
     writeBytes(app + L"\\lang\\zh-TW.txt", "old zh");
     writeBytes(app + L"\\lang\\xx-XX.txt", "user lang");
-    writeBytes(app + L"\\notes.old", "user file");        // 不是換掉的舊檔：notes 不存在
-    writeBytes(app + L"\\readme.txt.older", "user file"); // 不是 .old / .oldN
+    writeBytes(app + L"\\notes.old", "user file");
+    writeBytes(app + L"\\readme.txt.older", "user file");
 
     auto steps = planInstall(stage, app, L"mp.exe");
     REQUIRE(steps.size() == 4);
@@ -523,41 +562,112 @@ TEST_CASE("planInstall / applyInstall / removeOldFiles：換掉發佈包的檔�
     CHECK(readBytes(app + L"\\7z.dll") == "new dll");
     CHECK(readBytes(app + L"\\readme.txt") == "new readme"); // 原本沒有，新放
     CHECK(readBytes(app + L"\\lang\\zh-TW.txt") == "new zh");
-    CHECK(readBytes(app + L"\\mp.exe.old") == "old exe");
-    CHECK(readBytes(app + L"\\7z.dll.old") == "old dll");
-    CHECK(readBytes(app + L"\\lang\\zh-TW.txt.old") == "old zh");
-    CHECK_FALSE(exists(app + L"\\readme.txt.old"));
+    CHECK(readBytes(app + L"\\mp.exe.mpainter.tempold") == "old exe");
+    CHECK(readBytes(app + L"\\7z.dll.mpainter.tempold") == "old dll");
+    CHECK(readBytes(app + L"\\lang\\zh-TW.txt.mpainter.tempold") == "old zh");
+    CHECK_FALSE(exists(app + L"\\readme.txt.mpainter.tempold"));
     CHECK(readBytes(app + L"\\mpainter.ini") == "settings");
     CHECK(readBytes(app + L"\\lang\\xx-XX.txt") == "user lang");
 
     CHECK(removeOldFiles(app) == 0);
-    CHECK_FALSE(exists(app + L"\\mp.exe.old"));
-    CHECK_FALSE(exists(app + L"\\7z.dll.old"));
-    CHECK_FALSE(exists(app + L"\\lang\\zh-TW.txt.old"));
-    CHECK(exists(app + L"\\notes.old"));
-    CHECK(exists(app + L"\\readme.txt.older"));
+    CHECK_FALSE(exists(app + L"\\mp.exe.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\7z.dll.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\lang\\zh-TW.txt.mpainter.tempold"));
+    CHECK(readBytes(app + L"\\notes.old") == "user file");
+    CHECK(readBytes(app + L"\\readme.txt.older") == "user file");
+    CHECK(readBytes(app + L"\\mp.exe") == "new exe");
+    CHECK(readBytes(app + L"\\7z.dll") == "new dll");
+    CHECK(readBytes(app + L"\\lang\\zh-TW.txt") == "new zh");
 }
 
-TEST_CASE("applyInstall：上次的 .old 還刪不掉（被占住）就用 .old2") {
+TEST_CASE("removeOldFiles：使用者自己的 .old / .bak 一律不碰（X 在不在都一樣），只刪 .mpainter.tempold") {
+    std::wstring app = testRoot(L"userold");
+    writeBytes(app + L"\\notes.txt", "notes");
+    writeBytes(app + L"\\notes.txt.old", "notes backup");
+    writeBytes(app + L"\\mpainter.ini", "settings");
+    writeBytes(app + L"\\mpainter.ini.old", "ini backup");
+    writeBytes(app + L"\\mpainter.ini.bak", "ini bak");
+    writeBytes(app + L"\\lang\\custom.txt", "custom");
+    writeBytes(app + L"\\lang\\custom.txt.old", "custom backup");
+    // v0.9.9 以前的更新程式留下的 X.old 也不刪（分不出是不是使用者的）
+    writeBytes(app + L"\\7z.dll", "dll");
+    writeBytes(app + L"\\7z.dll.old", "legacy old");
+    writeBytes(app + L"\\7z.dll.old2", "legacy old2");
+    // 名字像但不是：後面接的不是數字
+    writeBytes(app + L"\\a.txt.mpainter.tempold.bak", "user");
+    writeBytes(app + L"\\a.txt.mpainter.tempoldx", "user");
+    // 是：不分大小寫；X 不在也刪（名字本身就說明是更新換下來的）
+    writeBytes(app + L"\\b.txt.MPAINTER.TEMPOLD3", "old b");
+    writeBytes(app + L"\\gone.txt.mpainter.tempold", "old gone");
+    writeBytes(app + L"\\lang\\zh-TW.txt.mpainter.tempold12", "old zh");
+
+    CHECK(removeOldFiles(app) == 0);
+    CHECK(readBytes(app + L"\\notes.txt") == "notes");
+    CHECK(readBytes(app + L"\\notes.txt.old") == "notes backup");
+    CHECK(readBytes(app + L"\\mpainter.ini") == "settings");
+    CHECK(readBytes(app + L"\\mpainter.ini.old") == "ini backup");
+    CHECK(readBytes(app + L"\\mpainter.ini.bak") == "ini bak");
+    CHECK(readBytes(app + L"\\lang\\custom.txt") == "custom");
+    CHECK(readBytes(app + L"\\lang\\custom.txt.old") == "custom backup");
+    CHECK(readBytes(app + L"\\7z.dll") == "dll");
+    CHECK(readBytes(app + L"\\7z.dll.old") == "legacy old");
+    CHECK(readBytes(app + L"\\7z.dll.old2") == "legacy old2");
+    CHECK(readBytes(app + L"\\a.txt.mpainter.tempold.bak") == "user");
+    CHECK(readBytes(app + L"\\a.txt.mpainter.tempoldx") == "user");
+    CHECK_FALSE(exists(app + L"\\b.txt.MPAINTER.TEMPOLD3"));
+    CHECK_FALSE(exists(app + L"\\gone.txt.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\lang\\zh-TW.txt.mpainter.tempold12"));
+}
+
+TEST_CASE("applyInstall：使用者自己的 X.old 不動（X 是發佈包的檔），換下來的舊檔放在 X.mpainter.tempold") {
+    std::wstring root = testRoot(L"userold2");
+    std::wstring stage = root + L"\\stage", app = root + L"\\app";
+    writeBytes(stage + L"\\readme.txt", "new readme");
+    writeBytes(stage + L"\\lang\\ja-JP.txt", "new ja");
+    writeBytes(app + L"\\readme.txt", "old readme");
+    writeBytes(app + L"\\readme.txt.old", "readme backup");
+    writeBytes(app + L"\\readme.txt.old2", "readme backup 2");
+    writeBytes(app + L"\\lang\\ja-JP.txt", "old ja");
+    writeBytes(app + L"\\lang\\ja-JP.txt.old", "ja backup");
+    auto steps = planInstall(stage, app, L"mpainter.exe");
+    REQUIRE(applyInstall(steps).ok());
+    CHECK(readBytes(app + L"\\readme.txt") == "new readme");
+    CHECK(readBytes(app + L"\\lang\\ja-JP.txt") == "new ja");
+    CHECK(readBytes(app + L"\\readme.txt.old") == "readme backup");
+    CHECK(readBytes(app + L"\\readme.txt.old2") == "readme backup 2");
+    CHECK(readBytes(app + L"\\lang\\ja-JP.txt.old") == "ja backup");
+    CHECK(readBytes(app + L"\\readme.txt.mpainter.tempold") == "old readme");
+    CHECK(readBytes(app + L"\\lang\\ja-JP.txt.mpainter.tempold") == "old ja");
+    CHECK(removeOldFiles(app) == 0);
+    CHECK(readBytes(app + L"\\readme.txt.old") == "readme backup");
+    CHECK(readBytes(app + L"\\readme.txt.old2") == "readme backup 2");
+    CHECK(readBytes(app + L"\\lang\\ja-JP.txt.old") == "ja backup");
+    CHECK_FALSE(exists(app + L"\\readme.txt.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\lang\\ja-JP.txt.mpainter.tempold"));
+}
+
+TEST_CASE("applyInstall：上次的 .mpainter.tempold 還刪不掉（被占住）就用 .mpainter.tempold2") {
     std::wstring root = testRoot(L"old2");
     std::wstring stage = root + L"\\stage", app = root + L"\\app";
     writeBytes(stage + L"\\7z.dll", "v3");
     writeBytes(app + L"\\7z.dll", "v2");
-    writeBytes(app + L"\\7z.dll.old", "v1");
-    HANDLE lock = CreateFileW((app + L"\\7z.dll.old").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    writeBytes(app + L"\\7z.dll.mpainter.tempold", "v1");
+    HANDLE lock = CreateFileW((app + L"\\7z.dll.mpainter.tempold").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
     REQUIRE(lock != INVALID_HANDLE_VALUE);
     auto steps = planInstall(stage, app, L"mpainter.exe");
     REQUIRE(applyInstall(steps).ok());
     CHECK(readBytes(app + L"\\7z.dll") == "v3");
-    CHECK(readBytes(app + L"\\7z.dll.old2") == "v2");
-    CHECK(removeOldFiles(app) == 1); // .old 還被占住
+    CHECK(readBytes(app + L"\\7z.dll.mpainter.tempold") == "v1");
+    CHECK(readBytes(app + L"\\7z.dll.mpainter.tempold2") == "v2");
+    CHECK(removeOldFiles(app) == 1); // .mpainter.tempold 還被占住
     CloseHandle(lock);
     CHECK(removeOldFiles(app) == 0);
-    CHECK_FALSE(exists(app + L"\\7z.dll.old"));
-    CHECK_FALSE(exists(app + L"\\7z.dll.old2"));
+    CHECK_FALSE(exists(app + L"\\7z.dll.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\7z.dll.mpainter.tempold2"));
+    CHECK(readBytes(app + L"\\7z.dll") == "v3");
 }
 
-TEST_CASE("applyInstall：中途失敗整批還原，不留 .old") {
+TEST_CASE("applyInstall：中途失敗整批還原，不留 .mpainter.tempold") {
     std::wstring root = testRoot(L"rollback");
     std::wstring stage = root + L"\\stage", app = root + L"\\app";
     writeBytes(stage + L"\\a.txt", "new a");
@@ -578,8 +688,8 @@ TEST_CASE("applyInstall：中途失敗整批還原，不留 .old") {
     CHECK(readBytes(app + L"\\a.txt") == "old a");
     CHECK(readBytes(app + L"\\b.txt") == "old b");
     CHECK_FALSE(exists(app + L"\\c.txt"));
-    CHECK_FALSE(exists(app + L"\\a.txt.old"));
-    CHECK_FALSE(exists(app + L"\\b.txt.old"));
+    CHECK_FALSE(exists(app + L"\\a.txt.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\b.txt.mpainter.tempold"));
 }
 
 TEST_CASE("applyInstall：已載入的 DLL 能改名換掉（執行中的 exe 同理），舊檔等卸載後才刪得掉") {
@@ -593,11 +703,11 @@ TEST_CASE("applyInstall：已載入的 DLL 能改名換掉（執行中的 exe �
     auto steps = planInstall(stage, app, L"mpainter.exe");
     REQUIRE(applyInstall(steps).ok());
     CHECK(readBytes(app + L"\\7z.dll") == "new dll");
-    CHECK(exists(app + L"\\7z.dll.old"));
+    CHECK(exists(app + L"\\7z.dll.mpainter.tempold"));
     CHECK(removeOldFiles(app) == 1); // 還載入中，刪不掉
     FreeLibrary(real);
     CHECK(removeOldFiles(app) == 0);
-    CHECK_FALSE(exists(app + L"\\7z.dll.old"));
+    CHECK_FALSE(exists(app + L"\\7z.dll.mpainter.tempold"));
 }
 
 TEST_CASE("extractAll：照資料夾結構整包解開（給發佈包用）") {
@@ -640,7 +750,7 @@ TEST_CASE("發佈包有巢狀的子資料夾：安裝會把資料夾建出來；
     UpdateError err = applyInstall(steps);
     CHECK_FALSE(err.ok());
     CHECK(readBytes(app2 + L"\\mpainter.exe") == "old exe"); // 已經換掉的也還原了
-    CHECK_FALSE(exists(app2 + L"\\mpainter.exe.old"));
+    CHECK_FALSE(exists(app2 + L"\\mpainter.exe.mpainter.tempold"));
 
     // 目的地是資料夾：FolderInTheWay，帶路徑
     std::wstring app3 = root + L"\\app3";
@@ -661,16 +771,16 @@ TEST_CASE("removeOldFiles：只找這一版發佈包會放檔案的資料夾（�
     std::wstring root = testRoot(L"oldscope");
     std::wstring app = root + L"\\app";
     writeBytes(app + L"\\a.txt", "new");
-    writeBytes(app + L"\\a.txt.old", "old");
+    writeBytes(app + L"\\a.txt.mpainter.tempold", "old");
     writeBytes(app + L"\\lang\\zh-TW.txt", "new");
-    writeBytes(app + L"\\lang\\zh-TW.txt.old", "old");
+    writeBytes(app + L"\\lang\\zh-TW.txt.mpainter.tempold", "old");
     // 別的子資料夾（例如解壓縮的暫存、使用者自己的東西）不碰
     writeBytes(app + L"\\temp\\b.txt", "x");
-    writeBytes(app + L"\\temp\\b.txt.old", "user");
+    writeBytes(app + L"\\temp\\b.txt.mpainter.tempold", "user");
     CHECK(removeOldFiles(app) == 0);
-    CHECK_FALSE(exists(app + L"\\a.txt.old"));
-    CHECK_FALSE(exists(app + L"\\lang\\zh-TW.txt.old"));
-    CHECK(exists(app + L"\\temp\\b.txt.old"));
+    CHECK_FALSE(exists(app + L"\\a.txt.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\lang\\zh-TW.txt.mpainter.tempold"));
+    CHECK(exists(app + L"\\temp\\b.txt.mpainter.tempold"));
     bool hasLang = false;
     for (const wchar_t* sub : kPackageSubdirs) hasLang = hasLang || std::wstring(sub) == L"lang";
     CHECK(hasLang); // 發佈包現在的結構：lang 是唯一的子資料夾，改了打包要一起改這個表

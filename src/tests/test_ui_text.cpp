@@ -67,6 +67,31 @@ TEST_CASE("systemErrorText：有說明、沒有結尾的換行與句點；查不
     CHECK(systemErrorText(0x2FFFFFFF) == L"error 805306367");
 }
 
+TEST_CASE("flattenErrorText：說明句加物件種類（英文）、HRESULT 與系統的說明；查不到說明就只留代碼") {
+    CHECK(flattenErrorText(nullptr, 0) == L"Could not draw the annotations onto the image");
+    CHECK(flattenErrorText(L"Mosaic", 0) == L"Could not draw the annotations onto the image [Mosaic]");
+    // 系統查不到說明的碼：只留代碼，不出現 "error <數字>"
+    const long unknown = 0x2FFFFFFF;
+    CHECK(flattenErrorText(L"Rect", unknown) == L"Could not draw the annotations onto the image [Rect] (HRESULT 0x2FFFFFFF)");
+    // E_OUTOFMEMORY、D2DERR_RECREATE_TARGET（Direct2D 自己的碼，Win10 也查得到說明）：說明接在後面
+    for (long hr : {static_cast<long>(E_OUTOFMEMORY), static_cast<long>(0x8899000C)}) {
+        CAPTURE(hr);
+        const std::wstring text = flattenErrorText(L"Text", hr);
+        wchar_t code[16];
+        swprintf(code, 16, L"0x%08X", static_cast<unsigned>(hr));
+        const std::wstring head = std::wstring(L"Could not draw the annotations onto the image [Text] (HRESULT ") + code + L") (";
+        CHECK(text.rfind(head, 0) == 0);
+        CHECK(text.size() > head.size() + 1);
+        CHECK(text.back() == L')');
+        CHECK(text.find(L"error ") == std::wstring::npos);
+    }
+
+    mp::test::LangGuard guard;
+    setActiveLang(parseLangText(
+        L"_code=zh-TW\nCould not draw the annotations onto the image=無法把標註畫到圖上\n%s (HRESULT 0x%08X)=%s（HRESULT 0x%08X）\n"));
+    CHECK(flattenErrorText(L"Mosaic", unknown) == L"無法把標註畫到圖上 [Mosaic]（HRESULT 0x2FFFFFFF）");
+}
+
 TEST_CASE("metaLabelText / metaValueText / fileSizeText") {
     MetaItem keyed{L"Make", true, {}};
     MetaItem literal{L"Tag 0x9999", false, {}};

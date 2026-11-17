@@ -78,14 +78,36 @@ std::wstring updateFailureText(const UpdateError& e) {
     }
 }
 
-std::wstring systemErrorText(unsigned long code) {
+namespace {
+// 系統對這個碼的說明，去掉結尾的換行與句點；查不到回空字串。
+std::wstring systemMessage(unsigned long code) {
     wchar_t buf[512];
     DWORD n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, nullptr, code, 0, buf, 512, nullptr);
     std::wstring s(buf, n);
     while (!s.empty() && (s.back() == L'\r' || s.back() == L'\n' || s.back() == L' ' || s.back() == L'.' || s.back() == L'。'))
         s.pop_back();
-    if (s.empty()) s = L"error " + std::to_wstring(code);
     return s;
+}
+} // namespace
+
+std::wstring systemErrorText(unsigned long code) {
+    std::wstring s = systemMessage(code);
+    return s.empty() ? L"error " + std::to_wstring(code) : s;
+}
+
+std::wstring flattenErrorText(const wchar_t* kind, long hr) {
+    std::wstring text = tr(L"Could not draw the annotations onto the image");
+    if (kind && *kind) text += std::wstring(L" [") + kind + L"]";
+    if (hr != 0) {
+        const wchar_t* f = tr(L"%s (HRESULT 0x%08X)");
+        std::wstring out(wcslen(f) + text.size() + 16, L'\0');
+        int n = swprintf(out.data(), out.size(), f, text.c_str(), static_cast<unsigned>(hr));
+        out.resize(n > 0 ? static_cast<size_t>(n) : 0);
+        text = out;
+        // 系統查得到說明才加（記憶體不足這類通用的碼、Direct2D 的碼在 Win10 都查得到），查不到就只留代碼。
+        if (std::wstring why = systemMessage(static_cast<unsigned long>(hr)); !why.empty()) text += L" (" + why + L")";
+    }
+    return text;
 }
 
 std::wstring ioErrorText(const IoError& e) {

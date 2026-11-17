@@ -6,6 +6,7 @@
 
 #include "render/Renderer.h"
 #include "render_fixture.h"
+#include "test_util.h"
 
 using namespace mp;
 using namespace mp::test;
@@ -363,6 +364,144 @@ TEST_CASE("flatten：文字畫在方塊裡，方塊外不動；背景色與外�
     CHECK(countNear(out, kWhite, (*rectOf(a)), kInkTol) == 0);
 }
 
+static std::wstring kindOf(const FlattenResult& r) { return r.kind ? r.kind : L""; }
+
+// 一個有文字的文字方塊（有外框、有填色），高度照內容量好。
+static Annotation boxedText(RenderFixture& f, const StrokeStyle& st, uint32_t id) {
+    TextStyle ts;
+    ts.size = 28;
+    Annotation tx = makeText({150, 100}, 400, st, ts, L"Hi");
+    tx.stroke.stroke = st.stroke; // makeText 預設不帶外框
+    tx.id = id;
+    rectOf(tx)->bottom = rectOf(tx)->top + f.textHeight(tx);
+    return tx;
+}
+
+TEST_CASE("flatten：故障開關打開的那一類資源建不出來 → 用到它的標註回報失敗；沒用到的照常畫，像素和沒開關時一樣") {
+    // v0.9.9：要的資源建不出來時那個標註直接略過，flatten 仍回報成功，存檔就把少了標註的圖寫進原檔。
+    RenderFixture f;
+    StrokeStyle st = redStroke();
+    st.fill = kBlue;
+    st.arrows = ArrowMode::Both;
+    std::vector<Annotation> items;
+    for (Kind k : {Kind::Line, Kind::Rect, Kind::RoundRect, Kind::Ellipse, Kind::Bubble, Kind::Star, Kind::Polygon, Kind::Magnifier,
+                   Kind::Mosaic})
+        items.push_back(shape(k, {150, 100}, st));
+    Annotation fh = makeFreehand({{100, 80}, {150, 120}, {200, 90}}, st);
+    fh.id = 1;
+    items.push_back(fh);
+    items.push_back(boxedText(f, st, 1));
+    REQUIRE(items.size() == 11); // 每一種都有
+
+    using Flag = bool RenderDevice::TestFaults::*;
+    struct Fault {
+        const char* name;
+        Flag flag;
+    };
+    const Fault faults[] = {{"geometry", &RenderDevice::TestFaults::geometry},
+                            {"brush", &RenderDevice::TestFaults::brush},
+                            {"text", &RenderDevice::TestFaults::text},
+                            {"bitmap", &RenderDevice::TestFaults::bitmap}};
+    // 每種物件用到哪些資源：馬賽克只用點陣圖；文字排版只有文字用；其他都要幾何與畫刷（文字的邊框也是）。
+    auto uses = [](Kind k, Flag flag) {
+        if (flag == &RenderDevice::TestFaults::bitmap) return k == Kind::Mosaic;
+        if (flag == &RenderDevice::TestFaults::text) return k == Kind::Text;
+        return k != Kind::Mosaic;
+    };
+    auto base = gradientImage(300, 200);
+    RenderDevice& dev = f.r.device();
+    for (const Annotation& a : items) {
+        const Kind k = a.kind();
+        DocState doc;
+        doc.image = base;
+        doc.items = {a};
+        dev.testFaults = {};
+        Image clean;
+        REQUIRE(flatten(dev, doc, clean));
+        REQUIRE(clean.pixels != base->pixels); // 每一個都真的有畫東西
+        for (const Fault& fault : faults) {
+            CAPTURE(static_cast<int>(k), fault.name);
+            dev.testFaults = {};
+            dev.testFaults.*fault.flag = true;
+            Image out;
+            FlattenResult r = flatten(dev, doc, out);
+            if (uses(k, fault.flag)) {
+                CHECK_FALSE(r.ok);
+                CHECK(kindOf(r) == kindName(k));
+                CHECK(r.hr == E_OUTOFMEMORY);
+                CHECK(out.empty());
+            } else {
+                CHECK(r.ok);
+                CHECK(out.pixels == clean.pixels);
+            }
+        }
+    }
+    dev.testFaults = {};
+}
+
+TEST_CASE("flatten：好幾個標註裡有一個畫不出來 → 整個失敗，回報的是那一個的種類") {
+    RenderFixture f;
+    Annotation rect = shape(Kind::Rect, {150, 100}, redStroke());
+    rect.id = 1;
+    Annotation mosaic = shape(Kind::Mosaic, {150, 100}, StrokeStyle{});
+    mosaic.id = 2;
+    DocState doc;
+    doc.image = gradientImage(300, 200);
+    doc.items = {rect, mosaic, boxedText(f, redStroke(), 3)};
+    f.r.device().testFaults.bitmap = true;
+    Image out;
+    FlattenResult r = flatten(f.r.device(), doc, out);
+    f.r.device().testFaults = {};
+    CHECK_FALSE(r.ok);
+    CHECK(kindOf(r) == L"Mosaic");
+    CHECK(r.hr == E_OUTOFMEMORY);
+    CHECK(out.empty());
+    CHECK(flatten(f.r.device(), doc, out)); // 開關關掉就好了
+}
+
+TEST_CASE("flatten：馬賽克整個在圖外不算失敗（本來就沒東西可畫）") {
+    RenderFixture f;
+    Annotation m = shape(Kind::Mosaic, {150, 100}, StrokeStyle{});
+    *rectOf(m) = {400, 300, 460, 360};
+    auto base = gradientImage(300, 200);
+    DocState doc;
+    doc.image = base;
+    doc.items = {m};
+    Image out;
+    FlattenResult r = flatten(f.r.device(), doc, out);
+    CHECK(r.ok);
+    CHECK(r.hr == S_OK);
+    CHECK(out.pixels == base->pixels);
+}
+
+TEST_CASE("drawAnnotations：有畫不出來的照樣畫完其他的，回第一個失敗與它的 id") {
+    RenderFixture f;
+    auto base = whiteImage(300, 200);
+    Annotation rect = shape(Kind::Rect, {150, 100}, redStroke());
+    rect.id = 8;
+    const std::vector<Annotation> items = {boxedText(f, StrokeStyle{}, 7), rect, boxedText(f, StrokeStyle{}, 9)};
+    HRESULT hr = S_OK;
+    uint32_t failedId = 0;
+    f.r.device().testFaults.text = true;
+    Image out = f.frameOn(base, [&](ID2D1RenderTarget*) {
+        PaintCtx ctx = f.r.paintCtx(base, f.r.imageBitmap(base));
+        drawImage(ctx);
+        hr = drawAnnotations(ctx, items, 0, &failedId);
+    });
+    f.r.device().testFaults = {};
+    CHECK(hr == E_OUTOFMEMORY);
+    CHECK(failedId == 7);
+    CHECK(countNear(out, kRed, *rectOf(rect)) > 100); // 失敗的之後那個照樣畫了
+
+    failedId = 0;
+    f.frameOn(base, [&](ID2D1RenderTarget*) {
+        PaintCtx ctx = f.r.paintCtx(base, f.r.imageBitmap(base));
+        hr = drawAnnotations(ctx, items, 0, &failedId);
+    });
+    CHECK(hr == S_OK);
+    CHECK(failedId == 0);
+}
+
 TEST_CASE("flatten：文字的粗體、底線、對齊") {
     RenderFixture f;
     TextStyle ts;
@@ -545,4 +684,25 @@ TEST_CASE("UI 文字：先後用不同的對齊與換行，互不影響") {
     CHECK(wrapped.pixels != noWrapFirst.pixels);
     // 換行的版本字比較多行：墨水比較多
     CHECK(countNear(wrapped, black, box, kInkTol) > countNear(noWrapFirst, black, box, kInkTol));
+}
+
+TEST_CASE("flatten：輸出的圖配置不到記憶體時回報失敗（E_OUTOFMEMORY），不丟例外、不交出圖") {
+    // v0.9.9：flatten 裡配置輸出的 std::bad_alloc 一路逃到存檔的訊息處理，沒有人接。
+    RenderFixture f;
+    auto base = gradientImage(300, 200);
+    DocState doc;
+    doc.image = base;
+    doc.items = {shape(Kind::Rect, {150, 100}, redStroke())};
+    Image out;
+    FlattenResult r;
+    {
+        mp::test::ImageAllocLimit limit(1);
+        CHECK_NOTHROW(r = flatten(f.r.device(), doc, out));
+    }
+    CHECK_FALSE(r.ok);
+    CHECK(r.kind == nullptr); // 不是某個標註的問題
+    CHECK(r.hr == E_OUTOFMEMORY);
+    CHECK(out.empty());
+    CHECK(flatten(f.r.device(), doc, out)); // 配置得到了就照常
+    CHECK(out.width == 300);
 }

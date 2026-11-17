@@ -20,7 +20,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
 
     // 命令列：mpainter.exe [路徑]
     // 自動更新重啟時：mpainter.exe --after-update <舊行程 pid> [路徑]。先等舊行程結束（它在存設定、刪暫存），
-    // 不然兩邊同時讀寫 ini，換下來的 .old 也刪不掉。
+    // 不然兩邊同時讀寫 ini，換下來的舊檔也刪不掉。
     mp::LaunchArgs launch;
     int argc = 0;
     if (LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc)) {

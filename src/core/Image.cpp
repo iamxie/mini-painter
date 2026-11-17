@@ -1,6 +1,23 @@
 #include "core/Image.h"
 
+#include <algorithm>
+#include <atomic>
+#include <new>
+
 namespace mp {
+
+namespace {
+std::atomic<size_t> gAllocLimitForTest{0};
+} // namespace
+
+void setImageAllocLimitForTest(size_t bytes) { gAllocLimitForTest = bytes; }
+
+size_t detail::pixelAllocBytes(int w, int h) {
+    const size_t bytes = static_cast<size_t>(w) * h * 4;
+    const size_t limit = gAllocLimitForTest;
+    if (limit && bytes > limit) throw std::bad_alloc();
+    return bytes;
+}
 
 StraightImage toStraight(Image&& img) {
     StraightImage out;
@@ -47,11 +64,12 @@ void compositeOnWhite(Image& img) {
     for (int y = 0; y < img.height; ++y) {
         uint8_t* p = img.row(y);
         for (int x = 0; x < img.width; ++x, p += 4) {
-            unsigned rest = 255u - p[3]; // premultiplied：c + 白 × (1 − a)，c ≤ a 所以不會超過 255
+            // premultiplied：c + 白 × (1 − a)。c ≤ a 時不會超過 255；不合規的像素（c > a）停在 255，不繞回暗色。
+            unsigned rest = 255u - p[3];
             if (!rest) continue;
-            p[0] = static_cast<uint8_t>(p[0] + rest);
-            p[1] = static_cast<uint8_t>(p[1] + rest);
-            p[2] = static_cast<uint8_t>(p[2] + rest);
+            p[0] = static_cast<uint8_t>(std::min(255u, p[0] + rest));
+            p[1] = static_cast<uint8_t>(std::min(255u, p[1] + rest));
+            p[2] = static_cast<uint8_t>(std::min(255u, p[2] + rest));
             p[3] = 255;
         }
     }

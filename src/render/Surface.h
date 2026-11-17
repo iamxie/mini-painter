@@ -26,9 +26,9 @@ public:
     explicit operator bool() const { return rt_ != nullptr; }
 
     // 這個顏色的畫刷。一個顏色一支，所以同時拿著兩支不同顏色的畫刷不會互相改色。
-    // 指標到下一次 endFrame / attach / reset 前有效。沒有 target 或建不出來回 nullptr。
-    ID2D1SolidColorBrush* brush(D2D1_COLOR_F color);
-    ID2D1SolidColorBrush* brush(Color color) { return brush(toD2D(color)); }
+    // 指標到下一次 endFrame / attach / reset 前有效。沒有 target 或建不出來回 nullptr；error 不是 nullptr 就填原因（成功填 S_OK）。
+    ID2D1SolidColorBrush* brush(D2D1_COLOR_F color, HRESULT* error = nullptr);
+    ID2D1SolidColorBrush* brush(Color color, HRESULT* error = nullptr) { return brush(toD2D(color), error); }
 
     // 畫一段 UI 文字。clip：超出 rect 的部分不畫。wrap：照 rect 的寬度換行。
     void drawUiText(const std::wstring& text, const D2D1_RECT_F& rect, float size, D2D1_COLOR_F color,

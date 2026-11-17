@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <tlhelp32.h>
 
+#include <cwchar>
 #include <cwctype>
 #include <set>
 
@@ -15,12 +16,24 @@ namespace mp {
 
 namespace {
 
-// 舊檔改名時最多試到 .old9（上次留下的 .old 還被占著就換下一個）。
+// 換下來的舊檔改名成 X.mpainter.tempold（上次留下的還被占著就 X.mpainter.tempold2…，最多到 9）。
+// 刻意不用 .old / .bak 這類大家自己備份也會用的名字：啟動時只刪這個名字，才不會刪到使用者的檔。
+constexpr wchar_t kOldSuffix[] = L".mpainter.tempold";
 constexpr int kMaxOldSuffix = 9;
 
 bool fileExists(const std::wstring& p) {
     DWORD a = GetFileAttributesW(p.c_str());
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// X.mpainter.tempold 或 X.mpainter.tempoldN（N 是數字），不分大小寫。
+bool isOldFileName(const std::wstring& name) {
+    const std::wstring lower = lowerCopy(name);
+    const size_t pos = lower.rfind(kOldSuffix);
+    if (pos == std::wstring::npos || pos == 0) return false;
+    for (size_t i = pos + wcslen(kOldSuffix); i < lower.size(); ++i)
+        if (!iswdigit(lower[i])) return false;
+    return true;
 }
 
 std::wstring parentOf(const std::wstring& path) {
@@ -121,10 +134,10 @@ UpdateError applyInstall(std::vector<InstallStep>& steps) {
         DWORD attr = GetFileAttributesW(s.dst.c_str());
         if (attr != INVALID_FILE_ATTRIBUTES) {
             if (attr & FILE_ATTRIBUTE_DIRECTORY) return fail(UpdateErrorCode::FolderInTheWay, s.dst, 0);
-            // 上次更新留下、還刪不掉的 .old 就換下一個名字。
+            // 上次更新留下、還刪不掉的舊檔就換下一個名字。
             std::wstring old;
             for (int n = 1; n <= kMaxOldSuffix && old.empty(); ++n) {
-                std::wstring cand = s.dst + L".old" + (n == 1 ? L"" : std::to_wstring(n));
+                std::wstring cand = s.dst + kOldSuffix + (n == 1 ? L"" : std::to_wstring(n));
                 if (fileExists(cand)) DeleteFileW(cand.c_str());
                 if (!fileExists(cand)) old = cand;
             }
@@ -143,17 +156,10 @@ int removeOldFiles(const std::wstring& dir) {
     for (const wchar_t* sub : kPackageSubdirs) dirs.push_back(joinPath(dir, sub));
     for (const std::wstring& d : dirs) {
         forEachDirEntry(d, [&](const DirEntry& e) {
-            if (e.directory) return true;
-            const std::wstring& name = e.name;
-            size_t pos = name.rfind(L".old");
-            if (pos == std::wstring::npos || pos == 0) return true;
-            bool digits = true;
-            for (size_t i = pos + 4; i < name.size(); ++i) digits = digits && iswdigit(name[i]);
-            if (!digits) return true;
-            if (!fileExists(joinPath(d, name.substr(0, pos)))) return true; // 不是換掉的舊檔，不碰
-            if (!DeleteFileW(joinPath(d, name).c_str())) ++failed;
+            if (e.directory || !isOldFileName(e.name)) return true;
+            if (!DeleteFileW(joinPath(d, e.name).c_str())) ++failed;
             return true;
-        }, L"*.old*");
+        }, L"*.mpainter.tempold*");
     }
     return failed;
 }

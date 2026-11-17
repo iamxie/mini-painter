@@ -7,7 +7,7 @@ namespace mp {
 constexpr wchar_t kPackageExeName[] = L"mpainter.exe";
 
 // 發佈包裡的子資料夾（根目錄以外，檔案會放在哪些資料夾）。打包（.github/workflows/build.yml、scripts/package.sh）
-// 多放一個資料夾時，這裡要跟著加：新版啟動時靠它找上次更新留下的 .old 檔（core/Install.h 的 removeOldFiles）。
+// 多放一個資料夾時，這裡要跟著加：新版啟動時靠它找上次更新留下的 .mpainter.tempold 檔（core/Install.h 的 removeOldFiles）。
 constexpr const wchar_t* kPackageSubdirs[] = {L"lang"};
 
 } // namespace mp

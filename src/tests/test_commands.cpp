@@ -15,7 +15,7 @@ constexpr unsigned kBack = 0x08, kPrior = 0x21, kNext = 0x22, kLeft = 0x25, kUp 
 
 CommandState editing() { // 開著一張改過的圖、有選取、有復原與重做
     CommandState s;
-    s.hasImage = s.dirty = s.canUndo = s.canRedo = s.hasSelection = s.hasPages = true;
+    s.hasImage = s.hasView = s.dirty = s.canUndo = s.canRedo = s.hasSelection = s.hasPages = true;
     return s;
 }
 } // namespace
@@ -99,6 +99,21 @@ TEST_CASE("commandEnabled：沒有圖、沒有修改、兩頁並排") {
     s.hasPages = false;
     CHECK_FALSE(commandEnabled(IDM_PREV, s));
     CHECK_FALSE(commandEnabled(IDM_NEXT, s));
+}
+
+TEST_CASE("commandEnabled：兩頁並排、第一頁讀不到只有第二頁時，檢視指令照常、編輯與輸出不行") {
+    CommandState s;
+    s.hasView = true; // 第二頁讀得到：畫面上有東西
+    s.twoPage = true;
+    s.hasPages = true;
+    for (int id : {IDM_ZOOMIN, IDM_ZOOMOUT, IDM_ZOOM100, IDM_ZOOMFIT, IDM_FITWIDTH, IDM_FITHEIGHT, IDM_TWOPAGE, IDM_PREV, IDM_NEXT}) {
+        INFO("command " << id);
+        CHECK(commandEnabled(id, s));
+    }
+    for (int id : {IDM_SAVE, IDM_SAVEAS, IDM_ROTATE, IDM_UNDO, IDM_REDO, IDM_DELETE}) {
+        INFO("command " << id);
+        CHECK_FALSE(commandEnabled(id, s));
+    }
 }
 
 TEST_CASE("commandEnabled：裁切模式中復原 / 重做是取消裁切，沒有紀錄也能按") {

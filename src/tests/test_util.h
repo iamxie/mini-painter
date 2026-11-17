@@ -46,6 +46,14 @@ struct LangGuard {
     ~LangGuard();
 };
 
+// 這個 scope 內新配置的圖大於 bytes 就丟 std::bad_alloc（core/Image 的 setImageAllocLimitForTest），離開時關掉。
+struct ImageAllocLimit {
+    explicit ImageAllocLimit(size_t bytes) { setImageAllocLimitForTest(bytes); }
+    ~ImageAllocLimit() { setImageAllocLimitForTest(0); }
+    ImageAllocLimit(const ImageAllocLimit&) = delete;
+    ImageAllocLimit& operator=(const ImageAllocLimit&) = delete;
+};
+
 // 每個 test case 的時間上限（秒）。超過就印出名稱並以結束碼 3 結束行程，CI 才看得出卡在哪。
 // 環境變數 MP_TEST_TIMEOUT_SEC 可以改（驗證這個機制本身時用：mp_tests "[.hang]"）。
 constexpr int kTestCaseTimeoutSec = 120;

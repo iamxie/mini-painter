@@ -91,6 +91,8 @@ UpdateError downloadUpdate(const ReleaseInfo& release, const std::wstring& workD
         e.archive = std::move(unpack);
         return e;
     }
+    // 解壓本身停不下來：解完再看一次，解的期間按了取消就不交出去（呼叫端會照樣安裝）。
+    if (cancelled()) return failure(UpdateErrorCode::Cancelled);
     if (GetFileAttributesW(joinPath(pkg, kPackageExeName).c_str()) == INVALID_FILE_ATTRIBUTES)
         return failure(UpdateErrorCode::NoExeInPackage);
     stagingDir = pkg;

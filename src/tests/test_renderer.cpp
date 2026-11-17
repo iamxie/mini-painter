@@ -4,6 +4,7 @@
 #include <wincodec.h>
 
 #include "render/Renderer.h"
+#include "test_util.h"
 
 using namespace mp;
 
@@ -55,6 +56,24 @@ uint32_t pixelAt(Fixture& f, int x, int y) {
 }
 
 } // namespace
+
+TEST_CASE("Renderer：高品質縮圖配置不到記憶體時回 nullptr（不丟例外），呼叫端改用一般的點陣圖") {
+    // v0.9.9：畫面上的高品質縮放在 UI 執行緒做，配置失敗的例外沒有人接。
+    Fixture f;
+    auto a = img(40, 30);
+    {
+        mp::test::ImageAllocLimit limit(40 * 30 * 4); // 放大的縮圖配置不到
+        const ImageBitmap* s = nullptr;
+        CHECK_NOTHROW(s = f.r.scaledBitmap(a, 80, 60));
+        CHECK(s == nullptr);
+        const ImageBitmap* plain = f.r.imageBitmap(a); // 一般的點陣圖不用另外配置
+        REQUIRE(plain != nullptr);
+        CHECK(plain->bitmap != nullptr);
+    }
+    const ImageBitmap* s = f.r.scaledBitmap(a, 80, 60); // 配置得到了就照常
+    REQUIRE(s != nullptr);
+    CHECK(s->bitmap->GetPixelSize().width == 80);
+}
 
 TEST_CASE("Renderer：高品質縮放給了先縮好的圖（尺寸相同）就直接上傳；尺寸不對就自己縮") {
     Fixture f;
@@ -264,6 +283,57 @@ TEST_CASE("Renderer::flatten：畫不出正確結果時回報失敗") {
     CHECK(out.pixels == plain.image->pixels);
 }
 
+TEST_CASE("故障開關：pathGeometry、畫刷建不出來時回 nullptr 並帶原因；關掉就恢復") {
+    Fixture f;
+    RenderDevice& d = f.r.device();
+    auto triangle = [](ID2D1GeometrySink& sink) {
+        sink.BeginFigure(D2D1::Point2F(0, 0), D2D1_FIGURE_BEGIN_FILLED);
+        sink.AddLine(D2D1::Point2F(10, 0));
+        sink.AddLine(D2D1::Point2F(10, 10));
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+    };
+    HRESULT hr = E_FAIL;
+    CHECK(d.pathGeometry(triangle, &hr) != nullptr);
+    CHECK(hr == S_OK);
+    d.testFaults.geometry = true;
+    CHECK(d.pathGeometry(triangle, &hr) == nullptr);
+    CHECK(hr == E_OUTOFMEMORY);
+    d.testFaults.geometry = false;
+    CHECK(d.pathGeometry(triangle, &hr) != nullptr);
+    CHECK(hr == S_OK);
+
+    Surface& s = f.r.surface();
+    d.testFaults.brush = true;
+    CHECK(s.brush(D2D1::ColorF(0, 1, 0), &hr) == nullptr);
+    CHECK(hr == E_OUTOFMEMORY);
+    CHECK(s.brushCount() == 0); // 失敗的不留在快取裡
+    d.testFaults.brush = false;
+    CHECK(s.brush(D2D1::ColorF(0, 1, 0), &hr) != nullptr);
+    CHECK(hr == S_OK);
+    CHECK(s.brushCount() == 1);
+}
+
+TEST_CASE("MosaicCache::get：整個在圖外回 nullptr 但不算失敗；點陣圖建不出來回 nullptr 並帶原因") {
+    Fixture f;
+    auto a = img(64, 64);
+    MosaicCache cache;
+    MosaicShape inside{{8, 8, 40, 40}, 8}, outside{{100, 100, 140, 140}, 8};
+    HRESULT hr = E_FAIL;
+    const MosaicCache::Tile* t = cache.get(f.r.rt(), a, 1, inside, &hr);
+    CHECK(t != nullptr);
+    CHECK(hr == S_OK);
+    hr = E_FAIL;
+    CHECK(cache.get(f.r.rt(), a, 2, outside, &hr) == nullptr);
+    CHECK(hr == S_OK);
+    CHECK(cache.get(f.r.rt(), a, 3, inside, &hr, true) == nullptr);
+    CHECK(hr == E_OUTOFMEMORY);
+    hr = E_FAIL;
+    CHECK(cache.get(f.r.rt(), a, 4, outside, &hr, true) == nullptr); // 沒東西可畫就不用建，也就不會失敗
+    CHECK(hr == S_OK);
+    CHECK(cache.get(f.r.rt(), a, 3, inside, &hr) != nullptr); // 上次失敗的，下次重建
+    CHECK(hr == S_OK);
+}
+
 TEST_CASE("Renderer：馬賽克小圖只留這一幀畫過的") {
     Fixture f;
     auto a = img(64, 64);
@@ -363,8 +433,10 @@ TEST_CASE("RenderDevice：pathGeometry 建出路徑；還沒 init 時回 nullptr
 
     RenderDevice blank; // 沒有 init：工廠是空的
     bool called = false;
-    CHECK(blank.pathGeometry([&](ID2D1GeometrySink&) { called = true; }) == nullptr);
+    HRESULT hr = S_OK;
+    CHECK(blank.pathGeometry([&](ID2D1GeometrySink&) { called = true; }, &hr) == nullptr);
     CHECK_FALSE(called);
+    CHECK(FAILED(hr));
     CHECK(blank.createWicTarget(f.surface.Get()) == nullptr);
     CHECK(blank.uiFormat(13, false) == nullptr);
 }

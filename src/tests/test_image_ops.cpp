@@ -2,13 +2,17 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <mutex>
+#include <new>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
 
 #include "core/ImageOps.h"
 #include "core/Parallel.h"
+#include "test_util.h"
 
 using namespace mp;
 
@@ -39,6 +43,54 @@ TEST_CASE("parallelRows：工作執行緒跟著呼叫端的優先順序") {
         REQUIRE_FALSE(seen.empty());
         for (int p : seen) CHECK(p == priority);
     }
+}
+
+TEST_CASE("parallelRows：工作執行緒丟出的例外等每一段都結束後在呼叫端丟出，其他段照樣做完") {
+    // v0.9.9：例外逃出工作執行緒 → terminate，整個程式結束（實測結束碼 0xC0000409）。
+    std::mutex m;
+    std::vector<std::pair<int, int>> done;
+    int thrownSize = 0;
+    bool caught = false;
+    try {
+        parallelRows(1000, [&](int y0, int y1) {
+            if (y0 <= 500 && 500 < y1) {
+                std::lock_guard<std::mutex> lk(m);
+                thrownSize = y1 - y0;
+                throw std::bad_alloc();
+            }
+            Sleep(20); // 讓丟出的那段先結束：呼叫端要等其他段做完才回來
+            std::lock_guard<std::mutex> lk(m);
+            done.push_back({y0, y1});
+        });
+    } catch (const std::bad_alloc&) {
+        caught = true;
+    }
+    CHECK(caught);
+    int rowsDone = 0;
+    for (auto [y0, y1] : done) rowsDone += y1 - y0;
+    CHECK(thrownSize > 0);
+    CHECK(rowsDone + thrownSize == 1000); // 回來的時候其他段都做完了
+
+    // 其他種類的例外也照樣交回來；只有一段（少於 64 列）時本來就在呼叫端跑
+    CHECK_THROWS_AS(parallelRows(1000, [](int, int) { throw std::runtime_error("x"); }), std::runtime_error);
+    CHECK_THROWS_AS(parallelRows(10, [](int, int) { throw std::runtime_error("x"); }), std::runtime_error);
+    // 沒有例外：每一列剛好做一次
+    std::vector<int> hits(1000, 0);
+    parallelRows(1000, [&](int y0, int y1) {
+        for (int y = y0; y < y1; ++y) ++hits[static_cast<size_t>(y)];
+    });
+    CHECK(std::count(hits.begin(), hits.end(), 1) == 1000);
+}
+
+TEST_CASE("resample：輸出配置不到時丟 std::bad_alloc（不會讓程式結束），配置得到時照常") {
+    Image src(100, 80);
+    {
+        mp::test::ImageAllocLimit limit(100 * 80 * 4); // 來源那麼大的還可以，再大就失敗
+        CHECK_THROWS_AS(resample(src, 300, 200), std::bad_alloc);
+    }
+    Image big = resample(src, 300, 200);
+    CHECK(big.width == 300);
+    CHECK(big.height == 200);
 }
 
 static void set(Image& img, int x, int y, uint8_t b, uint8_t g, uint8_t r, uint8_t a = 255) {
@@ -241,6 +293,63 @@ TEST_CASE("hasTransparency 與 compositeOnWhite（premultiplied 疊在白底上�
     for (int y = 0; y < 2; ++y)
         for (int x = 0; x < 2; ++x) set(opaque, x, y, 1, 2, 3);
     CHECK_FALSE(hasTransparency(opaque));
+}
+
+TEST_CASE("compositeOnWhite：不合規的像素（色版大於 alpha）停在 255，不繞回暗色") {
+    // v0.9.9：(145, 145, 145, 111) 算成 145 + 144 = 289，存進 8 位元變成 33。
+    Image img(2, 1);
+    set(img, 0, 0, 145, 145, 145, 111);
+    set(img, 1, 0, 200, 10, 111, 111); // 只有一個色版不合規：其他照公式
+    compositeOnWhite(img);
+    const uint8_t* p = img.px(0, 0);
+    CHECK(int(p[0]) == 255);
+    CHECK(int(p[1]) == 255);
+    CHECK(int(p[2]) == 255);
+    CHECK(int(p[3]) == 255);
+    p = img.px(1, 0);
+    CHECK(int(p[0]) == 255);
+    CHECK(int(p[1]) == 10 + 144);
+    CHECK(int(p[2]) == 111 + 144);
+    CHECK(int(p[3]) == 255);
+}
+
+TEST_CASE("resample：半透明的銳利邊緣放大、縮小後，每個像素的色版都不大於 alpha") {
+    // v0.9.9：Lanczos 的負權重讓色版算過頭（例如 (145, 145, 145, 111)），鋪白底時就變成暗點。
+    // 3×1：半透明白、不透明黑、不透明黑（review 給的例子），加上一張各種 alpha 交錯的圖。
+    Image edge(3, 1);
+    set(edge, 0, 0, 128, 128, 128, 128);
+    set(edge, 1, 0, 0, 0, 0, 255);
+    set(edge, 2, 0, 0, 0, 0, 255);
+    Image mixed(17, 13);
+    for (int y = 0; y < mixed.height; ++y)
+        for (int x = 0; x < mixed.width; ++x) {
+            const uint8_t a = static_cast<uint8_t>(((x * 7 + y * 13) % 5) * 60 + 15); // 15、75、135、195、255
+            const uint8_t c = (x + y) % 2 ? a : 0;                                       // 白與黑交錯：邊緣最銳利
+            set(mixed, x, y, c, c, c, a);
+        }
+    const std::pair<int, int> sizes[] = {{6, 1}, {7, 3}, {40, 31}, {9, 5}, {3, 2}};
+    for (const Image* src : {&edge, &mixed})
+        for (auto [w, h] : sizes) {
+            CAPTURE(src->width, w, h);
+            Image out = resample(*src, w, h);
+            int bad = 0;
+            for (int y = 0; y < out.height; ++y)
+                for (int x = 0; x < out.width; ++x) {
+                    const uint8_t* p = out.px(x, y);
+                    if (p[0] > p[3] || p[1] > p[3] || p[2] > p[3]) ++bad;
+                }
+            CHECK(bad == 0);
+        }
+    // 不透明的圖不受影響：alpha 全是 255
+    Image opaque(9, 7);
+    for (int y = 0; y < opaque.height; ++y)
+        for (int x = 0; x < opaque.width; ++x) set(opaque, x, y, static_cast<uint8_t>(x * 20), static_cast<uint8_t>(y * 30), (x + y) % 2 ? 255 : 0, 255);
+    Image big = resample(opaque, 23, 17);
+    int notOpaque = 0;
+    for (int y = 0; y < big.height; ++y)
+        for (int x = 0; x < big.width; ++x)
+            if (big.px(x, y)[3] != 255) ++notOpaque;
+    CHECK(notOpaque == 0);
 }
 
 TEST_CASE("applyExifOrientation：八種方向逐像素對照 EXIF 的定義") {

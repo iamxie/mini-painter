@@ -8,13 +8,21 @@
 namespace mp {
 
 // 32bpp BGRA 的像素緩衝區。alpha 有沒有乘進顏色由下面兩個型別區分，這裡只管尺寸與位址。
+// 測試用的故障開關：之後新配置的圖（PixelBuffer(w, h)）大於 bytes 位元組就丟 std::bad_alloc，模擬記憶體不足。
+// 0 是關（平常永遠是 0）。所有執行緒共用，背景的預先解碼也算。
+void setImageAllocLimitForTest(size_t bytes);
+namespace detail {
+// PixelBuffer(w, h) 要配置的位元組數；故障開關打開、超過上限時丟 std::bad_alloc。
+size_t pixelAllocBytes(int w, int h);
+} // namespace detail
+
 struct PixelBuffer {
     int width = 0;
     int height = 0;
     std::vector<uint8_t> pixels; // width * height * 4，stride = width * 4
 
     PixelBuffer() = default;
-    PixelBuffer(int w, int h) : width(w), height(h), pixels(static_cast<size_t>(w) * h * 4, 0) {}
+    PixelBuffer(int w, int h) : width(w), height(h), pixels(detail::pixelAllocBytes(w, h), 0) {}
 
     size_t stride() const { return static_cast<size_t>(width) * 4; }
     uint8_t* row(int y) { return pixels.data() + y * stride(); }

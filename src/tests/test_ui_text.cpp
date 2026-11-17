@@ -83,7 +83,9 @@ TEST_CASE("flattenErrorText：說明句加物件種類（英文）、HRESULT 與
         CHECK(text.rfind(head, 0) == 0);
         CHECK(text.size() > head.size() + 1);
         CHECK(text.back() == L')');
-        CHECK(text.find(L"error ") == std::wstring::npos);
+        // 不出現 systemErrorText 查不到時的 "error <十進位代碼>"。只看 "error " 不行：英文系統的說明本身就有這個字
+        // （D2DERR_RECREATE_TARGET 是 "There has been a presentation error..."）。
+        CHECK(text.find(L"error " + std::to_wstring(static_cast<unsigned long>(hr))) == std::wstring::npos);
     }
 
     mp::test::LangGuard guard;

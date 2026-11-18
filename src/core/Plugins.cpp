@@ -72,6 +72,15 @@ struct MappedFile {
 // 這兩個函式裡不能有要解構的 C++ 物件（__try 的限制）。
 int inPageOnly(unsigned long code) { return code == EXCEPTION_IN_PAGE_ERROR ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH; }
 
+bool guardedProbe(const MpPluginFuncs* f, const uint8_t* data, size_t size, int32_t* format) {
+    __try {
+        *format = f->probe(data, size);
+        return true;
+    } __except (inPageOnly(GetExceptionCode())) {
+        return false;
+    }
+}
+
 bool guardedReadSize(const MpPluginFuncs* f, int32_t format, const uint8_t* data, size_t size, int32_t* w, int32_t* h, int32_t* rc) {
     __try {
         *rc = f->readSize(format, data, size, w, h);
@@ -121,6 +130,10 @@ IoError pluginFailure(const PluginMatch& m, const char* func, int32_t rc, const 
 }
 
 } // namespace
+
+bool pluginApiSupported(unsigned api) { return api >= kPluginApiOldest && api <= kPluginApiVersion; }
+
+bool askPluginsFirst(ImageFormat format) { return format == ImageFormat::Tiff || format == ImageFormat::Unknown; }
 
 std::wstring pluginsDirForExe(const std::wstring& exeDir) { return joinPath(exeDir, L"plugins"); }
 
@@ -172,7 +185,7 @@ std::vector<std::wstring> pluginEffectiveExtensions(const PluginEntry& e) {
 
 PluginLoadError pluginStaticCheck(const PluginEntry& e) {
     if (!e.manifest.ok()) return PluginLoadError::BadManifest;
-    if (e.manifest.manifest.api != MP_PLUGIN_API_VERSION) return PluginLoadError::ApiMismatch;
+    if (!pluginApiSupported(e.manifest.manifest.api)) return PluginLoadError::ApiMismatch;
     return PluginLoadError::None;
 }
 
@@ -246,12 +259,14 @@ std::shared_ptr<PluginSet> loadPlugins(const std::vector<PluginEntry>& entries, 
         if (!module) { done(PluginLoadError::LoadFailed, nullptr); continue; }
         auto entry = reinterpret_cast<MpPluginGetFuncs>(GetProcAddress(module, MP_PLUGIN_ENTRY_NAME));
         if (!entry) { done(PluginLoadError::NoEntry, module); continue; }
+        // 照資訊宣告的版本講話：v1 的 plugin 只認得 1。
+        const unsigned api = e.manifest.manifest.api;
         const MpPluginFuncs* funcs = nullptr;
         {
             PluginCallScope scope(e.id, "getFuncs", e.dllPath);
-            funcs = entry(MP_PLUGIN_API_VERSION);
+            funcs = entry(api);
         }
-        if (!funcs || funcs->apiVersion != MP_PLUGIN_API_VERSION || !funcs->probe || !funcs->readSize || !funcs->decode) {
+        if (!funcs || funcs->apiVersion != api || !funcs->probe || !funcs->readSize || !funcs->decode) {
             done(PluginLoadError::Incompatible, module);
             continue;
         }
@@ -367,18 +382,22 @@ std::wstring PluginMatch::extension() const {
     return plugin->extensions.empty() ? L"" : plugin->extensions.front();
 }
 
-PluginMatch matchPluginFormat(const unsigned char* head, size_t size, const std::wstring& path) {
+PluginMatch matchPluginFile(const std::wstring& path) {
     PluginMatch m;
     auto set = activePlugins();
-    if (!set || !head) return m;
-    size = std::min<size_t>(size, MP_PLUGIN_PROBE_BYTES);
+    if (!set || set->plugins().empty()) return m;
+    MappedFile file(path);
+    if (!file.data) return m;
     for (const auto& p : set->plugins()) {
         if (p.extensions.empty()) continue; // 全部被內建或別的 plugin 拿走：不接手任何檔
+        const size_t size = p.manifest.api == 1 ? std::min<size_t>(file.size, MP_PLUGIN_PROBE_BYTES) : file.size;
         int32_t format = -1;
+        bool readable = false;
         {
             PluginCallScope scope(p.id, "probe", path);
-            format = p.funcs->probe(head, size);
+            readable = guardedProbe(p.funcs, file.data, size, &format);
         }
+        if (!readable) return PluginMatch{}; // 檔案被截短：後面的 plugin 也讀不到
         if (format < 0 || static_cast<size_t>(format) >= p.manifest.formats.size()) continue;
         m.set = set;
         m.plugin = &p;
@@ -386,19 +405,6 @@ PluginMatch matchPluginFormat(const unsigned char* head, size_t size, const std:
         return m;
     }
     return m;
-}
-
-PluginMatch matchPluginFile(const std::wstring& path) {
-    if (!activePlugins()) return {};
-    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return {};
-    unsigned char head[MP_PLUGIN_PROBE_BYTES] = {};
-    DWORD got = 0;
-    const bool ok = ReadFile(h, head, sizeof(head), &got, nullptr);
-    CloseHandle(h);
-    if (!ok || got == 0) return {};
-    return matchPluginFormat(head, got, path);
 }
 
 bool pluginReadSize(const PluginMatch& m, const std::wstring& path, int& width, int& height) {

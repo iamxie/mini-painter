@@ -1,0 +1,42 @@
+Adobe DNG SDK in mpainter
+=========================
+
+This product includes DNG technology under license by Adobe.
+
+What this folder is
+-------------------
+Part of the Adobe DNG SDK 1.7.1, build 2802 (November 10, 2026), used by mpainter's DNG plugin
+(src/plugins/dng). The SDK is licensed under the DNG SDK License Agreement in LICENSE.txt, which
+is the LICENSE.txt of the SDK package, unchanged. The DNG Specification patent license is on
+https://helpx.adobe.com/camera-raw/digital-negative.html ("DNG Specification patent license").
+
+Downloaded from https://www.adobe.com/go/dng_sdk, which led to
+  https://download.adobe.com/pub/adobe/dng/dng_sdk_1_7_1_2802_20261110.zip
+  80,525,157 bytes, SHA-256 e9bb04e956da3605d8ef4f821bdb979a250c22546b0332b7f81a93b11da7cceb
+
+What was taken from the package
+-------------------------------
+  source/   = dng_sdk/source/ (all 159 files). mpainter does not build dng_validate.cpp (the
+              command-line tool), dng_xmp_sdk.cpp (needs the XMP SDK) or dng_update_meta.cpp
+              (rewrites metadata in place; needs the XMP SDK).
+  libjpeg/  = the library files of libjpeg 9c from the package's libjpeg/ folder, and its README
+              (the Independent JPEG Group's license terms are in that README). The command-line
+              programs, build files and test images were left out. No libjpeg file was changed.
+  LICENSE.txt = the package's LICENSE.txt.
+
+Not taken: the XMP SDK, libjxl (mpainter uses libjxl from vcpkg, the same one as its JPEG XL
+plugin), the project files, the documentation and the sample files.
+
+Changes made for mpainter
+-------------------------
+mpainter builds the SDK without the XMP SDK (qDNGUseXMP=0). Two places in the SDK did not build
+that way, so they were put inside #if qDNGUseXMP. Both are marked in the source with the comment
+"mpainter modification".
+
+  source/dng_jxl.cpp
+    1. Writing the XMP box of a JPEG XL file (in the encoder). mpainter never writes DNG or JPEG XL
+       files, so nothing is lost.
+    2. Reading the XMP box of a JPEG XL file into the decoder's info. Without the XMP SDK, the XMP
+       of such a file is ignored, like the XMP of any other DNG.
+
+No other file was changed. Build settings are in the top-level CMakeLists.txt (target mp_dng_sdk).

@@ -91,6 +91,13 @@ const CommandInfo* commandInfo(int id) {
     return nullptr;
 }
 
+EditLock editLockFor(bool inArchive, bool fromPlugin) {
+    if (fromPlugin) return EditLock::Plugin; // 比較嚴的那個優先
+    return inArchive ? EditLock::Archive : EditLock::None;
+}
+
+bool rotateAllowed(EditLock lock) { return lock != EditLock::Plugin; }
+
 bool commandEnabled(int id, const CommandState& s) {
     if (s.dragging) return false;
     switch (id) {

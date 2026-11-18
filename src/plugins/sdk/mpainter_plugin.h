@@ -1,8 +1,15 @@
 /*
- * mpainter image reader plugin interface (API version 1).
+ * mpainter image reader plugin interface (API version 2).
  *
- * A plugin adds one or more image formats that mpainter can open. It cannot save: saving and
- * "Export As" always write one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP).
+ * A plugin adds one or more image formats that mpainter can open. It only reads and renders: an image
+ * opened through a plugin is read-only in mpainter (no editing, rotating or saving). "Export As" writes a
+ * copy in one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP).
+ *
+ * Versions
+ *   2: probe() gets the whole file, and is also asked about files that start like a TIFF file (so a plugin
+ *      can take formats built on TIFF, such as DNG). mpainter 1.2 and later.
+ *   1: probe() gets at most the first MP_PLUGIN_PROBE_BYTES bytes. mpainter 1.1 and later still load
+ *      version 1 plugins.
  *
  * Layout
  *   A plugin is a DLL at  <mpainter folder>\plugins\<id>\<id>.dll  . <id> is the folder name; it is how
@@ -14,7 +21,7 @@
  *   The DLL carries a UTF-8 text resource of type RCDATA named MPAINTER_PLUGIN. mpainter reads it without
  *   running any code in the DLL (to list plugins and check conflicts before the user has enabled them):
  *
- *       api=1
+ *       api=2
  *       name=JPEG XL
  *       version=1.0.0
  *       format=JPEG XL image|.jxl
@@ -26,13 +33,15 @@
  *
  * Entry point
  *   The DLL exports  const MpPluginFuncs* mpPluginGetFuncs(uint32_t hostApiVersion)  (C linkage, see
- *   MP_PLUGIN_EXPORT). Return NULL if you cannot work with hostApiVersion; mpainter then reports the plugin
- *   as incompatible. The table must stay valid until the DLL is unloaded.
+ *   MP_PLUGIN_EXPORT). mpainter passes the "api=" value of the manifest. Return NULL if you cannot work with
+ *   hostApiVersion; mpainter then reports the plugin as incompatible. The table must stay valid until the DLL
+ *   is unloaded, and its apiVersion must equal hostApiVersion.
  *
  * Rules for the three functions
  *   - mpainter may call them at the same time from several threads (the window, background pre-decoding).
  *   - They get the file's bytes; they must not open the file themselves. The bytes are a read-only
- *     memory-mapped view of the whole file: touch only what you need (readSize should not read the pixels).
+ *     memory-mapped view of the whole file: touch only what you need (probe and readSize should not read
+ *     the pixels).
  *   - Do not throw C++ exceptions out of them, and do not call exit/abort. A crash inside a plugin crashes
  *     mpainter; on the next start mpainter tells the user which plugin it was and turns it off.
  */
@@ -46,13 +55,13 @@
 extern "C" {
 #endif
 
-#define MP_PLUGIN_API_VERSION 1u
+#define MP_PLUGIN_API_VERSION 2u
 
 /* Name of the RCDATA resource that holds the manifest, and of the exported entry point. */
 #define MP_PLUGIN_MANIFEST_NAME "MPAINTER_PLUGIN"
 #define MP_PLUGIN_ENTRY_NAME "mpPluginGetFuncs"
 
-/* probe() sees at most this many bytes from the start of the file (fewer if the file is shorter). */
+/* API version 1 only: probe() sees at most this many bytes from the start of the file. */
 #define MP_PLUGIN_PROBE_BYTES 64u
 
 /* Return codes of readSize() and decode(). */
@@ -81,10 +90,11 @@ typedef struct MpDecodeInfo {
 typedef struct MpPluginFuncs {
     uint32_t apiVersion; /* MP_PLUGIN_API_VERSION the plugin was built with */
 
-    /* Is this one of the plugin's formats? head = the first bytes of the file. Return the format index
-       (see Manifest) or -1. Look at the signature only; this is called for every file mpainter does not
-       recognise itself, so it must be fast. */
-    int32_t (*probe)(const uint8_t* head, size_t size);
+    /* Is this one of the plugin's formats? data = the whole file (API version 1: at most the first
+       MP_PLUGIN_PROBE_BYTES bytes). Return the format index (see Manifest) or -1. This is called for every
+       file that does not start like a PNG, JPEG, WebP or BMP file (TIFF files included), so it must be fast:
+       look at the signature and, if you have to, a few header fields. Check every offset against size. */
+    int32_t (*probe)(const uint8_t* data, size_t size);
 
     /* Width and height in pixels, as decode() will produce them (after applying any orientation stored in
        the file). Should read only the header. */

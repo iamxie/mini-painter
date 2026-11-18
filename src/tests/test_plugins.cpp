@@ -26,7 +26,7 @@ using namespace mp::test;
 
 namespace {
 
-const char kDefaultManifest[] = "api=1\nname=Test plugin\nversion=0.1\nformat=MPTEST image|.mpt\nformat=MPTEST other|.mpt2;.mpu\n";
+const char kDefaultManifest[] = "api=2\nname=Test plugin\nversion=0.1\nformat=MPTEST image|.mpt\nformat=MPTEST other|.mpt2;.mpu\n";
 
 std::wstring testPluginDll() { return exeDir() + L"mp_test_plugin.dll"; }
 std::wstring crashChildExe() { return exeDir() + L"mp_plugin_crash_child.exe"; }
@@ -56,7 +56,7 @@ std::wstring installPlugin(const std::wstring& pluginsDir, const std::wstring& i
 }
 
 std::string manifestWith(const char* formats) {
-    return std::string("api=1\nname=X\nversion=1\n") + formats;
+    return std::string("api=2\nname=X\nversion=1\n") + formats;
 }
 
 // MPTEST 檔：magic '1'（格式 0）或 '2'（格式 1）。
@@ -213,7 +213,7 @@ TEST_CASE("loadPlugins：只載入要啟用的；資訊、介面版本、匯出�
     installPlugin(dir, L"off", manifestWith("format=O|.off\n").c_str());
     installPlugin(dir, L"nomanifest");
     setManifest(dir + L"\\nomanifest\\nomanifest.dll", nullptr);
-    installPlugin(dir, L"newapi", "api=2\nname=N\nversion=1\nformat=N|.new\n");
+    installPlugin(dir, L"newapi", "api=3\nname=N\nversion=1\nformat=N|.new\n");
     installPlugin(dir, L"badapi", manifestWith("format=B|.bad\n").c_str());
     installPlugin(dir, L"nullentry", manifestWith("format=N|.nul\n").c_str());
     installPlugin(dir, L"noexport", manifestWith("format=E|.noe\n").c_str(), dllPath()); // 7z.dll 加上資訊：沒有 mpPluginGetFuncs
@@ -254,6 +254,7 @@ TEST_CASE("loadPlugins：衝突沒被排除時，副檔名給先載入的那個"
 TEST_CASE("isBundledPlugin：隨附的清單，不分大小寫") {
     CHECK(isBundledPlugin(L"jxl"));
     CHECK(isBundledPlugin(L"JXL"));
+    CHECK(isBundledPlugin(L"dng"));
     CHECK_FALSE(isBundledPlugin(L"mptest"));
 }
 
@@ -370,6 +371,82 @@ TEST_CASE("loadImage：plugin 也不認的照舊交給 WIC；空檔不交給 plu
     CHECK(r.info.pluginFormat.empty());
     writeBytes(p, "");
     CHECK_FALSE(loadImage(p).image);
+}
+
+TEST_CASE("介面 v2 的 probe 看得到整個檔；v1 的 plugin 照樣載入，probe 只看到檔頭") {
+    // 第 100 byte 是 'L' 才認：只看前 64 bytes 認不出來。
+    std::string bytes = mptBytes('L', 2, 2, 'O');
+    bytes.resize(101, '\0');
+    bytes[100] = 'L';
+    const std::wstring p = tempPath(L"long.mpt");
+    writeBytes(p, bytes);
+
+    const std::wstring v2 = freshDir(L"probe-v2");
+    installPlugin(v2, L"mptest");
+    auto results = activateAll(v2);
+    REQUIRE(results.size() == 1);
+    REQUIRE(results[0].error == PluginLoadError::None);
+    CHECK(activePlugins()->plugins()[0].manifest.api == 2);
+    LoadResult r = loadImage(p);
+    REQUIRE(r.error.ok());
+    CHECK(r.info.pluginFormat == L"MPTEST image");
+
+    const std::wstring v1 = freshDir(L"probe-v1");
+    installPlugin(v1, L"mptest", "api=1\nname=Old\nversion=1\nformat=MPTEST image|.mpt\nformat=MPTEST other|.mpt2;.mpu\n");
+    results = activateAll(v1);
+    REQUIRE(results.size() == 1);
+    CHECK(results[0].error == PluginLoadError::None);
+    r = loadImage(p);
+    CHECK_FALSE(r.image); // plugin 認不出來 → WIC 也解不開
+    CHECK(r.info.pluginFormat.empty());
+    const std::wstring q = tempPath(L"short-v1.mpt"); // 檔頭就認得出來的照常
+    writeBytes(q, mptBytes('1', 2, 2, 'O'));
+    r = loadImage(q);
+    REQUIRE(r.error.ok());
+    CHECK(r.info.pluginFormat == L"MPTEST image");
+}
+
+TEST_CASE("TIFF 檔頭的檔先問 plugin（像 DNG）；plugin 不認的照舊是內建 TIFF；PNG 不問 plugin") {
+    const std::wstring dir = freshDir(L"tiff-first");
+    installPlugin(dir, L"mptest");
+    activateAll(dir);
+
+    // 假的 DNG：TIFF 檔頭，第 100 byte 起是 "MPTIFF"；寬高、指令、顏色在 mptBytes 的位置。
+    std::string fake = mptBytes('1', 3, 2, 'O');
+    fake.replace(0, 8, std::string("II*\0\0\0\0\0", 8));
+    fake.resize(120, '\0');
+    fake.replace(100, 6, "MPTIFF");
+    const std::wstring p = tempPath(L"fake-dng.tif");
+    writeBytes(p, fake);
+    REQUIRE(detectImageFormat(p) == ImageFormat::Tiff);
+    LoadResult r = loadImage(p);
+    REQUIRE(r.error.ok());
+    CHECK(r.info.pluginFormat == L"MPTEST other");
+    CHECK(r.image->width == 3);
+    int w = 0, h = 0;
+    CHECK(readImageSize(p, w, h));
+    CHECK(w == 3);
+    CHECK(h == 2);
+    const std::wstring noext = tempPath(L"fake-dng-noext");
+    writeBytes(noext, fake);
+    CHECK(sniffImageExtension(noext) == L".mpt2");
+
+    const std::wstring t = tempPath(L"real.tif");
+    REQUIRE(saveImage(Image(4, 3), t));
+    r = loadImage(t);
+    REQUIRE(r.error.ok());
+    CHECK(r.info.format == ImageFormat::Tiff);
+    CHECK(r.info.pluginFormat.empty());
+    CHECK(readImageSize(t, w, h));
+    CHECK(w == 4);
+    CHECK(sniffImageExtension(t) == L".tif");
+
+    const std::wstring png = tempPath(L"really-png.mpt"); // 內容是 PNG，副檔名是 plugin 的
+    writeBytes(png, pngBytes(2, 2));
+    r = loadImage(png);
+    REQUIRE(r.error.ok());
+    CHECK(r.info.format == ImageFormat::Png);
+    CHECK(r.info.pluginFormat.empty());
 }
 
 TEST_CASE("sniffImageExtension：壓縮檔裡沒副檔名的檔，plugin 認得就補它的副檔名") {
@@ -585,7 +662,7 @@ TEST_CASE("pluginEnabled / enabledPluginIds：有紀錄看紀錄（只有 on 算
 TEST_CASE("pluginDisplayName、pluginStaticCheck；介面版本不同的不算衝突") {
     const std::wstring dir = freshDir(L"static");
     installPlugin(dir, L"a", manifestWith("format=A|.mpt\n").c_str());
-    installPlugin(dir, L"newapi", "api=2\nname=N\nversion=1\nformat=N|.mpt\n");
+    installPlugin(dir, L"newapi", "api=3\nname=N\nversion=1\nformat=N|.mpt\n");
     installPlugin(dir, L"nomanifest");
     setManifest(dir + L"\\nomanifest\\nomanifest.dll", nullptr);
     const auto entries = scanPlugins(dir);
@@ -754,7 +831,7 @@ TEST_CASE("pluginProblemText / pluginStatusText：用不了的原因、設定頁
     const std::wstring dir = freshDir(L"problem");
     installPlugin(dir, L"good");
     installPlugin(dir, L"invalid", "api=1\nname=I\nversion=1\n");
-    installPlugin(dir, L"newapi", "api=2\nname=N\nversion=1\nformat=N|.new\n");
+    installPlugin(dir, L"newapi", "api=3\nname=N\nversion=1\nformat=N|.new\n");
     installPlugin(dir, L"nomanifest");
     setManifest(dir + L"\\nomanifest\\nomanifest.dll", nullptr);
     writeBytes(dir + L"\\notpe\\notpe.dll", "x");
@@ -779,7 +856,7 @@ TEST_CASE("pluginProblemText / pluginStatusText：用不了的原因、設定頁
     CHECK(has(pluginProblemText(good, &incompatible), L"(mpPluginGetFuncs returned no usable table)"));
     CHECK(pluginProblemText(entry(L"invalid"), nullptr) == L"The plugin information is not valid. (bad manifest: no format)");
     CHECK(pluginProblemText(entry(L"newapi"), nullptr) ==
-          L"This plugin was made for a different version of mpainter. (plugin api 2, mpainter api 1)");
+          L"This plugin was made for a different version of mpainter. (plugin api 3, mpainter api 1-2)");
     CHECK(pluginProblemText(entry(L"nomanifest"), nullptr) == L"This is not an mpainter plugin. (no MPAINTER_PLUGIN resource)");
     CHECK(has(pluginProblemText(entry(L"notpe"), nullptr), L"The plugin file could not be read. (manifest unreadable, error "));
 

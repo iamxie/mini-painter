@@ -1,6 +1,9 @@
 // 測試用的讀圖 plugin（mp_test_plugin.dll）。測試把它複製成 plugins\<id>\<id>.dll，需要時改寫資訊資源。
+// 介面 v1、v2 都講：主程式照資訊的 api= 傳版本進來，回那一版的函式表（同一組函式）。
 // 檔案格式（小端序，24 bytes 檔頭）：
 //   0..7   "MPTEST1\0"（格式 0，.mpt）或 "MPTEST2\0"（格式 1，.mpt2 / .mpu）
+//          "MPTESTL\0"：第 100 byte 是 'L' 才認（格式 0）—— 要看到整個檔（v2）才認得出來
+//          "II*\0"（TIFF 檔頭）：第 100 起是 "MPTIFF" 才認（格式 1），像 DNG 一樣藏在 TIFF 裡
 //   8..11  寬   12..15 高   16 指令   17..20 B G R A   21..23 不用
 // 指令（decode）：'O' 照寬高填顏色；'D' 同 'O' 再給 300 × 150 dpi；'E' 回 MP_ERR_CORRUPT 加說明；
 //   'N' 回成功但沒配置；'A' 寫入 NULL（存取違規）；'F' __fastfail；'W' 睡 30 秒再成功（給「主程式別的執行緒當掉」的測試）。
@@ -31,11 +34,13 @@ void crash() {
     *p = 1;
 }
 
-int32_t probe(const uint8_t* head, size_t size) {
-    if (size >= 17 && head[16] == 'P' && std::memcmp(head, "MPTEST", 6) == 0) crash();
+int32_t probe(const uint8_t* data, size_t size) {
+    if (size >= 17 && data[16] == 'P' && std::memcmp(data, "MPTEST", 6) == 0) crash();
     if (size < 8) return -1;
-    if (std::memcmp(head, "MPTEST1\0", 8) == 0) return 0;
-    if (std::memcmp(head, "MPTEST2\0", 8) == 0) return 1;
+    if (std::memcmp(data, "MPTEST1\0", 8) == 0) return 0;
+    if (std::memcmp(data, "MPTEST2\0", 8) == 0) return 1;
+    if (std::memcmp(data, "MPTESTL\0", 8) == 0) return size > 100 && data[100] == 'L' ? 0 : -1;
+    if (std::memcmp(data, "II*\0", 4) == 0) return size >= 106 && std::memcmp(data + 100, "MPTIFF", 6) == 0 ? 1 : -1;
     return -1;
 }
 
@@ -74,6 +79,7 @@ int32_t decode(int32_t, const uint8_t* data, size_t size, const MpHost* host, Mp
 }
 
 const MpPluginFuncs kFuncs = {MP_PLUGIN_API_VERSION, probe, readSize, decode};
+const MpPluginFuncs kFuncsV1 = {1, probe, readSize, decode};
 const MpPluginFuncs kBadApiFuncs = {999, probe, readSize, decode};
 
 bool nameContains(const wchar_t* part) {
@@ -86,6 +92,8 @@ bool nameContains(const wchar_t* part) {
 } // namespace
 
 MP_PLUGIN_EXPORT const MpPluginFuncs* mpPluginGetFuncs(uint32_t hostApiVersion) {
-    if (nameContains(L"nullentry") || hostApiVersion != MP_PLUGIN_API_VERSION) return nullptr;
-    return nameContains(L"badapi") ? &kBadApiFuncs : &kFuncs;
+    if (nameContains(L"nullentry")) return nullptr;
+    if (nameContains(L"badapi")) return &kBadApiFuncs;
+    if (hostApiVersion == 1) return &kFuncsV1;
+    return hostApiVersion == MP_PLUGIN_API_VERSION ? &kFuncs : nullptr;
 }

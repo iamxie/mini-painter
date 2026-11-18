@@ -1,0 +1,19 @@
+DNG test fixtures (used by src/tests/test_plugin_dng.cpp)
+
+All three come from raw.pixls.us samples that are dedicated to the public domain (CC0 1.0).
+
+dng-sigma-fp-cfa.dng
+  Unchanged copy of "Sigma - fp - 8bit (16:9).DNG", https://raw.pixls.us/getfile.php/7280/
+  SHA-256 80ae0b8fdce3f58286fc194513c6ec0080ab07caca753408b00ca72c90e5ad0c
+  Bayer (CFA) raw, uncompressed, 1936 x 1090, DNG 1.4.
+
+dng-canon-proxy.dng
+  "Adobe DNG Converter - Canon EOS 5D Mark III - 16bit Lossless JPEG compression (3:2).DNG",
+  https://raw.pixls.us/getfile.php/1024/ (SHA-256 3118116735d4f6dd01fd9d6a80ee9aac52a2c2debdc6dcd112bd5e3059044a55),
+  made smaller with the Adobe DNG SDK 1.7.1 tool: dng_validate -proxy 320 -dng <out> <in>
+  Linear (demosaiced) raw, JPEG XL compressed, 320 x 213, DNG 1.7.
+
+dng-iphone-proxy.dng
+  "Apple - iPhone 12 Pro - 8bit (4:3).DNG", https://raw.pixls.us/getfile.php/4264/
+  (SHA-256 e91e77a4533ed7cce551d83330676ea5c47dd5e55fb38adda7819366afdbdfc2), same dng_validate command.
+  Linear raw, JPEG XL compressed, 320 x 240 stored with orientation 6 (shown as 240 x 320), DNG 1.7.

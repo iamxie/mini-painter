@@ -117,7 +117,9 @@ private:
     bool openArchive(const std::wstring& path, std::wstring* failMsg = nullptr, bool openLast = false);
     void closeArchive();                         // 刪這個壓縮檔的暫存、清狀態
     bool insideArchive(const std::wstring& path) const; // path 是不是目前壓縮檔解出來的檔
-    bool readOnly() const { return !archivePath_.empty(); }
+    // 唯讀：壓縮檔裡的圖（還能旋轉）、plugin 讀進來的圖（只能輸出成）。規則在 core/Commands 的 EditLock。
+    EditLock editLock() const { return editLockFor(!archivePath_.empty(), pluginImage_); }
+    bool readOnly() const { return editLock() != EditLock::None; }
     bool editGuard();                            // 唯讀時提示並回傳 false
     // 整張圖的動作（裁切、旋轉、調整尺寸、調色）。記憶體不夠時 Editor 丟 std::bad_alloc、文件不動：說一聲，回 false。
     bool runImageOp(const std::function<void()>& op);
@@ -312,6 +314,7 @@ private:
     bool tempDirStale_ = false;           // 設定面板改了暫存位置：目前這本看完（closeArchive）就在新位置重建
     int archiveSeq_ = 0;                  // 每開一個壓縮檔用一個子資料夾
     std::wstring archivePath_;            // 目前開的壓縮檔；空 = 不是壓縮檔
+    bool pluginImage_ = false;            // 目前的圖是 plugin 解的（唯讀，只能輸出成）
     std::wstring archiveDir_;             // 它解出來的資料夾
     std::vector<std::wstring> archiveFiles_; // 解出來的檔（磁碟檔名是序號），閱讀順序
     std::vector<std::wstring> archiveNames_; // 與 archiveFiles_ 同序的壓縮檔內名字，顯示用

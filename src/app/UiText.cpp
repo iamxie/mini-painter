@@ -203,9 +203,10 @@ std::wstring pluginProblemText(const PluginEntry& e, const PluginLoadResult* loa
     case ManifestError::None: break;
     }
     const wchar_t* otherVersion = trKey(L"This plugin was made for a different version of mpainter.");
-    if (m.manifest.api != kPluginApiVersion)
+    if (!pluginApiSupported(m.manifest.api))
         return fmt2(L"%s (%s)", trs(otherVersion),
-                    L"plugin api " + std::to_wstring(m.manifest.api) + L", mpainter api " + std::to_wstring(kPluginApiVersion));
+                    L"plugin api " + std::to_wstring(m.manifest.api) + L", mpainter api " + std::to_wstring(kPluginApiOldest) +
+                        L"-" + std::to_wstring(kPluginApiVersion));
     if (!loaded) return L"";
     switch (loaded->error) {
     case PluginLoadError::LoadFailed:
@@ -228,6 +229,17 @@ std::wstring pluginStatusText(const PluginEntry& e, bool checked, const PluginSe
     if (record && record->state == PluginState::Crashed) return tr(L"Disabled: it crashed mpainter");
     if (record && record->state == PluginState::Conflict) return tr(L"Disabled: conflicts with another plugin");
     return tr(L"Disabled");
+}
+
+std::wstring editLockText(EditLock lock) {
+    switch (lock) {
+    case EditLock::Archive:
+        return tr(L"This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it.");
+    case EditLock::Plugin:
+        return tr(L"This image was opened by a plugin and is read-only.\n\nUse Export As to save a copy in another format.");
+    case EditLock::None: break;
+    }
+    return L"";
 }
 
 } // namespace mp

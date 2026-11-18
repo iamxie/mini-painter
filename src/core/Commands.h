@@ -80,6 +80,12 @@ struct CommandState {
 // 這個指令現在能不能用。選單的灰色、工具列按鈕、快捷鍵都用它。語言與模式的 id 一律可用。
 bool commandEnabled(int id, const CommandState& s);
 
+// 這張圖為什麼不能編輯。壓縮檔裡的圖：不能編輯與儲存，旋轉當成看圖動作照樣可以；
+// plugin 讀進來的圖（不管在不在壓縮檔裡）：只負責讀與顯示，連旋轉都不行，只能「輸出成」。
+enum class EditLock { None, Archive, Plugin };
+EditLock editLockFor(bool inArchive, bool fromPlugin);
+bool rotateAllowed(EditLock lock);
+
 // 鍵盤：虛擬鍵碼加 Ctrl / Shift 的狀態對應到哪個指令；不是指令回 IDM_NONE。
 // 選單沒寫出來的也在這裡：Ctrl+Shift+Z 重做、Backspace 刪除、PageUp / PageDown 與 ← → 翻頁。
 // ← → 在有選取物件時是微移物件，那個情況由呼叫端先處理。

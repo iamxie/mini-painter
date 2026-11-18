@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "core/Image.h"
+#include "core/ImageFormat.h"
 #include "core/IoError.h"
 #include "core/PluginManifest.h"
 #include "core/PluginRun.h"
@@ -18,8 +19,15 @@ struct Settings; // core/Settings.h
 // 流程：scanPlugins（只讀資訊）→ 呼叫端決定要啟用哪些、排除衝突 → loadPlugins → setActivePlugins。
 // 之後副檔名表（ImageFormat）、開檔（ImageIO）、壓縮檔裡沒副檔名的檔（Archive）都會問生效中的 plugin。
 
-// 這個主程式的 plugin 介面版本（= SDK 的 MP_PLUGIN_API_VERSION）。
-constexpr unsigned kPluginApiVersion = 1;
+// 這個主程式的 plugin 介面版本（= SDK 的 MP_PLUGIN_API_VERSION），與還接受的最舊版本。
+// 載入時照資訊宣告的版本和 plugin 講話：v1 的 probe 只給檔頭（MP_PLUGIN_PROBE_BYTES），v2 給整個檔。
+constexpr unsigned kPluginApiVersion = 2;
+constexpr unsigned kPluginApiOldest = 1;
+bool pluginApiSupported(unsigned api);
+
+// 檔頭是這個內建格式（或認不得）的檔，要先問 plugin、沒有 plugin 認才走內建：TIFF 是很多格式的容器
+// （DNG、NEF、CR2 的檔頭都和 TIFF 一樣）。PNG、JPEG、WebP、BMP 直接走內建，不問 plugin。
+bool askPluginsFirst(ImageFormat format);
 
 // exe 旁的 plugins 資料夾。
 std::wstring pluginsDirForExe(const std::wstring& exeDir);
@@ -45,7 +53,7 @@ std::vector<std::wstring> pluginEffectiveExtensions(const PluginEntry& e);
 enum class PluginLoadError {
     None,
     BadManifest,  // 資訊讀不到或不合格（PluginEntry::manifest 有原因）
-    ApiMismatch,  // 資訊宣告的介面版本不是這個主程式的
+    ApiMismatch,  // 資訊宣告的介面版本這個主程式不支援
     LoadFailed,   // LoadLibrary 失敗（systemError）
     NoEntry,      // 沒有匯出 mpPluginGetFuncs
     Incompatible, // mpPluginGetFuncs 回 NULL、版本不對、或少了函式
@@ -55,7 +63,7 @@ struct PluginLoadResult {
     PluginLoadError error = PluginLoadError::None;
     unsigned long systemError = 0;
 };
-// 不必載入就看得出來的問題：資訊讀不到或不合格（BadManifest）、介面版本不同（ApiMismatch）。沒問題回 None。
+// 不必載入就看得出來的問題：資訊讀不到或不合格（BadManifest）、介面版本不支援（ApiMismatch）。沒問題回 None。
 PluginLoadError pluginStaticCheck(const PluginEntry& e);
 
 // 兩個以上要啟用的 plugin 認同一個副檔名。
@@ -154,9 +162,8 @@ struct PluginMatch {
     // 這個格式實際接手的第一個副檔名（給壓縮檔裡沒副檔名的檔補上）；這個格式的都被內建拿走時用這個 plugin 的第一個。
     std::wstring extension() const;
 };
-// 看檔頭（最多 MP_PLUGIN_PROBE_BYTES）問每個 plugin 的 probe，第一個認的接手。path 只記在當掉紀錄裡。
-PluginMatch matchPluginFormat(const unsigned char* head, size_t size, const std::wstring& path);
-// 讀檔頭再 matchPluginFormat。讀不到回空的。
+// 整個檔映射進來，問每個 plugin 的 probe（v1 的只給檔頭），第一個認的接手。
+// 讀不到、空檔、probe 期間檔案被截短都回空的。
 PluginMatch matchPluginFile(const std::wstring& path);
 
 // 讀寬高（plugin 的 readSize）。失敗回 false。

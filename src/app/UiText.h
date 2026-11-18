@@ -3,6 +3,7 @@
 #include <vector>
 
 #include "core/Archive.h"
+#include "core/Commands.h"
 #include "core/IoError.h"
 #include "core/Metadata.h"
 #include "core/Plugins.h"
@@ -50,5 +51,8 @@ std::wstring pluginConflictText(const std::vector<std::wstring>& names, const Pl
 std::wstring pluginProblemText(const PluginEntry& e, const PluginLoadResult* loaded);
 // 設定頁的狀態欄。checked：面板上勾著沒有；record：設定裡的紀錄（沒有是 nullptr）；loaded 同上。
 std::wstring pluginStatusText(const PluginEntry& e, bool checked, const PluginSetting* record, const PluginLoadResult* loaded);
+
+// 想編輯唯讀的圖時的說明（core/Commands 的 EditLock）。None 是空字串。
+std::wstring editLockText(EditLock lock);
 
 } // namespace mp

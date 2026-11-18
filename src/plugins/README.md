@@ -1,11 +1,16 @@
 # Writing an image plugin for mpainter
 
-A plugin teaches mpainter to open another image format. It only reads: saving and "Export As"
-still write one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP).
+A plugin teaches mpainter to open another image format. It only reads and renders. An image opened
+through a plugin is read-only in mpainter: the user can view it and use "Export As", which writes
+one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP). Editing, rotating and saving are off.
 
 - Interface: [`sdk/mpainter_plugin.h`](sdk/mpainter_plugin.h). It is plain C. Everything below is
   a summary of that header, and the header is the one to follow.
 - Example: [`jxl/`](jxl), the JPEG XL plugin that ships with mpainter (libjxl).
+- [`dng/`](dng) is the other bundled plugin: DNG through the Adobe DNG SDK (source in
+  `../third_party/dng_sdk`). Its `probe` reads the TIFF header and the first IFD, which is why
+  version 2 of the interface hands `probe` the whole file. This product includes DNG technology
+  under license by Adobe.
 
 ## What a plugin is
 
@@ -18,7 +23,7 @@ still write one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP).
   it on:
 
   ```
-  api=1
+  api=2
   name=My Format
   version=1.0.0
   format=My Format image|.myf;.myf2
@@ -27,7 +32,7 @@ still write one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP).
   Add one `format=` line per format: a display name, `|`, then the extensions, separated by `;`.
   A format's index is the position of its line, counting from 0.
 - One exported function, `mpPluginGetFuncs`, returns a table of three functions:
-  - `probe`: is this file mine? It gets the first 64 bytes.
+  - `probe`: is this file mine? It gets the whole file (with `api=1`, only the first 64 bytes).
   - `readSize`: width and height.
   - `decode`: the pixels.
 
@@ -41,8 +46,9 @@ still write one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP).
 - Only the first image (or frame) is shown.
 - The functions may be called at the same time from several threads.
 - The functions get a read-only view of the whole file. Do not open the file yourself.
-- `probe` runs for every file that mpainter does not recognise itself. Keep it to a signature
-  check.
+- `probe` runs for every file that does not start like a PNG, JPEG, WebP or BMP file, TIFF files
+  included (DNG, for example, is a TIFF file inside). Keep it to a signature check and, if you need
+  to, a few header fields. Check every offset against the size.
 - Never let a C++ exception or `abort()` leave the plugin. On failure, return an `MP_ERR_*` code
   and put a short English reason in `info->message`. The user sees that text as it is.
 - Extensions that mpainter opens by itself (`.png`, `.jpg`, `.zip`, ...) are never given to a

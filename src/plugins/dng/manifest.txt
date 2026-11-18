@@ -1,0 +1,4 @@
+api=2
+name=DNG
+version=1.0.0
+format=Adobe DNG image|.dng

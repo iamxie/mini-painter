@@ -1,4 +1,4 @@
-api=1
+api=2
 name=Test plugin
 version=0.1
 format=MPTEST image|.mpt

@@ -772,6 +772,7 @@ void MainWindow::showLoadError(const std::wstring& path, const std::wstring& mes
     }
     loadError_ = message;
     editor_.reset(nullptr);
+    pluginImage_ = false;
     second_.reset();
     secondPath_.clear();
     secondError_.clear();
@@ -838,6 +839,7 @@ bool MainWindow::showPage(const std::wstring& path, bool inArchive, bool landAtB
     }
     loadError_.clear();
     editor_.reset(r.image, r.dpi);
+    pluginImage_ = !r.info.pluginFormat.empty();
     second_.reset();
     secondPath_.clear();
     secondError_.clear();
@@ -971,8 +973,7 @@ void MainWindow::closeArchive() {
 bool MainWindow::editGuard() {
     if (!readOnly()) return true;
     endTextEdit(false);
-    showMessage(hwnd_, tr(L"This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it."),
-                TD_INFORMATION_ICON);
+    showMessage(hwnd_, editLockText(editLock()), TD_INFORMATION_ICON);
     return false;
 }
 
@@ -2372,6 +2373,10 @@ bool MainWindow::runImageOp(const std::function<void()>& op) {
 
 void MainWindow::rotateImage() {
     if (!doc_.image()) return; // 壓縮檔內也能轉：當成檢視動作，翻頁就重置
+    if (!rotateAllowed(editLock())) { // plugin 讀進來的圖：只能輸出成
+        editGuard();
+        return;
+    }
     endInteraction(true);
     if (!runImageOp([&] { editor_.rotateCCW(); })) return;
     if (readOnly()) doc_.markSaved(); // 唯讀：旋轉不算修改，標題不加 *

@@ -1321,8 +1321,9 @@ LoadResult loadImage(const std::wstring& path) {
     try {
         const ImageFormat format = detectImageFormat(path);
         if (format == ImageFormat::WebP) return loadWebP(path);
-        // 內建認不得的才問 plugin；plugin 也不認的交給 WIC（系統裝的 codec，例如 GIF）。
-        if (format == ImageFormat::Unknown)
+        // TIFF 檔頭（可能是 DNG 這類以 TIFF 為容器的格式）與認不得的先問 plugin；plugin 不認的交給 WIC
+        // （內建的 TIFF，或系統裝的 codec，例如 GIF）。
+        if (askPluginsFirst(format))
             if (PluginMatch m = matchPluginFile(path)) return loadWithPlugin(m, path);
         return loadWithWic(path);
     } catch (const std::bad_alloc&) {
@@ -1344,8 +1345,8 @@ bool readImageSize(const std::wstring& path, int& width, int& height) {
     int orientation = 1;
     unsigned w = 0, hh = 0;
     const ImageFormat format = sniffImageFormat(head, got);
-    if (format == ImageFormat::Unknown) {
-        if (PluginMatch m = matchPluginFormat(head, got, path)) {
+    if (askPluginsFirst(format)) {
+        if (PluginMatch m = matchPluginFile(path)) {
             CloseHandle(h);
             return pluginReadSize(m, path, width, height); // plugin 給的已經是轉過方向的寬高
         }

@@ -488,3 +488,5 @@ Plugins=プラグイン
 Plugins let mpainter open more file types. Check a plugin to enable it. Changes take effect after mpainter restarts; it asks when this window closes.=プラグインを入れると、mpainter で開けるファイルの種類が増えます。チェックすると有効になります。変更は mpainter の再起動後に反映されます。このウィンドウを閉じるときに確認します。
 The language and plugin changes take effect the next time mpainter starts.\n\nRestart now?=言語とプラグインの変更は、次に mpainter を起動したときに反映されます。\n\n今すぐ再起動しますか？
 Plugin changes take effect the next time mpainter starts.\n\nRestart now?=プラグインの変更は、次に mpainter を起動したときに反映されます。\n\n今すぐ再起動しますか？
+# --- v1.2：plugin 讀進來的圖唯讀 ---
+This image was opened by a plugin and is read-only.\n\nUse Export As to save a copy in another format.=この画像はプラグインで読み込んだため読み取り専用です。\n\n残すには「書き出し」で別の形式のコピーを保存してください。

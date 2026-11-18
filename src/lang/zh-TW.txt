@@ -466,3 +466,5 @@ Plugins=Plugin
 Plugins let mpainter open more file types. Check a plugin to enable it. Changes take effect after mpainter restarts; it asks when this window closes.=plugin 讓 mpainter 能開更多種檔案。勾選就是啟用。變更要重新啟動 mpainter 才會生效；關掉這個視窗時會問要不要重新啟動。
 The language and plugin changes take effect the next time mpainter starts.\n\nRestart now?=語言與 plugin 的變更會在下次啟動 mpainter 時生效。\n\n要現在重新啟動嗎？
 Plugin changes take effect the next time mpainter starts.\n\nRestart now?=plugin 的變更會在下次啟動 mpainter 時生效。\n\n要現在重新啟動嗎？
+# --- v1.2：plugin 讀進來的圖唯讀 ---
+This image was opened by a plugin and is read-only.\n\nUse Export As to save a copy in another format.=這張圖片由 plugin 讀取，唯讀。\n\n要留一份請用「輸出成」存成其他格式。

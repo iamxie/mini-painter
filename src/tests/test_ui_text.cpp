@@ -186,3 +186,11 @@ TEST_CASE("updateErrorText：路徑與狀態碼填進句子，系統錯誤加系
     CHECK(updateFailureText(e) == L"下載失敗：伺服器回應 HTTP 500");
     setActiveLang({});
 }
+
+TEST_CASE("editLockText：壓縮檔與 plugin 各一句說明，沒鎖是空字串") {
+    CHECK(editLockText(EditLock::None).empty());
+    CHECK(editLockText(EditLock::Archive).find(L"inside an archive and is read-only") != std::wstring::npos);
+    const std::wstring plugin = editLockText(EditLock::Plugin);
+    CHECK(plugin.find(L"opened by a plugin and is read-only") != std::wstring::npos);
+    CHECK(plugin.find(L"Export As") != std::wstring::npos);
+}

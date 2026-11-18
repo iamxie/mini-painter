@@ -3,12 +3,13 @@ mpainter — 輕量圖片檢視與標註工具
 
 免安裝（portable）。主程式是 mpainter.exe 一個檔案，放哪裡都能跑，
 不需要 Visual C++ 可轉散發套件。旁邊的 7z.dll 只給「看壓縮檔」用，
-plugins\jxl 只給開 JPEG XL 用，不需要這些功能可以刪掉。
+plugins\jxl 與 plugins\dng 只給開 JPEG XL 與 DNG 用，不需要這些功能可以刪掉。
 
 使用方式
 --------
 - 把圖片拖到視窗上、「檔案 > 開啟」，或在命令列給路徑：mpainter.exe 圖片或資料夾
-- 支援 BMP、TIFF、JPEG、PNG、WebP；隨附的 plugin 再加上 JPEG XL（.jxl，只能開），見下方「讀圖 plugin」。
+- 支援 BMP、TIFF、JPEG、PNG、WebP；隨附的 plugin 再加上 JPEG XL（.jxl）與 DNG（.dng，相機的 raw 檔），
+  這兩種只能看與「輸出成」，見下方「讀圖 plugin」。
 - 也能直接開 zip / 7z / rar（含 .cbz / .cb7 / .cbr）壓縮檔，把裡面的圖片當一個資料夾翻頁，見下方「壓縮檔」。
 - ← → 翻同資料夾的上一張 / 下一張。開資料夾時從第一張開始。翻到底會提示「已經是最後一張了」。
 - 看漫畫時把「顯示 > 翻到底時接著看下一個資料夾或壓縮檔」打開（預設關；內建的「漫畫模式」是開的）：
@@ -96,8 +97,12 @@ plugins\jxl 只給開 JPEG XL 用，不需要這些功能可以刪掉。
 
 讀圖 plugin
 -----------
-- plugin 讓 mpainter 能開更多種圖片格式。只能開，存檔時照樣只有上面五種格式（按儲存會問新檔名）。
+- plugin 讓 mpainter 能開更多種圖片格式。plugin 開的圖是唯讀的：可以看，也可以「輸出成」上面五種格式；
+  不能標註、調整、旋轉、儲存（按了會跳說明）。
 - 隨附 JPEG XL 的 plugin（plugins\jxl\jxl.dll，用 libjxl），預設啟用。動畫只顯示第一格。
+- 隨附 DNG 的 plugin（plugins\dng\dng.dll，用 Adobe DNG SDK），預設啟用。照檔案裡記錄的相機設定沖洗成
+  8 位元 sRGB，含檔案裡記錄的鏡頭校正；檔案裡有 Lightroom 增強過的影像時顯示那一張。2000 多萬畫素的檔，
+  4 核心的電腦約 1～2 秒。檔案裡的 XMP 不讀；Blackmagic 攝影機 3:1 有損壓縮的 DNG 開不了。
 - 別人做的 plugin：放成 plugins\<名稱>\<名稱>.dll，到「編輯 > 設定 > Plugin」勾選，
   重新啟動 mpainter 才生效。新放進來的預設不啟用。
 - plugin 在 mpainter 裡面執行。plugin 讓 mpainter 當掉時，下次啟動會停用它並告訴你；
@@ -161,6 +166,10 @@ mpainter 會先把自己登錄到清單裡，並開啟上面的設定頁。
 開放原始碼，Apache License 2.0（授權全文見 LICENSE，版權聲明見 NOTICE）。
 使用 libwebp（Google，BSD-3-Clause）、bit7z（MPL 2.0），並在執行時載入 7-Zip 的 7z.dll
 （GNU LGPL 2.1，RAR 解碼部分附 unRAR 限制）。JPEG XL 的 plugin 使用 libjxl（BSD-3-Clause，
-附 Google 的專利授權）、Highway（BSD-3-Clause）、Brotli 與 Little CMS（MIT）。授權全文見 THIRD-PARTY-NOTICES.txt。
+附 Google 的專利授權）、Highway（BSD-3-Clause）、Brotli 與 Little CMS（MIT）。DNG 的 plugin 使用
+Adobe DNG SDK（Adobe 的 DNG SDK License Agreement）、它附的 libjpeg（Independent JPEG Group）與 zlib，
+外加同一份 libjxl、Highway、Brotli、Little CMS。授權全文見 THIRD-PARTY-NOTICES.txt。
+This product includes DNG technology under license by Adobe.
+This software is based in part on the work of the Independent JPEG Group.
 7z.dll 未經修改；對應版本的 7-Zip 原始碼隨每次發佈一起提供，也可到 https://www.7-zip.org 取得。
 原始碼和建置方式見專案的 project_info.md。

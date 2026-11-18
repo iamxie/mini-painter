@@ -3,14 +3,15 @@ mpainter - a lightweight image viewer and annotator
 
 Portable. The program is the single file mpainter.exe; run it from anywhere.
 No Visual C++ Redistributable needed. The 7z.dll next to it is only used for viewing
-archives, and plugins\jxl only for opening JPEG XL; delete them if you do not need that.
+archives, and plugins\jxl and plugins\dng only for opening JPEG XL and DNG; delete them if you
+do not need that.
 
 Usage
 -----
 - Drop an image onto the window, use File > Open, or pass a path on the command line:
   mpainter.exe <image or folder>
-- Supports BMP, TIFF, JPEG, PNG, WebP; the bundled plugin adds JPEG XL (.jxl, open only).
-  See "Image plugins" below.
+- Supports BMP, TIFF, JPEG, PNG, WebP; the bundled plugins add JPEG XL (.jxl) and DNG (.dng,
+  camera raw), which you can view and export but not edit. See "Image plugins" below.
 - Also opens zip / 7z / rar archives (including .cbz / .cb7 / .cbr) and pages through the
   images inside as if they were a folder; see "Archives" below.
 - Left / Right arrows go to the previous / next image in the same folder. Opening a folder
@@ -137,10 +138,16 @@ Updates
 
 Image plugins
 -------------
-- Plugins let mpainter open more image formats. They only open files; saving still offers the
-  five formats above (Save asks for a new file name).
+- Plugins let mpainter open more image formats. An image opened through a plugin is read-only:
+  you can view it and use Export As (one of the five formats above), but not mark it up, adjust,
+  rotate or save it (trying says so).
 - The JPEG XL plugin (plugins\jxl\jxl.dll, using libjxl) is bundled and on by default.
   Animations show the first frame only.
+- The DNG plugin (plugins\dng\dng.dll, using the Adobe DNG SDK) is bundled and on by default.
+  It renders the raw data with the camera settings stored in the file, to 8-bit sRGB, including
+  the lens corrections stored in the file; when the file has an image enhanced by Lightroom, that
+  one is shown. A 20-odd-megapixel file takes about 1 to 2 seconds on a 4-core computer. XMP in
+  the file is not read; 3:1 lossy compressed DNG from Blackmagic cameras does not open.
 - Plugins made by others: put them in plugins\<name>\<name>.dll, tick them in
   Edit > Settings > Plugins and restart mpainter. New ones start disabled.
 - Plugins run inside mpainter. If a plugin crashes mpainter, the next start disables it and
@@ -210,6 +217,10 @@ Open source under the Apache License 2.0 (full text in LICENSE, notices in NOTIC
 Uses libwebp (Google, BSD-3-Clause) and bit7z (MPL 2.0), and loads 7-Zip's 7z.dll at run
 time (GNU LGPL 2.1; the RAR decoder carries the unRAR restriction). The JPEG XL plugin uses
 libjxl (BSD-3-Clause, with Google's patent grant), Highway (BSD-3-Clause), Brotli and Little CMS
-(MIT). Full license texts are in THIRD-PARTY-NOTICES.txt. 7z.dll is unmodified; the matching 7-Zip source code is published
+(MIT). The DNG plugin uses the Adobe DNG SDK (Adobe's DNG SDK License Agreement), the libjpeg
+that comes with it (Independent JPEG Group) and zlib, plus the same libjxl, Highway, Brotli and
+Little CMS. Full license texts are in THIRD-PARTY-NOTICES.txt.
+This product includes DNG technology under license by Adobe.
+This software is based in part on the work of the Independent JPEG Group. 7z.dll is unmodified; the matching 7-Zip source code is published
 with every release and at https://www.7-zip.org.
 Source code and build instructions: project_info.md in the repository.

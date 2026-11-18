@@ -18,6 +18,17 @@ loads at run time. It statically links:
   7. Brotli   - compression used by libjxl        - MIT
   8. Little CMS (lcms2) - color management used by libjxl - MIT
 
+The DNG plugin (plugins\dng\dng.dll) is a separate DLL that mpainter loads
+at run time. This product includes DNG technology under license by Adobe.
+The DNG plugin statically links:
+
+  9. Adobe DNG SDK 1.7.1 - reads and renders DNG files - DNG SDK License Agreement (Adobe)
+ 10. libjpeg 9c - comes with the DNG SDK - Independent JPEG Group license
+ 11. zlib 1.3.2 - deflate used by the DNG SDK - zlib license
+  and the same libjxl, Highway, Brotli and Little CMS as the JPEG XL plugin (5 to 8).
+
+This software is based in part on the work of the Independent JPEG Group.
+
 -----------------------------------------------------------------------
 libwebp (https://chromium.googlesource.com/webm/libwebp)
 Used for decoding and encoding WebP images.
@@ -1336,3 +1347,195 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+-----------------------------------------------------------------------
+Adobe DNG SDK 1.7.1, build 2802 (https://helpx.adobe.com/camera-raw/digital-negative.html)
+Reads and renders DNG files in the DNG plugin. Statically linked.
+This product includes DNG technology under license by Adobe.
+Source code: src/third_party/dng_sdk in the mpainter repository
+(https://github.com/iamxie/mini-painter). The changes made for mpainter are
+listed in src/third_party/dng_sdk/MODIFICATIONS.txt.
+The DNG Specification patent license is on the page above
+("DNG Specification patent license").
+License: DNG SDK License Agreement (below, as shipped with the SDK).
+-----------------------------------------------------------------------
+
+DNG SDK License Agreement
+
+NOTICE TO USER: Adobe Inc. provides the Software and Documentation for
+use under the terms of this Agreement. Any download, installation,
+use, reproduction, modification or distribution of the Software or
+Documentation, or any derivatives or portions thereof, constitutes
+your acceptance of this Agreement.
+
+As used in this Agreement,
+
+"Adobe" means Adobe Inc.
+
+"Software" means the software code, in any format, including sample
+code and source code, accompanying this Agreement.
+
+"Documentation" means the documents, specifications and all other
+items accompanying this Agreement other than the Software.
+
+1. LICENSE GRANT Software License. Subject to the restrictions below
+and other terms of this Agreement, Adobe hereby grants you a
+non-exclusive, worldwide, royalty free license to use, reproduce,
+prepare derivative works from, publicly display, publicly perform,
+distribute and sublicense the Software for any purpose.
+
+Document License. Subject to the terms of this Agreement, Adobe hereby
+grants you a non-exclusive, worldwide, royalty free license to make a
+limited number of copies of the Documentation for your development
+purposes and to publicly display, publicly perform and distribute such
+copies. You may not modify the Documentation.
+
+2. RESTRICTIONS AND OWNERSHIP You will not remove any copyright or
+other notice included in the Software or Documentation and you will
+include such notices in any copies of the Software that you distribute
+in human-readable format.
+
+You will not copy, use, display, modify or distribute the Software or
+Documentation in any manner not permitted by this Agreement. No title
+to the intellectual property in the Software or Documentation is
+transferred to you under the terms of this Agreement. You do not
+acquire any rights to the Software or the Documentation except as
+expressly set forth in this Agreement. All rights not granted are
+reserved by Adobe.
+
+3. DISCLAIMER OF WARRANTY ADOBE PROVIDES THE SOFTWARE AND
+DOCUMENTATION ONLY ON AN "AS IS" BASIS WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING WITHOUT
+LIMITATION ANY WARRANTIES OR CONDITIONS OF TITLE, NON-INFRINGEMENT,
+MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE. ADOBE MAKES NO
+WARRANTY THAT THE SOFTWARE OR DOCUMENTATION WILL BE ERROR-FREE. To the
+extent permissible, any warranties that are not and cannot be excluded
+by the foregoing are limited to ninety (90) days.
+
+4. LIMITATION OF LIABILITY ADOBE AND ITS SUPPLIERS SHALL NOT BE LIABLE
+FOR LOSS OR DAMAGE ARISING OUT OF THIS AGREEMENT OR FROM THE USE OF
+THE SOFTWARE OR DOCUMENTATION. IN NO EVENT WILL ADOBE BE LIABLE TO YOU
+OR ANY THIRD PARTY FOR ANY DIRECT, INDIRECT, CONSEQUENTIAL,
+INCIDENTAL, OR SPECIAL DAMAGES INCLUDING LOST PROFITS, LOST SAVINGS,
+COSTS, FEES, OR EXPENSES OF ANY KIND ARISING OUT OF ANY PROVISION OF
+THIS AGREEMENT OR THE USE OR THE INABILITY TO USE THE SOFTWARE OR
+DOCUMENTATION, HOWEVER CAUSED AND UNDER ANY THEORY OF LIABILITY,
+WHETHER IN CONTRACT, STRICT LIABILITY OR TORT (INCLUDING NEGLIGENCE OR
+OTHERWISE), EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+ADOBE'S AGGREGATE LIABILITY AND THAT OF ITS SUPPLIERS UNDER OR IN
+CONNECTION WITH THIS AGREEMENT SHALL BE LIMITED TO THE AMOUNT PAID BY
+YOU FOR THE SOFTWARE AND DOCUMENTATION.
+
+5. INDEMNIFICATION If you choose to distribute the Software in a
+commercial product, you do so with the understanding that you agree to
+defend, indemnify and hold harmless Adobe against any losses, damages
+and costs arising from the claims, lawsuits or other legal actions
+arising out of such distribution.
+
+6. TRADEMARK USAGE Adobe and the DNG logo are the trademarks or
+registered trademarks of Adobe Inc. in the United States and other
+countries. Such trademarks may not be used to endorse or promote any
+product unless expressly permitted under separate agreement with
+Adobe. For information on how to license the DNG logo please go to
+www.adobe.com.
+
+7. TERM Your rights under this Agreement shall terminate if you fail
+to comply with any of the material terms or conditions of this
+Agreement. If all your rights under this Agreement terminate, you will
+immediately cease use and distribution of the Software and
+Documentation.
+
+8. GOVERNING LAW AND JURISDICTION This Agreement is governed by the
+statutes and laws of the State of California, without regard to the
+conflicts of law principles thereof. The federal and state courts
+located in Santa Clara County, California, USA, will have
+non-exclusive jurisdiction over any dispute arising out of this
+Agreement.
+
+9. GENERAL This Agreement supersedes any prior agreement, oral or
+written, between Adobe and you with respect to the licensing to you of
+the Software and Documentation. No variation of the terms of this
+Agreement will be enforceable against Adobe unless Adobe gives its
+express consent in writing signed by an authorized signatory of Adobe.
+If any part of this Agreement is found void and unenforceable, it will
+not affect the validity of the balance of the Agreement, which shall
+remain valid and enforceable according to its terms.
+
+For licensing information on the DNG File Format Specification, which
+is not included in the DNG SDK, please visit:
+https://helpx.adobe.com/camera-raw/digital-negative.html
+
+-----------------------------------------------------------------------
+libjpeg 9c (Independent JPEG Group, https://www.ijg.org)
+Comes with the DNG SDK, which uses it for JPEG compressed DNG data.
+Statically linked, unmodified. Source code: src/third_party/dng_sdk/libjpeg
+(with the IJG's README).
+This software is based in part on the work of the Independent JPEG Group.
+-----------------------------------------------------------------------
+
+In legalese:
+
+The authors make NO WARRANTY or representation, either express or implied,
+with respect to this software, its quality, accuracy, merchantability, or
+fitness for a particular purpose.  This software is provided "AS IS", and you,
+its user, assume the entire risk as to its quality and accuracy.
+
+This software is copyright (C) 1991-2018, Thomas G. Lane, Guido Vollbeding.
+All Rights Reserved except as specified below.
+
+Permission is hereby granted to use, copy, modify, and distribute this
+software (or portions thereof) for any purpose, without fee, subject to these
+conditions:
+(1) If any part of the source code for this software is distributed, then this
+README file must be included, with this copyright and no-warranty notice
+unaltered; and any additions, deletions, or changes to the original files
+must be clearly indicated in accompanying documentation.
+(2) If only executable code is distributed, then the accompanying
+documentation must state that "this software is based in part on the work of
+the Independent JPEG Group".
+(3) Permission for use of this software is granted only if the user accepts
+full responsibility for any undesirable consequences; the authors accept
+NO LIABILITY for damages of any kind.
+
+These conditions apply to any software derived from or based on the IJG code,
+not just to the unmodified library.  If you use our work, you ought to
+acknowledge us.
+
+Permission is NOT granted for the use of any IJG author's name or company name
+in advertising or publicity relating to this software or products derived from
+it.  This software may be referred to only as "the Independent JPEG Group's
+software".
+
+We specifically permit and encourage the use of this software as the basis of
+commercial products, provided that all warranty or liability claims are
+assumed by the product vendor.
+
+-----------------------------------------------------------------------
+zlib 1.3.2 (https://zlib.net)
+Deflate decompression used by the DNG SDK. Statically linked, unmodified
+(built via vcpkg).
+License: zlib license.
+-----------------------------------------------------------------------
+
+Copyright notice:
+
+ (C) 1995-2026 Jean-loup Gailly and Mark Adler
+
+  This software is provided 'as-is', without any express or implied
+  warranty.  In no event will the authors be held liable for any damages
+  arising from the use of this software.
+
+  Permission is granted to anyone to use this software for any purpose,
+  including commercial applications, and to alter it and redistribute it
+  freely, subject to the following restrictions:
+
+  1. The origin of this software must not be misrepresented; you must not
+     claim that you wrote the original software. If you use this software
+     in a product, an acknowledgment in the product documentation would be
+     appreciated but is not required.
+  2. Altered source versions must be plainly marked as such, and must not be
+     misrepresented as being the original software.
+  3. This notice may not be removed or altered from any source distribution.
+
+  Jean-loup Gailly        Mark Adler
+  jloup@gzip.org          madler@alumni.caltech.edu

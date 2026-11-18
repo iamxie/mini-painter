@@ -48,9 +48,9 @@ void orientedSize(const JxlBasicInfo& bi, int32_t* width, int32_t* height) {
     *height = static_cast<int32_t>(swap ? bi.xsize : bi.ysize);
 }
 
-int32_t probe(const uint8_t* head, size_t size) {
-    // A bare codestream starts with FF 0A; the container with the 12-byte "JXL " box.
-    const JxlSignature sig = JxlSignatureCheck(head, size);
+int32_t probe(const uint8_t* data, size_t size) {
+    // A bare codestream starts with FF 0A; the container with the 12-byte "JXL " box. The signature is enough.
+    const JxlSignature sig = JxlSignatureCheck(data, size);
     return (sig == JXL_SIG_CODESTREAM || sig == JXL_SIG_CONTAINER) ? 0 : -1;
 }
 

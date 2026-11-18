@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 1.1.0 LANGUAGES CXX)
+project(mpainter VERSION 1.1.1 LANGUAGES C CXX) # C：DNG SDK 附的 libjpeg
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -113,6 +113,39 @@ target_include_directories(mp_plugin_jxl SYSTEM PRIVATE "${MP_JXL_INCLUDE}")
 target_compile_definitions(mp_plugin_jxl PRIVATE ${MP_JXL_DEFS})
 target_link_libraries(mp_plugin_jxl PRIVATE ${MP_JXL_LIBS})
 
+# Adobe DNG SDK 1.7.1（DNG SDK License Agreement，src/third_party/dng_sdk/LICENSE.txt）與它附的 libjpeg 9c（IJG）。
+# 第三方原始碼照 SDK 自己的 Windows 設定編：換掉我們的警告設定（/W4 /WX）與全域定義（UNICODE 等）。
+# 不帶 XMP SDK（qDNGUseXMP=0）：排除 dng_xmp_sdk.cpp 與只做寫入的 dng_update_meta.cpp，dng_jxl.cpp 改了兩處
+# （src/third_party/dng_sdk/MODIFICATIONS.txt）。zlib 用 vcpkg 的；JPEG XL 用上面那一份 libjxl。
+find_package(ZLIB REQUIRED)
+set(MP_DNG_DIR "${CMAKE_SOURCE_DIR}/src/third_party/dng_sdk")
+file(GLOB MP_DNG_SDK_SRC CONFIGURE_DEPENDS "${MP_DNG_DIR}/source/*.cpp")
+list(REMOVE_ITEM MP_DNG_SDK_SRC "${MP_DNG_DIR}/source/dng_validate.cpp" "${MP_DNG_DIR}/source/dng_xmp_sdk.cpp"
+    "${MP_DNG_DIR}/source/dng_update_meta.cpp")
+set(MP_LIBJPEG_SRC jaricom jcapimin jcapistd jcarith jccoefct jccolor jcdctmgr jchuff jcinit jcmainct jcmarker jcmaster
+    jcomapi jcparam jcprepct jcsample jctrans jdapimin jdapistd jdarith jdatadst jdatasrc jdcoefct jdcolor jddctmgr jdhuff
+    jdinput jdmainct jdmarker jdmaster jdmerge jdpostct jdsample jdtrans jerror jfdctflt jfdctfst jfdctint jidctflt jidctfst
+    jidctint jquant1 jquant2 jutils jmemmgr jmemnobs)
+list(TRANSFORM MP_LIBJPEG_SRC PREPEND "${MP_DNG_DIR}/libjpeg/")
+list(TRANSFORM MP_LIBJPEG_SRC APPEND ".c")
+add_library(mp_dng_sdk STATIC ${MP_DNG_SDK_SRC} ${MP_LIBJPEG_SRC})
+set_property(TARGET mp_dng_sdk PROPERTY COMPILE_OPTIONS /W0 /EHsc /bigobj /MP)
+set_property(TARGET mp_dng_sdk PROPERTY COMPILE_DEFINITIONS _CRT_SECURE_NO_DEPRECATE _CRT_SECURE_NO_WARNINGS _CRT_NONSTDC_NO_WARNINGS)
+# 用到 SDK 標頭的地方要和 SDK 一樣的旗標，所以是 PUBLIC。標頭當系統標頭：不套我們的 /W4 /WX。
+target_compile_definitions(mp_dng_sdk PUBLIC WIN32 WIN64 qWinOS=1 qMacOS=0 qVisualC=1 qDNGUseStdInt=1 qDNGUseLibJPEG=1
+    qDNGUseXMP=0 qDNGXMPFiles=0 qDNGXMPDocOps=0 qDNGValidateTarget=0 qDNGValidate=0 qDNGPrintMessages=0 qDNGDebug=0
+    ${MP_JXL_DEFS})
+target_include_directories(mp_dng_sdk SYSTEM PUBLIC "${MP_DNG_DIR}/source" "${MP_DNG_DIR}/libjpeg" "${MP_JXL_INCLUDE}")
+target_link_libraries(mp_dng_sdk PUBLIC ZLIB::ZLIB ${MP_JXL_LIBS})
+
+# DNG 讀圖 plugin（隨附、預設啟用）：plugins\dng\dng.dll。
+add_library(mp_plugin_dng SHARED src/plugins/dng/dng.cpp src/plugins/dng/DngRender.cpp src/plugins/dng/dng.rc)
+set_target_properties(mp_plugin_dng PROPERTIES OUTPUT_NAME dng
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/dng"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugin-implib")
+target_include_directories(mp_plugin_dng PRIVATE src)
+target_link_libraries(mp_plugin_dng PRIVATE mp_dng_sdk)
+
 option(MP_BUILD_APP "建置主程式（關掉時只建 core 和測試）" ON)
 if(MP_BUILD_APP)
 # 版本號只寫在 project(VERSION)，這裡產生 version.h 給 rc 與關於對話框。
@@ -199,11 +232,14 @@ add_executable(mp_tests
     src/tests/test_plugins.cpp
     # JPEG XL plugin：測試裡用 libjxl 的編碼器現造 .jxl。
     src/tests/test_plugin_jxl.cpp
+    # DNG plugin：解碼的部分直接連進來測（例如換執行緒數），也經過 loadImage 走真的 plugin。
+    src/tests/test_plugin_dng.cpp
+    src/plugins/dng/DngRender.cpp
 )
 target_include_directories(mp_tests SYSTEM PRIVATE "${MP_JXL_INCLUDE}")
 target_compile_definitions(mp_tests PRIVATE ${MP_JXL_DEFS})
-target_link_libraries(mp_tests PRIVATE ${MP_JXL_LIBS})
-add_dependencies(mp_tests mp_plugin_jxl)
+target_link_libraries(mp_tests PRIVATE ${MP_JXL_LIBS} mp_dng_sdk)
+add_dependencies(mp_tests mp_plugin_jxl mp_plugin_dng)
 # bit7z：測試自己用它現場產 zip / 7z 當 fixture。
 target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Catch2WithMain ws2_32 d2d1 dwrite shell32)
 # 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。建置後複製到測試程式旁的 fixtures\，
@@ -211,7 +247,7 @@ target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Ca
 target_compile_definitions(mp_tests PRIVATE "MP_TEST_FIXTURES=L\"${CMAKE_SOURCE_DIR}/src/tests/fixtures\"")
 # 隨程式發佈的語系檔：測試檢查每一行的佔位符。
 target_compile_definitions(mp_tests PRIVATE "MP_SOURCE_LANG_DIR=L\"${CMAKE_SOURCE_DIR}/src/lang\"")
-file(GLOB MP_FIXTURE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.rar")
+file(GLOB MP_FIXTURE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.rar" "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.dng")
 add_custom_command(TARGET mp_tests POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:mp_tests>/fixtures"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MP_FIXTURE_FILES} "$<TARGET_FILE_DIR:mp_tests>/fixtures")

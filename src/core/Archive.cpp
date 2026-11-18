@@ -375,8 +375,10 @@ bool isArchiveEntrySkipped(const std::wstring& relPath) {
 }
 
 std::wstring sniffImageExtension(const std::wstring& path) {
-    if (const ImageFormatInfo* f = imageFormatInfo(detectImageFormat(path))) return f->extensions.front();
-    if (PluginMatch m = matchPluginFile(path)) return m.extension();
+    const ImageFormat format = detectImageFormat(path);
+    if (askPluginsFirst(format)) // 和開檔同一個順序（TIFF 檔頭的可能是 DNG）
+        if (PluginMatch m = matchPluginFile(path)) return m.extension();
+    if (const ImageFormatInfo* f = imageFormatInfo(format)) return f->extensions.front();
     return L"";
 }
 

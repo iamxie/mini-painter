@@ -3,13 +3,14 @@ mpainter - a lightweight image viewer and annotator
 
 Portable. The program is the single file mpainter.exe; run it from anywhere.
 No Visual C++ Redistributable needed. The 7z.dll next to it is only used for viewing
-archives; delete it if you do not need that.
+archives, and plugins\jxl only for opening JPEG XL; delete them if you do not need that.
 
 Usage
 -----
 - Drop an image onto the window, use File > Open, or pass a path on the command line:
   mpainter.exe <image or folder>
-- Supports BMP, TIFF, JPEG, PNG, WebP.
+- Supports BMP, TIFF, JPEG, PNG, WebP; the bundled plugin adds JPEG XL (.jxl, open only).
+  See "Image plugins" below.
 - Also opens zip / 7z / rar archives (including .cbz / .cb7 / .cbr) and pages through the
   images inside as if they were a folder; see "Archives" below.
 - Left / Right arrows go to the previous / next image in the same folder. Opening a folder
@@ -55,11 +56,12 @@ Modes (settings sets)
 - A mode changes only when you pick one: in View > Mode or in the Modes tab of Settings. It
   never switches by itself because of what you opened. The title bar always ends with the
   current mode.
-- Edit > Settings has four tabs: General (language, hints, undo steps, prefetch, settings file), Modes (new / copy /
+- Edit > Settings has five tabs: General (language, hints, undo steps, prefetch, settings file), Modes (new / copy /
   rename / delete / use this mode, with the mode's contents on the right), Archives (unpack
-  folder with its current usage, show-first names, passwords) and Windows Integration
-  (context menu, default app). The buttons are Cancel / OK / Apply; Apply takes effect at once
-  and keeps the window open.
+  folder with its current usage, show-first names, passwords), Windows Integration
+  (context menu, default app) and Plugins (which image plugins to use). The buttons are
+  Cancel / OK / Apply; Apply takes effect at once and keeps the window open. The language and
+  plugins take effect after a restart; mpainter asks when you close the window.
 - Undo (Ctrl+Z) keeps up to 99 steps; change it to anything from 1 to 999 in Edit > Settings >
   General. Rotating, cropping, resizing and color adjustment each keep a full copy of the image
   per step. When those copies add up to more than the memory limit (512 MB by default, on the
@@ -133,6 +135,23 @@ Updates
 - To stop the automatic check, untick "Check for updates when mpainter starts" in Edit > Settings >
   General. You can still check by hand: Help > About mpainter > Check for Updates.
 
+Image plugins
+-------------
+- Plugins let mpainter open more image formats. They only open files; saving still offers the
+  five formats above (Save asks for a new file name).
+- The JPEG XL plugin (plugins\jxl\jxl.dll, using libjxl) is bundled and on by default.
+  Animations show the first frame only.
+- Plugins made by others: put them in plugins\<name>\<name>.dll, tick them in
+  Edit > Settings > Plugins and restart mpainter. New ones start disabled.
+- Plugins run inside mpainter. If a plugin crashes mpainter, the next start disables it and
+  tells you; tick it again on the Plugins page to use it again.
+- Two plugins that open the same file extension cannot be on together: ticking the second one
+  on the Plugins page asks whether to switch to it. If the ini is edited by hand to turn both
+  on, the next start turns both off and tells you; then pick one on the Plugins page.
+- The extensions of the enabled plugins are added to the context menu and the default-app list
+  too, and removed on the next start after a plugin is turned off.
+- How to write a plugin: src/plugins/README.md in the source code; src/plugins/jxl is the example.
+
 Language
 --------
 The "語言 / Language" menu switches the UI language. Traditional Chinese and English are
@@ -145,6 +164,8 @@ Settings file mpainter.ini
 --------------------------
 Settings live in mpainter.ini next to mpainter.exe, created on first run. The window position,
 size and maximized state are kept there too (window=), and each mode is a [profile] section.
+Each plugin's state is one line (plugin=<name>|on / off / crashed / conflict); without a line,
+the bundled plugin is on and the others are off.
 Leading and trailing spaces in a password= line are part of the password. Move the exe and
 the ini together and the settings move too. If the exe sits in a location that cannot be
 written (optical disc, folder without write permission), settings are not saved and every
@@ -187,7 +208,8 @@ License
 -------
 Open source under the Apache License 2.0 (full text in LICENSE, notices in NOTICE).
 Uses libwebp (Google, BSD-3-Clause) and bit7z (MPL 2.0), and loads 7-Zip's 7z.dll at run
-time (GNU LGPL 2.1; the RAR decoder carries the unRAR restriction). Full license texts are
-in THIRD-PARTY-NOTICES.txt. 7z.dll is unmodified; the matching 7-Zip source code is published
+time (GNU LGPL 2.1; the RAR decoder carries the unRAR restriction). The JPEG XL plugin uses
+libjxl (BSD-3-Clause, with Google's patent grant), Highway (BSD-3-Clause), Brotli and Little CMS
+(MIT). Full license texts are in THIRD-PARTY-NOTICES.txt. 7z.dll is unmodified; the matching 7-Zip source code is published
 with every release and at https://www.7-zip.org.
 Source code and build instructions: project_info.md in the repository.

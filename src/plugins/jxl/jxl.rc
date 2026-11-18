@@ -1,0 +1,4 @@
+// The manifest mpainter reads without loading the DLL. The resource type must be RCDATA and the name
+// MPAINTER_PLUGIN; the file is UTF-8 text (see ../sdk/mpainter_plugin.h).
+LANGUAGE 0, 0
+MPAINTER_PLUGIN RCDATA "manifest.txt"

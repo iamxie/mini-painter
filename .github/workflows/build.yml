@@ -124,6 +124,13 @@ jobs:
           $langs = @(Get-ChildItem src\lang\*.txt | Where-Object { -not $_.Name.StartsWith('_') })
           if ($langs.Count -eq 0) { throw "no language files in src/lang" }
           Copy-Item $langs.FullName "$dir\lang"
+          # 隨附的 plugin：建置放在 build\plugins\<id>\<id>.dll，照原樣放進 plugins\<id>\（scripts/package.sh 同一個規則）。
+          $plugins = @(Get-ChildItem build\plugins -Directory)
+          if ($plugins.Count -eq 0) { throw "no plugins were built under build\plugins" }
+          foreach ($p in $plugins) {
+            New-Item -ItemType Directory -Force "$dir\plugins\$($p.Name)" | Out-Null
+            Copy-Item "$($p.FullName)\$($p.Name).dll" "$dir\plugins\$($p.Name)\"
+          }
           Compress-Archive -Path "$dir\*" -DestinationPath "dist\mini-painter-$ver-win64.zip"
           # 自動更新下載後核對用（sha256sum 格式，UTF-8 無 BOM）
           $h = (Get-FileHash "dist\mini-painter-$ver-win64.zip" -Algorithm SHA256).Hash.ToLower()

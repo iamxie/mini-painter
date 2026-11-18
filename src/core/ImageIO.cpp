@@ -22,6 +22,7 @@
 #include "core/ImageOps.h"
 #include "core/Lang.h"
 #include "core/PathUtil.h"
+#include "core/Plugins.h"
 #include "core/TextUtil.h"
 
 using Microsoft::WRL::ComPtr;
@@ -1301,9 +1302,28 @@ std::vector<std::wstring> metadataLossOnSave(const ImageInfo& info, ImageFormat 
     return lost;
 }
 
+namespace {
+// 讀圖 plugin 解碼。plugin 給的是未乘 alpha 的 BGRA，EXIF 方向已經轉好。
+LoadResult loadWithPlugin(const PluginMatch& m, const std::wstring& path) {
+    LoadResult r;
+    r.info.pluginFormat = m.formatName();
+    PluginDecoded d = pluginDecode(m, path);
+    if (!d.error.ok()) { r.error = d.error; return r; }
+    r.dpi = d.dpi;
+    r.info.colorModel = ColorModel::Rgb;
+    r.info.bitsPerPixel = 32; // plugin 一律給 8-bit BGRA
+    r.image = std::make_shared<const Image>(toPremultiplied(std::move(d.image)));
+    return r;
+}
+} // namespace
+
 LoadResult loadImage(const std::wstring& path) {
     try {
-        if (detectImageFormat(path) == ImageFormat::WebP) return loadWebP(path);
+        const ImageFormat format = detectImageFormat(path);
+        if (format == ImageFormat::WebP) return loadWebP(path);
+        // 內建認不得的才問 plugin；plugin 也不認的交給 WIC（系統裝的 codec，例如 GIF）。
+        if (format == ImageFormat::Unknown)
+            if (PluginMatch m = matchPluginFile(path)) return loadWithPlugin(m, path);
         return loadWithWic(path);
     } catch (const std::bad_alloc&) {
         // 檔頭宣稱的尺寸配不出記憶體（超大圖，或刻意構造的檔）。背景執行緒也會走到這裡，不能讓例外飛出去。
@@ -1323,7 +1343,14 @@ bool readImageSize(const std::wstring& path, int& width, int& height) {
     if (!ReadFile(h, head, sizeof(head), &got, nullptr)) got = 0;
     int orientation = 1;
     unsigned w = 0, hh = 0;
-    if (sniffImageFormat(head, got) == ImageFormat::WebP) {
+    const ImageFormat format = sniffImageFormat(head, got);
+    if (format == ImageFormat::Unknown) {
+        if (PluginMatch m = matchPluginFormat(head, got, path)) {
+            CloseHandle(h);
+            return pluginReadSize(m, path, width, height); // plugin 給的已經是轉過方向的寬高
+        }
+    }
+    if (format == ImageFormat::WebP) {
         // WebPGetInfo 只看檔頭，64 bytes 就夠。帶 EXIF 的檔一定是 VP8X 容器，旗標（第 20 byte）的 0x08 表示有 EXIF chunk。
         int ww = 0, wh = 0;
         bool ok = WebPGetInfo(head, got, &ww, &wh) && ww > 0 && wh > 0;

@@ -451,3 +451,40 @@ Settings could not be saved to mpainter.ini. They are kept only until mpainter c
 # --- v0.9.6 ---
 Saved, but some of the original metadata could not be written to the file.=保存しましたが、元のメタデータの一部をファイルに書き込めませんでした。
 The image is too large: not enough memory=画像が大きすぎます：メモリが足りません
+The plugin could not read this image: %s=プラグインがこの画像を読み込めませんでした：%s
+
+# --- 讀圖 plugin ---
+“%s”=「%s」
+%s and “%s”=%sと「%s」
+%s, “%s”=%s、「%s」
+Last time mpainter crashed while reading %s because the plugin %s failed, so the plugin has been disabled. To use it again, enable it on the “Plugins” page in Settings.=前回、%s を読み込んでいるときに mpainter が異常終了しました。原因は%sプラグインのエラーなので、このプラグインを無効にしました。もう一度使うには、設定の「プラグイン」ページで有効にしてください。
+Last time mpainter crashed because the plugin %s failed, so the plugin has been disabled. To use it again, enable it on the “Plugins” page in Settings.=前回、mpainter が異常終了しました。原因は%sプラグインのエラーなので、このプラグインを無効にしました。もう一度使うには、設定の「プラグイン」ページで有効にしてください。
+%s (%s)=%s（%s）
+The plugins %s both want to open %s files and cannot be enabled together, so both have been disabled. Go to the “Plugins” page in Settings and choose one to enable.=%sの 2 つのプラグインがどちらも %s ファイルを開こうとするため、同時に有効にできません。両方とも無効にしました。設定の「プラグイン」ページで 1 つを選んで有効にしてください。
+The plugins %s all want to open %s files and cannot be enabled together, so all of them have been disabled. Go to the “Plugins” page in Settings and choose one to enable.=%sのプラグインがすべて %s ファイルを開こうとするため、同時に有効にできません。すべて無効にしました。設定の「プラグイン」ページで 1 つを選んで有効にしてください。
+The plugin file could not be read.=プラグインのファイルを読み込めませんでした。
+This is not an mpainter plugin.=mpainter のプラグインではありません。
+The plugin information is not valid.=プラグインの情報が正しくありません。
+This plugin was made for a different version of mpainter.=このプラグインは別のバージョンの mpainter 用です。
+The plugin could not be loaded: %s=プラグインを読み込めませんでした：%s
+Cannot be used=使用できません
+Enabled=有効
+Could not load=読み込み失敗
+Enabled after restart=再起動後に有効
+Disabled after restart=再起動後に無効
+Disabled: it crashed mpainter=無効：mpainter を異常終了させた
+Disabled: conflicts with another plugin=無効：ほかのプラグインと競合
+Disabled=無効
+No plugins are installed.=プラグインはインストールされていません。
+Version: %s=バージョン：%s
+File: %s=ファイル：%s
+Opened by mpainter itself, not by this plugin: %s=このプラグインではなく mpainter 自身で開く形式：%s
+Enable this plugin and disable %s? They want to open the same %s files and cannot be enabled together.=このプラグインを有効にして、%sを無効にしますか？どちらも同じ %s ファイルを開こうとするため、同時に有効にできません。
+Name=名前
+Extensions=拡張子
+Status=状態
+Plugin folder: %s=プラグインのフォルダー：%s
+Plugins=プラグイン
+Plugins let mpainter open more file types. Check a plugin to enable it. Changes take effect after mpainter restarts; it asks when this window closes.=プラグインを入れると、mpainter で開けるファイルの種類が増えます。チェックすると有効になります。変更は mpainter の再起動後に反映されます。このウィンドウを閉じるときに確認します。
+The language and plugin changes take effect the next time mpainter starts.\n\nRestart now?=言語とプラグインの変更は、次に mpainter を起動したときに反映されます。\n\n今すぐ再起動しますか？
+Plugin changes take effect the next time mpainter starts.\n\nRestart now?=プラグインの変更は、次に mpainter を起動したときに反映されます。\n\n今すぐ再起動しますか？

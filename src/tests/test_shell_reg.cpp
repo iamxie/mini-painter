@@ -3,9 +3,13 @@
 #include <windows.h>
 
 #include <string>
+#include <vector>
 
 #include "core/FolderNav.h"
+#include "core/Plugins.h"
 #include "core/ShellReg.h"
+#include "core/TempDir.h"
+#include "test_util.h"
 
 using namespace mp;
 
@@ -145,4 +149,99 @@ TEST_CASE("B-21：progIdUpToDate；Applications 底下用 exe 實際的檔名，
     REQUIRE(unregisterProgId(zh));
     CHECK(readValue(o.classesBase + L"\\Applications\\viewer.exe\\shell\\open\\command", nullptr) == L"");
     CHECK(progIdExePath(zh) == L"");
+}
+
+// ---- 讀圖 plugin 的副檔名 ----
+
+namespace {
+
+bool regKeyExists(const std::wstring& key) {
+    HKEY h = nullptr;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, KEY_READ, &h) != ERROR_SUCCESS) return false;
+    RegCloseKey(h);
+    return true;
+}
+
+bool regValueExists(const std::wstring& key, const wchar_t* name) {
+    return RegGetValueW(HKEY_CURRENT_USER, key.c_str(), name, RRF_RT_ANY, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+}
+
+void regSet(const std::wstring& key, const wchar_t* name, const std::wstring& value) {
+    HKEY h = nullptr;
+    REQUIRE(RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &h, nullptr) == ERROR_SUCCESS);
+    const LONG r = RegSetValueExW(h, name, 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
+                                  static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(h);
+    REQUIRE(r == ERROR_SUCCESS);
+}
+
+// 測試用的 plugin（mp_test_plugin.dll，認 .mpt / .mpt2 / .mpu）設成生效中的。
+void activateTestPlugin() {
+    const std::wstring dir = mp::test::freshDir(L"shellreg-plugins");
+    REQUIRE(createDirectories(dir + L"\\mptest"));
+    REQUIRE(CopyFileW((mp::test::exeDir() + L"mp_test_plugin.dll").c_str(), (dir + L"\\mptest\\mptest.dll").c_str(), FALSE));
+    std::vector<PluginLoadResult> results;
+    setActivePlugins(loadPlugins(scanPlugins(dir), {L"mptest"}, results));
+    REQUIRE(pluginHandlesExtension(L".mpt"));
+}
+
+} // namespace
+
+TEST_CASE("plugin 的副檔名：生效時登錄右鍵與預設程式；停用後重新登錄就拿掉，別人的機碼不碰") {
+    RegCleanup guard;
+    auto o = testOptions();
+    const std::wstring exe = L"C:\\Tools\\mpainter.exe";
+    const std::wstring sfa = o.classesBase + L"\\SystemFileAssociations\\";
+    const std::wstring cap = o.appBase + L"\\Capabilities\\FileAssociations";
+    const std::wstring types = o.classesBase + L"\\Applications\\mpainter.exe\\SupportedTypes";
+    activateTestPlugin();
+    REQUIRE(registerContextMenu(exe, o));
+    REQUIRE(registerProgId(exe, o));
+    CHECK(readValue(sfa + L".mpt\\shell\\mpainter\\command", nullptr) == L"\"C:\\Tools\\mpainter.exe\" \"%1\"");
+    CHECK(readValue(cap, L".mpu") == L"mpainter.Image");
+    CHECK(regValueExists(types, L".mpt"));
+    CHECK(regValueExists(o.classesBase + L"\\.mpt\\OpenWithProgids", L"mpainter.Image"));
+    CHECK(contextMenuUpToDate(exe, o));
+    CHECK(progIdUpToDate(exe, o));
+
+    // 別人的：同一個副檔名底下別的動詞、別的 ProgID；不是副檔名的子機碼裡剛好也叫 mpainter 的動詞
+    regSet(sfa + L".mpt\\shell\\other\\command", nullptr, L"x");
+    regSet(o.classesBase + L"\\.mpt\\OpenWithProgids", L"Other.Prog", L"");
+    regSet(sfa + L"image\\shell\\mpainter\\command", nullptr, L"y");
+
+    setActivePlugins(nullptr); // plugin 停用了（下次啟動時的樣子）
+    CHECK_FALSE(contextMenuUpToDate(exe, o));
+    CHECK_FALSE(progIdUpToDate(exe, o));
+    REQUIRE(registerContextMenu(exe, o));
+    REQUIRE(registerProgId(exe, o));
+    CHECK(contextMenuUpToDate(exe, o));
+    CHECK(progIdUpToDate(exe, o));
+    for (const wchar_t* ext : {L".mpt", L".mpt2", L".mpu"}) {
+        INFO(ext);
+        CHECK_FALSE(regKeyExists(sfa + ext + L"\\shell\\mpainter"));
+        CHECK_FALSE(regValueExists(cap, ext));
+        CHECK_FALSE(regValueExists(types, ext));
+        CHECK_FALSE(regValueExists(o.classesBase + L"\\" + ext + L"\\OpenWithProgids", L"mpainter.Image"));
+    }
+    CHECK(readValue(sfa + L".mpt\\shell\\other\\command", nullptr) == L"x");
+    CHECK(regValueExists(o.classesBase + L"\\.mpt\\OpenWithProgids", L"Other.Prog"));
+    CHECK(readValue(sfa + L"image\\shell\\mpainter\\command", nullptr) == L"y");
+    CHECK(readValue(sfa + L".png\\shell\\mpainter\\command", nullptr) == L"\"C:\\Tools\\mpainter.exe\" \"%1\"");
+    CHECK(readValue(cap, L".png") == L"mpainter.Image");
+}
+
+TEST_CASE("移除登錄：停用了的 plugin 留下的副檔名也一起拿掉") {
+    RegCleanup guard;
+    auto o = testOptions();
+    const std::wstring exe = L"C:\\Tools\\mpainter.exe";
+    activateTestPlugin();
+    REQUIRE(registerContextMenu(exe, o));
+    REQUIRE(registerProgId(exe, o));
+    setActivePlugins(nullptr);
+    REQUIRE(unregisterContextMenu(o));
+    REQUIRE(unregisterProgId(o));
+    CHECK_FALSE(regKeyExists(o.classesBase + L"\\SystemFileAssociations\\.mpt\\shell\\mpainter"));
+    CHECK_FALSE(regKeyExists(o.classesBase + L"\\SystemFileAssociations\\.png\\shell\\mpainter"));
+    CHECK_FALSE(regValueExists(o.classesBase + L"\\.mpt\\OpenWithProgids", L"mpainter.Image"));
+    CHECK_FALSE(regValueExists(o.classesBase + L"\\.png\\OpenWithProgids", L"mpainter.Image"));
 }

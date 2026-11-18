@@ -82,7 +82,8 @@ std::vector<InfoSection> buildInfoSections(const InfoData& d, InfoTab tab) {
         wchar_t buf[128];
         InfoSection general{tr(L"General"), {}};
         general.rows.push_back({tr(L"File name"), d.fileName});
-        general.rows.push_back({tr(L"Kind"), tr(imageFormatName(d.info.format))});
+        // plugin 解的圖：格式名是 plugin 給的英文，語系檔裡有就翻，沒有照原文。
+        general.rows.push_back({tr(L"Kind"), d.info.pluginFormat.empty() ? trs(imageFormatName(d.info.format)) : trs(d.info.pluginFormat.c_str())});
         general.rows.push_back({tr(L"File size"), fileSizeText(d.fileSize)});
         general.rows.push_back({tr(L"Date created"), d.created});
         general.rows.push_back({tr(L"Date modified"), d.modified});

@@ -73,7 +73,7 @@ BEGIN
     DEFPUSHBUTTON   "OK", IDOK, 172, 294, 50, 16
 END
 
-// 設定：PropertySheet 的四頁。CAPTION 是 tab 名稱（程式碼裡再用 tr 翻譯一次）。
+// 設定：PropertySheet 的五頁。CAPTION 是 tab 名稱（程式碼裡再用 tr 翻譯一次）。
 IDD_SET_GENERAL DIALOGEX 0, 0, 300, 242
 STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "General"
@@ -150,6 +150,17 @@ BEGIN
     PUSHBUTTON      "Set as default image app…", IDC_SETDEFAULT, 8, 54, 110, 14
     LTEXT           "", IDC_DEFNOTE, 126, 52, 166, 28
     AUTOCHECKBOX    "Ask to become the default image app when opening an image", IDC_ASKDEFAULT, 8, 88, 284, 10
+END
+
+IDD_SET_PLUGINS DIALOGEX 0, 0, 300, 196
+STYLE DS_SETFONT | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Plugins"
+FONT MP_DIALOG_FONT_PT, MP_UI_FONT
+BEGIN
+    LTEXT           "Plugins let mpainter open more file types. Check a plugin to enable it. Changes take effect after mpainter restarts; it asks when this window closes.", IDC_PLUGNOTE, 8, 6, 284, 18
+    CONTROL         "", IDC_PLUGINS, "SysListView32", LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP, 8, 26, 284, 92
+    LTEXT           "", IDC_PLUGDETAIL, 8, 122, 284, 48
+    LTEXT           "", IDC_PLUGDIR, 8, 174, 284, 18
 END
 
 // 模式名字（新增 / 複製 / 重新命名）

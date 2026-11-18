@@ -18,6 +18,7 @@ const wchar_t* ioErrorMessage(IoErrorCode code) {
     case IoErrorCode::WebPInitFailed: return trKey(L"libwebp initialization failed");
     case IoErrorCode::WebPDecodeFailed: return trKey(L"WebP decoding failed");
     case IoErrorCode::OutOfMemory: return trKey(L"The image is too large: not enough memory");
+    case IoErrorCode::PluginFailed: return trKey(L"The plugin could not read this image: %s");
     case IoErrorCode::UnsupportedSaveFormat: return trKey(L"Saving this format is not supported: %s");
     case IoErrorCode::WebPEncodeFailed: return trKey(L"WebP encoding failed");
     case IoErrorCode::WriteFailed: return trKey(L"Writing the file failed");

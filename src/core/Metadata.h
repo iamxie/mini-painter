@@ -45,6 +45,7 @@ struct MetaSection {
 // 從檔案讀出來的描述資料。
 struct ImageInfo {
     ImageFormat format = ImageFormat::Unknown; // 檔案內容實際的格式（看檔頭，不看副檔名）；不在支援清單裡的是 Unknown
+    std::wstring pluginFormat;    // 讀圖 plugin 解的：plugin 給的格式顯示名（英文翻譯 key），format 是 Unknown；其他是空字串
     ColorModel colorModel = ColorModel::Rgb;
     int bitsPerPixel = 0;         // 原始像素格式的位元深度
     int orientation = 1;          // EXIF orientation（IFD0 的 274 號欄位），沒有就是 1

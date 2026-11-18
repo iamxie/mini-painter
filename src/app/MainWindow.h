@@ -25,6 +25,7 @@
 #include "core/FolderNav.h"
 #include "core/Lang.h"
 #include "core/Paging.h"
+#include "core/Plugins.h"
 #include "core/Prefetch.h"
 #include "core/Settings.h"
 #include "core/Spreads.h"
@@ -133,7 +134,14 @@ private:
     void rememberPlacement();           // 關閉前把視窗位置存進 settings_
     void askDefaultProgram(bool fromSettings);
     void showSettings(int startPage = 0);                  // 設定面板；startPage 1 = 直接開「模式」tab
-    void applySettingsFromDialog(const Settings& s, std::wstring& pendingLang); // 面板按套用 / 確定
+    // 面板按套用 / 確定。語言最後才處理，放進 pendingLang；plugin 的狀態有變就把 pluginsTouched 設成 true。
+    void applySettingsFromDialog(const Settings& s, std::wstring& pendingLang, bool& pluginsTouched);
+    // 讀圖 plugin：啟動時讀當掉紀錄、停用害程式當掉的與互相衝突的、載入其他的（loadSettingsAndRegister 裡）。
+    // 停用了哪些、為什麼，等主視窗顯示之後再用對話框說（showPluginNotices）。
+    void startPluginsAtLaunch();
+    void showPluginNotices();
+    // 照設定，entries 裡要啟用的 plugin 和這次啟動時試著載入的不一樣（要重新啟動才會生效）。
+    bool pluginsNeedRestart(const std::vector<PluginEntry>& entries) const;
     // 模式（設定集）：「顯示 › 模式」子選單、標題列、切換與儲存
     void rebuildProfileMenu();
     void switchProfile(const Profile& p);
@@ -156,6 +164,8 @@ private:
 
     // 語言：選單切換後問是否重啟（可選的語系與啟用哪一個在 store_，啟動時決定）
     void selectLanguage(const std::wstring& code);
+    // 問要不要現在重新啟動（question 是翻譯好的整句）；要的話確認存檔、重開自己並開回目前的檔案、關掉這個視窗。
+    void askRestart(const std::wstring& question);
 
     // 提示：物件教學提示（計次）與工具列按鈕名稱（每次 hover）共用一個 tooltip 視窗
     uint32_t hitItemBox(POINT pt) const;
@@ -264,6 +274,7 @@ private:
     HWND hwnd_ = nullptr;
     AppSettings store_;                  // 設定檔的讀寫、目前的值、可選的語系
     Settings& settings_ = store_.values; // 目前的設定值
+    PluginStartup plugins_;              // 啟動時掃到的 plugin、載入結果、這次停用的（對話框說完就清掉 crashes / conflicts）
     bool askPending_ = false;
     bool saveFailWarned_ = false; // 這次執行已經提示過「設定存不進去」
     HWND tip_ = nullptr;

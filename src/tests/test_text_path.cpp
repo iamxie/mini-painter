@@ -170,13 +170,14 @@ TEST_CASE("windowsBuildNumber / isWindows11：和系統登錄的 build 號同一
     CHECK(isWindows11() == (osBuild >= 22000));
 }
 
-TEST_CASE("ioErrorMessage：每個代碼都有說明，只有 UnsupportedSaveFormat 帶 %s") {
+TEST_CASE("ioErrorMessage：每個代碼都有說明，只有 UnsupportedSaveFormat 與 PluginFailed 帶 %s") {
     CHECK(std::wstring(ioErrorMessage(IoErrorCode::None)).empty());
     for (int c = static_cast<int>(IoErrorCode::FileUnreadable); c <= static_cast<int>(IoErrorCode::ReplaceFailed); ++c) {
-        std::wstring m = ioErrorMessage(static_cast<IoErrorCode>(c));
+        const auto code = static_cast<IoErrorCode>(c);
+        std::wstring m = ioErrorMessage(code);
         INFO("code " << c);
         CHECK_FALSE(m.empty());
-        CHECK((m.find(L'%') != std::wstring::npos) == (static_cast<IoErrorCode>(c) == IoErrorCode::UnsupportedSaveFormat));
+        CHECK((m.find(L'%') != std::wstring::npos) == (code == IoErrorCode::UnsupportedSaveFormat || code == IoErrorCode::PluginFailed));
     }
     IoError e;
     CHECK(e.ok());

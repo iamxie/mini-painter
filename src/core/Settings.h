@@ -50,6 +50,14 @@ struct Profile {
     ViewPrefs prefs;
 };
 
+// 一個讀圖 plugin 的啟用狀態（ini：一個 plugin 一行 plugin=<id>|on / off / crashed / conflict）。
+// 停用分三種，設定頁照著說明原因：使用者關的、上次害程式當掉被停用的、和別的 plugin 衝突被停用的。
+enum class PluginState { Enabled, Disabled, Crashed, Conflict };
+struct PluginSetting {
+    std::wstring id; // plugins 底下的資料夾名，比對不分大小寫
+    PluginState state = PluginState::Disabled;
+};
+
 // 存在 exe 旁邊 mpainter.ini 的設定。portable，沒有別的存放位置。
 struct Settings {
     bool askedDefault = false; // 已經問過「設為預設程式」
@@ -76,6 +84,9 @@ struct Settings {
     // 空清單表示 ini 裡沒有（第一次執行、舊版 ini）：呼叫端用 ensureProfiles 補內建的兩個。
     std::vector<Profile> profiles;
     std::wstring profileName;
+    // 讀圖 plugin 的啟用狀態，只記有紀錄的。沒紀錄的 plugin：隨附的算啟用、其他的停用（core/Plugins.h 的 pluginEnabled）。
+    // plugin 拿掉了紀錄也留著，裝回來時照舊。
+    std::vector<PluginSetting> plugins;
 };
 constexpr int kTipMaxShown = 3;
 
@@ -92,6 +103,11 @@ inline constexpr IntSetting kIntSettings[] = {
 };
 // 文字 → 這個欄位的值。不是數字（含空字串）回 fallback，數字夾進範圍。
 int intSettingFromText(const IntSetting& field, const std::wstring& text, int fallback);
+
+// plugin 的紀錄（id 不分大小寫）。沒有回 nullptr。
+const PluginSetting* findPluginSetting(const Settings& s, const std::wstring& id);
+// 設定 plugin 的狀態：有紀錄就改，沒有就加在最後。
+void setPluginState(Settings& s, const std::wstring& id, PluginState state);
 
 // 目前的值 → Profile（name 是 profileName）；Profile → 目前的值（並把 profileName 設成它的名字）。
 Profile profileFromCurrent(const Settings& s);
@@ -121,6 +137,7 @@ struct DialogChanges {
     bool undoLimits = false;     // undo 的步數或記憶體上限
     bool prefetch = false;       // 預先解碼的記憶體上限
     bool profiles = false;       // 模式清單或正在用的模式名
+    bool plugins = false;        // plugin 的啟用狀態（重新啟動才生效）
     bool reapplyProfile = false; // 換了模式、或正在用的那個模式內容被改了：呼叫端要重新套用 current.profileName 指的模式
     bool language = false;       // fromDialog.language 和 current.language 不同
 };
@@ -131,6 +148,7 @@ DialogChanges mergeDialogSettings(Settings& current, const Settings& fromDialog,
 //   這個視窗改過的欄位（mine 和 base 不同）用 mine，沒改過的用 disk。逐欄位比（檢視值每個開關各自算）。
 //   密碼列表逐筆合併：disk 的每一筆都留，除了這個視窗刪掉的（base 有、mine 沒有）；這個視窗加的接在後面。
 //   置頂檔名、模式清單整份當成一個欄位。視窗位置五個數字當成一個欄位。
+//   plugin 的狀態逐個 plugin 算：這個視窗改過（含加、刪紀錄）的用 mine，其他照 disk。
 Settings mergeSettings(const Settings& base, const Settings& mine, const Settings& disk);
 
 // 讀檔的結果。Missing：檔案不存在（第一次執行）。Unreadable：檔案在但讀不到（被別的程式獨佔、沒權限、讀到一半失敗）。

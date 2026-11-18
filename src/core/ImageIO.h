@@ -20,13 +20,14 @@ struct LoadResult {
 // 這個檔的函式可以在任何執行緒呼叫。第一次在某條執行緒用到 WIC 時會初始化那條執行緒的 COM（單執行緒 apartment）
 // 並建一個 WIC factory，之後同一條執行緒重用，執行緒結束時放掉。
 
-// 讀檔。格式看檔案內容，不看副檔名：WebP 走 libwebp，其他走 WIC（BMP、TIFF、JPEG、PNG）。
-// EXIF orientation 會套用到像素上（info.orientation 仍記錄原值）。
+// 讀檔。格式看檔案內容，不看副檔名：WebP 走 libwebp，BMP、TIFF、JPEG、PNG 走 WIC；內建認不得的先問生效中的
+// 讀圖 plugin（core/Plugins.h，info.pluginFormat 記格式名），plugin 也不認得的交給 WIC（系統裝的 codec）。
+// EXIF orientation 會套用到像素上（info.orientation 仍記錄原值；plugin 解的由 plugin 轉，orientation 是 1）。
 // 不丟例外：圖太大、記憶體配不出來時回 OutOfMemory。
 LoadResult loadImage(const std::wstring& path);
 
 // 只讀尺寸，不解碼像素（兩頁並排要知道每頁寬高）。EXIF orientation 會轉過來（5～8 時寬高對調），
-// 和 loadImage 給的圖同一個方向。讀不到回傳 false。
+// 和 loadImage 給的圖同一個方向。讀不到回傳 false。plugin 的格式問 plugin 的 readSize。
 bool readImageSize(const std::wstring& path, int& width, int& height);
 
 struct SaveOptions {

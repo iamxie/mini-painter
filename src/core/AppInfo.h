@@ -8,6 +8,11 @@ constexpr wchar_t kPackageExeName[] = L"mpainter.exe";
 
 // 發佈包裡的子資料夾（根目錄以外，檔案會放在哪些資料夾）。打包（.github/workflows/build.yml、scripts/package.sh）
 // 多放一個資料夾時，這裡要跟著加：新版啟動時靠它找上次更新留下的 .mpainter.tempold 檔（core/Install.h 的 removeOldFiles）。
-constexpr const wchar_t* kPackageSubdirs[] = {L"lang"};
+// 每個隨附的 plugin 都有一個 plugins\<id>（執行中載入的 plugin DLL 和 exe 一樣，更新時只能改名、等新版刪）。
+constexpr const wchar_t* kPackageSubdirs[] = {L"lang", L"plugins\\jxl"};
+
+// 發佈包隨附的 plugin（plugins\<id>\ 的 id）。使用者沒設定過的話，隨附的算啟用、其他的算停用。
+// 加一個時 kPackageSubdirs 也要加 plugins\<id>（測試會檢查）。
+constexpr const wchar_t* kBundledPlugins[] = {L"jxl"};
 
 } // namespace mp

@@ -20,6 +20,8 @@
 #include "core/FolderNav.h"
 #include "core/ImageIO.h"
 #include "core/Lang.h"
+#include "core/PluginRun.h"
+#include "core/Plugins.h"
 #include "core/TempDir.h"
 
 namespace mp::test {
@@ -119,7 +121,10 @@ public:
     using Catch::EventListenerBase::EventListenerBase;
     void testRunStarting(const Catch::TestRunInfo&) override { sweepDeadRoots(); }
     void testCaseStarting(const Catch::TestCaseInfo& info) override {
-        setActiveLang({}); // 行程全域的狀態：每個 test case 都從空的語系開始，不靠別的測試收尾
+        // 行程全域的狀態：每個 test case 都從空的語系、沒有 plugin、沒有當掉紀錄開始，不靠別的測試收尾。
+        setActiveLang({});
+        setActivePlugins(nullptr);
+        stopPluginRunLogForTest(true);
         dog_.arm(info.name);
     }
     void testCaseEnded(const Catch::TestCaseStats&) override { dog_.disarm(); }

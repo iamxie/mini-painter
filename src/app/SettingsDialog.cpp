@@ -20,7 +20,7 @@ namespace mp {
 namespace {
 
 // ---------------------------------------------------------------------------
-// 設定：PropertySheet，四個 tab（一般 / 模式 / 壓縮檔 / Windows 整合），底部 取消 / 確定 / 套用。
+// 設定：PropertySheet，五個 tab（一般 / 模式 / 壓縮檔 / Windows 整合 / Plugin），底部 取消 / 確定 / 套用。
 // 每個 tab 一張英文對話框範本，WM_INITDIALOG 時翻譯。按「套用」或「確定」時每個已建立的頁面收到 PSN_APPLY，
 // 各自把控制項讀回共用的 Settings 副本；最後一頁收完才呼叫 info.onApply（沒打開過的頁面沒建立，值維持原樣）。
 
@@ -98,6 +98,7 @@ struct SheetState {
     int selProfile = -1;              // 模式頁：清單目前選的那個（s.profiles 的索引）
     bool loadingProfile = false;      // 模式頁：正在把模式填進控制項（忽略這期間的變更通知）
     bool generalReady = false;        // 一般頁：控制項填好了（之前的 EN_CHANGE 不算使用者改的）
+    bool loadingPlugins = false;      // Plugin 頁：程式自己在改勾選框（不檢查、不算使用者改的）
 };
 
 void markChanged(HWND page) { PropSheet_Changed(GetParent(page), page); }
@@ -492,6 +493,168 @@ INT_PTR CALLBACK windowsPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
     return FALSE;
 }
 
+// ----- Plugin -----
+// 清單的列與 info->plugins 同順序（不排序），第 i 列就是 plugins[i]。勾選框就是啟用與否；套用時才寫進 st.s。
+
+const PluginLoadResult* loadResultOf(const SheetState& st, const std::wstring& id) {
+    for (const auto& r : st.info->pluginResults)
+        if (_wcsicmp(r.id.c_str(), id.c_str()) == 0) return &r;
+    return nullptr;
+}
+
+std::wstring joinExtensions(const std::vector<std::wstring>& exts, const wchar_t* sep) {
+    std::wstring out;
+    for (const auto& e : exts) out += (out.empty() ? L"" : sep) + e;
+    return out;
+}
+
+bool rowChecked(HWND list, size_t row) { return ListView_GetCheckState(list, static_cast<int>(row)) != FALSE; }
+
+void updatePluginStatus(HWND list, const SheetState& st, size_t row) {
+    const PluginEntry& e = st.info->plugins[row];
+    std::wstring text = pluginStatusText(e, rowChecked(list, row), findPluginSetting(st.s, e.id), loadResultOf(st, e.id));
+    ListView_SetItemText(list, static_cast<int>(row), 2, text.data());
+}
+
+void showPluginDetail(HWND dlg, const SheetState& st) {
+    const auto& plugins = st.info->plugins;
+    const int row = ListView_GetNextItem(GetDlgItem(dlg, IDC_PLUGINS), -1, LVNI_SELECTED);
+    std::wstring text;
+    if (plugins.empty()) {
+        text = tr(L"No plugins are installed.");
+    } else if (row >= 0 && static_cast<size_t>(row) < plugins.size()) {
+        const PluginEntry& e = plugins[static_cast<size_t>(row)];
+        if (e.manifest.ok()) text = fmt1(L"Version: %s", e.manifest.manifest.version) + L"\n";
+        text += fmt1(L"File: %s", e.dllPath);
+        if (!e.builtInOverlap.empty())
+            text += L"\n" + fmt1(L"Opened by mpainter itself, not by this plugin: %s", joinExtensions(e.builtInOverlap, L", "));
+        if (std::wstring problem = pluginProblemText(e, loadResultOf(st, e.id)); !problem.empty()) text += L"\n" + problem;
+    }
+    SetDlgItemTextW(dlg, IDC_PLUGDETAIL, text.c_str());
+}
+
+// 使用者要勾第 row 列。用不了的不給勾；和已勾的衝突時問要不要停用那些、改用這一個。回傳要不要讓它勾上。
+bool allowEnablePlugin(HWND dlg, SheetState& st, size_t row) {
+    HWND list = GetDlgItem(dlg, IDC_PLUGINS);
+    const auto& plugins = st.info->plugins;
+    const PluginEntry& e = plugins[row];
+    if (pluginStaticCheck(e) != PluginLoadError::None) {
+        showMessage(dlg, pluginProblemText(e, nullptr), TD_WARNING_ICON);
+        return false;
+    }
+    std::vector<std::wstring> checked;
+    for (size_t i = 0; i < plugins.size(); ++i)
+        if (i != row && rowChecked(list, i)) checked.push_back(plugins[i].id);
+    const auto conflicts = pluginConflictsIfEnabled(plugins, checked, e.id);
+    if (conflicts.empty()) return true;
+    std::vector<std::wstring> others, exts;
+    for (const auto& c : conflicts) {
+        exts.push_back(c.extension);
+        for (const auto& id : c.ids)
+            if (_wcsicmp(id.c_str(), e.id.c_str()) != 0 && std::find(others.begin(), others.end(), id) == others.end()) others.push_back(id);
+    }
+    std::vector<std::wstring> names;
+    for (const auto& id : others) names.push_back(pluginDisplayName(plugins, id));
+    if (!askOk(dlg,
+               fmt2(L"Enable this plugin and disable %s? They want to open the same %s files and cannot be enabled together.",
+                    quotedNameList(names), joinExtensions(exts, L"/")),
+               TD_WARNING_ICON, true))
+        return false;
+    st.loadingPlugins = true; // 取消別的勾：不再問一次
+    for (size_t i = 0; i < plugins.size(); ++i)
+        if (std::find(others.begin(), others.end(), plugins[i].id) != others.end()) ListView_SetCheckState(list, static_cast<int>(i), FALSE);
+    st.loadingPlugins = false;
+    return true;
+}
+
+INT_PTR CALLBACK pluginsPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
+    (void)wp;
+    auto* st = reinterpret_cast<SheetState*>(GetWindowLongPtrW(dlg, DWLP_USER));
+    switch (msg) {
+    case WM_INITDIALOG: {
+        st = reinterpret_cast<SheetState*>(reinterpret_cast<PROPSHEETPAGEW*>(lp)->lParam);
+        SetWindowLongPtrW(dlg, DWLP_USER, reinterpret_cast<LONG_PTR>(st));
+        ++st->created;
+        translateDialog(dlg);
+        HWND list = GetDlgItem(dlg, IDC_PLUGINS);
+        ListView_SetExtendedListViewStyle(list, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
+        RECT rc{};
+        GetClientRect(list, &rc);
+        const int width = rc.right - GetSystemMetrics(SM_CXVSCROLL);
+        struct Column {
+            const wchar_t* key;
+            int percent;
+        };
+        const Column columns[] = {{trKey(L"Name"), 38}, {trKey(L"Extensions"), 24}, {trKey(L"Status"), 38}};
+        for (int i = 0; i < 3; ++i) {
+            LVCOLUMNW c{};
+            c.mask = LVCF_TEXT | LVCF_WIDTH;
+            c.pszText = const_cast<wchar_t*>(tr(columns[i].key));
+            c.cx = width * columns[i].percent / 100;
+            ListView_InsertColumn(list, i, &c);
+        }
+        const auto& plugins = st->info->plugins;
+        st->loadingPlugins = true;
+        for (size_t i = 0; i < plugins.size(); ++i) {
+            const PluginEntry& e = plugins[i];
+            std::wstring name = pluginDisplayName(plugins, e.id), exts = joinExtensions(pluginEffectiveExtensions(e), L", ");
+            LVITEMW item{};
+            item.mask = LVIF_TEXT;
+            item.iItem = static_cast<int>(i);
+            item.pszText = name.data();
+            ListView_InsertItem(list, &item);
+            ListView_SetItemText(list, static_cast<int>(i), 1, exts.data());
+            ListView_SetCheckState(list, static_cast<int>(i), pluginEnabled(st->s, e.id));
+            updatePluginStatus(list, *st, i);
+        }
+        if (!plugins.empty()) ListView_SetItemState(list, 0, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+        st->loadingPlugins = false;
+        SetDlgItemTextW(dlg, IDC_PLUGDIR, fmt1(L"Plugin folder: %s", st->info->pluginsDir).c_str());
+        showPluginDetail(dlg, *st);
+        return TRUE;
+    }
+    case WM_NOTIFY: {
+        const auto* hdr = reinterpret_cast<NMHDR*>(lp);
+        if (hdr->idFrom == IDC_PLUGINS && (hdr->code == LVN_ITEMCHANGING || hdr->code == LVN_ITEMCHANGED)) {
+            const auto* nm = reinterpret_cast<NMLISTVIEW*>(lp);
+            if (nm->iItem < 0 || static_cast<size_t>(nm->iItem) >= st->info->plugins.size() || !(nm->uChanged & LVIF_STATE)) break;
+            const size_t row = static_cast<size_t>(nm->iItem);
+            const UINT diff = nm->uNewState ^ nm->uOldState;
+            if (hdr->code == LVN_ITEMCHANGING) {
+                // 勾選框要變成打勾（state image 2）：先檢查。回 TRUE 是擋下來。
+                const bool checking = (diff & LVIS_STATEIMAGEMASK) && (nm->uNewState & LVIS_STATEIMAGEMASK) == INDEXTOSTATEIMAGEMASK(2);
+                const bool block = checking && !st->loadingPlugins && !allowEnablePlugin(dlg, *st, row);
+                SetWindowLongPtrW(dlg, DWLP_MSGRESULT, block ? TRUE : FALSE);
+                return TRUE;
+            }
+            if (diff & LVIS_STATEIMAGEMASK) {
+                updatePluginStatus(GetDlgItem(dlg, IDC_PLUGINS), *st, row);
+                if (!st->loadingPlugins) markChanged(dlg);
+            }
+            if (diff & LVIS_SELECTED) showPluginDetail(dlg, *st);
+            return TRUE;
+        }
+        if (hdr->code == PSN_KILLACTIVE) st->applied = 0;
+        if (hdr->code == PSN_APPLY) {
+            HWND list = GetDlgItem(dlg, IDC_PLUGINS);
+            const auto& plugins = st->info->plugins;
+            // 只寫有變的：沒動過的維持原本的紀錄（含停用的原因：當掉、衝突）。
+            for (size_t i = 0; i < plugins.size(); ++i) {
+                const bool checked = rowChecked(list, i);
+                if (checked != pluginEnabled(st->s, plugins[i].id))
+                    setPluginState(st->s, plugins[i].id, checked ? PluginState::Enabled : PluginState::Disabled);
+            }
+            for (size_t i = 0; i < plugins.size(); ++i) updatePluginStatus(list, *st, i);
+            pageApplied(*st);
+            SetWindowLongPtrW(dlg, DWLP_MSGRESULT, PSNRET_NOERROR);
+            return TRUE;
+        }
+        break;
+    }
+    }
+    return FALSE;
+}
+
 // 底部三顆按鈕的文字跟語系走（PropertySheet 預設是系統語言的 OK / Cancel / Apply）。
 int CALLBACK sheetCallback(HWND sheet, UINT msg, LPARAM) {
     if (msg == PSCB_INITIALIZED) {
@@ -515,9 +678,11 @@ void showSettingsDialog(HWND owner, const Settings& s, const SettingsDialogInfo&
         {IDD_SET_MODES, modesPageProc, trKey(L"Modes")},
         {IDD_SET_ARCHIVE, archivePageProc, trKey(L"Archives")},
         {IDD_SET_WINDOWS, windowsPageProc, trKey(L"Windows Integration")},
+        {IDD_SET_PLUGINS, pluginsPageProc, trKey(L"Plugins")},
     };
-    PROPSHEETPAGEW pages[4] = {};
-    for (int i = 0; i < 4; ++i) {
+    constexpr int kPages = static_cast<int>(std::size(defs));
+    PROPSHEETPAGEW pages[kPages] = {};
+    for (int i = 0; i < kPages; ++i) {
         pages[i].dwSize = sizeof(PROPSHEETPAGEW);
         pages[i].dwFlags = PSP_USETITLE;
         pages[i].hInstance = inst;
@@ -532,8 +697,8 @@ void showSettingsDialog(HWND owner, const Settings& s, const SettingsDialogInfo&
     hdr.hwndParent = owner;
     hdr.hInstance = inst;
     hdr.pszCaption = tr(L"Settings");
-    hdr.nPages = 4;
-    hdr.nStartPage = static_cast<UINT>(std::clamp(info.startPage, 0, 3));
+    hdr.nPages = kPages;
+    hdr.nStartPage = static_cast<UINT>(std::clamp(info.startPage, 0, kPages - 1));
     hdr.ppsp = pages;
     hdr.pfnCallback = sheetCallback;
     PropertySheetW(&hdr);

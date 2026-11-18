@@ -23,9 +23,12 @@
 #include "core/ImageOps.h"
 #include "core/Launch.h"
 #include "core/Lang.h"
+#include "core/PathUtil.h"
 #include "core/ShellReg.h"
 #include "core/Shelf.h"
 #include "core/SysInfo.h"
+#include "core/TempDir.h"
+#include "core/TextUtil.h"
 
 namespace mp {
 
@@ -165,6 +168,7 @@ bool MainWindow::create(HINSTANCE inst, const std::wstring& initialPath, int nCm
     if (!initialPath.empty()) openPath(initialPath);
     updateTitle();
     showMainWindow(nCmdShow);
+    showPluginNotices();
     if (justUpdated_) showToast(fmt1(L"Updated to mpainter %s.", MP_VERSION_WSTRING), false);
     if (store_.unreadable())
         showToast(tr(L"Could not read mpainter.ini. Default settings are used this time, and settings will not be saved."), false,
@@ -2066,6 +2070,7 @@ void MainWindow::loadSettingsAndRegister() {
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(nullptr, exe, MAX_PATH);
     store_.load(exe, inst_); // 讀設定檔、選語系。要在登錄之前：右鍵選單的文字跟語系走
+    startPluginsAtLaunch();  // 要在開第一個檔之前：plugin 的格式才認得
     nav_.setPinnedNames(settings_.pinnedNames);
     doc_.setUndoLimit(settings_.undoLimit);
     doc_.setUndoMemoryLimitMB(settings_.undoMemoryMB);
@@ -2098,9 +2103,11 @@ void MainWindow::selectLanguage(const std::wstring& code) {
     if (_wcsicmp(code.c_str(), settings_.language.c_str()) == 0) return;
     settings_.language = code;
     saveSettingsQuiet();
-    int r = MessageBoxW(hwnd_, tr(L"The language takes effect the next time mpainter starts.\n\nRestart now?"), kAppName,
-                        MB_YESNO | MB_ICONQUESTION);
-    if (r != IDYES) return;
+    askRestart(tr(L"The language takes effect the next time mpainter starts.\n\nRestart now?"));
+}
+
+void MainWindow::askRestart(const std::wstring& question) {
+    if (MessageBoxW(hwnd_, question.c_str(), kAppName, MB_YESNO | MB_ICONQUESTION) != IDYES) return;
     if (!confirmDiscard()) return;
     // 重開自己並開回目前的檔案。壓縮檔用壓縮檔路徑：解出來的暫存檔在這個程式關閉時就刪了。
     std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
@@ -2155,18 +2162,34 @@ void MainWindow::showSettings(int startPage) {
     } else {
         info.unzipRootInUse = resolveUnzipRoot(settings_.unzipDir, exeDir());
     }
+    info.pluginsDir = pluginsDirForExe(exeDir());
+    info.plugins = scanPlugins(info.pluginsDir); // 重掃：執行中放進來的 plugin 也列出來
+    info.pluginResults = plugins_.results;
     info.startPage = startPage;
     std::wstring pendingLang = settings_.language;
-    info.onApply = [&](const Settings& s) { applySettingsFromDialog(s, pendingLang); };
+    bool pluginsTouched = false;
+    info.onApply = [&](const Settings& s) { applySettingsFromDialog(s, pendingLang, pluginsTouched); };
     showSettingsDialog(hwnd_, settings_, info);
-    // 語言最後才處理：selectLanguage 會問要不要重啟，不能在面板還開著時做。
-    if (_wcsicmp(pendingLang.c_str(), settings_.language.c_str()) != 0) selectLanguage(pendingLang);
+    // 語言與 plugin 最後才處理：要問要不要重新啟動，不能在面板還開著時做。
+    const bool langChanged = _wcsicmp(pendingLang.c_str(), settings_.language.c_str()) != 0;
+    const bool pluginRestart = pluginsTouched && pluginsNeedRestart(info.plugins);
+    if (langChanged) {
+        settings_.language = pendingLang;
+        saveSettingsQuiet();
+    }
+    if (langChanged && pluginRestart)
+        askRestart(tr(L"The language and plugin changes take effect the next time mpainter starts.\n\nRestart now?"));
+    else if (langChanged)
+        askRestart(tr(L"The language takes effect the next time mpainter starts.\n\nRestart now?"));
+    else if (pluginRestart)
+        askRestart(tr(L"Plugin changes take effect the next time mpainter starts.\n\nRestart now?"));
 }
 
-void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendingLang) {
+void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendingLang, bool& pluginsTouched) {
     pendingLang = s.language; // 語言最後才處理（要問要不要重新啟動）
     // 面板交回整份設定：併進來，再照「哪些變了」套用。
     const DialogChanges changed = mergeDialogSettings(settings_, s, exeDir());
+    if (changed.plugins) pluginsTouched = true; // 重新啟動才生效：面板關掉後再問
     if (changed.contextMenu) {
         if (settings_.contextMenu) registerContextMenu(store_.exePath(), shellRegOptions());
         else unregisterContextMenu(shellRegOptions());
@@ -2190,6 +2213,37 @@ void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendin
     updateTitle();
     saveSettingsQuiet();
     schedulePrefetch();
+}
+
+void MainWindow::startPluginsAtLaunch() {
+    // 當掉紀錄放在 exe 旁的 temp\plugin-runs，建不了就放 %TEMP% 底下（壓縮檔暫存的退路旁）。兩個地方都讀上次的。
+    const std::vector<std::wstring> runDirs = {joinPath(defaultUnzipRoot(exeDir()), kPluginRunsDirName),
+                                               joinPath(fallbackUnzipRoot(), kPluginRunsDirName)};
+    plugins_ = startPlugins(pluginsDirForExe(exeDir()), runDirs, store_.exePath(), settings_);
+    if (plugins_.settingsChanged) saveSettingsQuiet();
+}
+
+void MainWindow::showPluginNotices() {
+    for (const auto& c : plugins_.crashes)
+        showMessage(hwnd_, pluginCrashText(pluginDisplayName(plugins_.entries, c.pluginId), c), TD_WARNING_ICON);
+    for (const auto& g : plugins_.conflicts) {
+        std::vector<std::wstring> names;
+        for (const auto& id : g.ids) names.push_back(pluginDisplayName(plugins_.entries, id));
+        showMessage(hwnd_, pluginConflictText(names, g), TD_ERROR_ICON);
+    }
+    plugins_.crashes.clear();
+    plugins_.conflicts.clear();
+}
+
+bool MainWindow::pluginsNeedRestart(const std::vector<PluginEntry>& entries) const {
+    auto normalized = [](std::vector<std::wstring> ids) {
+        for (auto& id : ids) id = lowerCopy(id);
+        std::sort(ids.begin(), ids.end());
+        return ids;
+    };
+    std::vector<std::wstring> atLaunch;
+    for (const auto& r : plugins_.results) atLaunch.push_back(r.id);
+    return normalized(enabledPluginIds(entries, settings_)) != normalized(atLaunch);
 }
 
 void MainWindow::applyPinnedNow() {

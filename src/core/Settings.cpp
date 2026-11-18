@@ -55,7 +55,52 @@ bool sameProfiles(const std::vector<Profile>& a, const std::vector<Profile>& b) 
 
 bool contains(const std::vector<std::wstring>& v, const std::wstring& s) { return std::find(v.begin(), v.end(), s) != v.end(); }
 
+// plugin 狀態 <-> ini 的字。
+constexpr struct {
+    PluginState state;
+    const wchar_t* key;
+} kPluginStateKeys[] = {
+    {PluginState::Enabled, L"on"},
+    {PluginState::Disabled, L"off"},
+    {PluginState::Crashed, L"crashed"},
+    {PluginState::Conflict, L"conflict"},
+};
+
+const wchar_t* pluginStateKey(PluginState state) {
+    for (const auto& k : kPluginStateKeys)
+        if (k.state == state) return k.key;
+    return L"off";
+}
+
+// 兩份 plugin 紀錄一樣（不看順序；id 不分大小寫）。
+bool samePluginSettings(const std::vector<PluginSetting>& a, const std::vector<PluginSetting>& b) {
+    if (a.size() != b.size()) return false;
+    Settings sb;
+    sb.plugins = b;
+    for (const auto& x : a) {
+        const PluginSetting* y = findPluginSetting(sb, x.id);
+        if (!y || y->state != x.state) return false;
+    }
+    return true;
+}
+
 } // namespace
+
+const PluginSetting* findPluginSetting(const Settings& s, const std::wstring& id) {
+    for (const auto& p : s.plugins)
+        if (_wcsicmp(p.id.c_str(), id.c_str()) == 0) return &p;
+    return nullptr;
+}
+
+void setPluginState(Settings& s, const std::wstring& id, PluginState state) {
+    for (auto& p : s.plugins) {
+        if (_wcsicmp(p.id.c_str(), id.c_str()) == 0) {
+            p.state = state;
+            return;
+        }
+    }
+    s.plugins.push_back(PluginSetting{id, state});
+}
 
 bool ViewPrefs::operator==(const ViewPrefs& o) const {
     if (viewMode != o.viewMode) return false;
@@ -179,6 +224,15 @@ Settings parseSettings(const std::wstring& text) {
             }
         }
         else if (key == L"password") { if (!val.empty()) s.passwords.push_back(val); }
+        else if (key == L"plugin") {
+            // <id>|<狀態>。id 是資料夾名，不會有 |。狀態不認得、id 空的、重複的（留第一個）略過。
+            const size_t bar = val.rfind(L'|');
+            if (bar == std::wstring::npos) continue;
+            const std::wstring id = trim(val.substr(0, bar)), st = trim(val.substr(bar + 1));
+            if (id.empty() || findPluginSetting(s, id)) continue;
+            for (const auto& k : kPluginStateKeys)
+                if (st == k.key) s.plugins.push_back(PluginSetting{id, k.state});
+        }
         else if (key == L"window") {
             int x = 0, y = 0, w = 0, h = 0, m = 0;
             if (swscanf_s(val.c_str(), L"%d,%d,%d,%d,%d", &x, &y, &w, &h, &m) == 5 && w > 0 && h > 0) {
@@ -218,6 +272,7 @@ std::wstring serializeSettings(const Settings& s) {
     for (const auto& n : s.pinnedNames) pinned += (pinned.empty() ? L"" : L"|") + n;
     out += L"pinnedNames=" + pinned + L"\n";
     for (const auto& pw : s.passwords) out += L"password=" + pw + L"\n";
+    for (const auto& p : s.plugins) out += L"plugin=" + p.id + L"|" + pluginStateKey(p.state) + L"\n";
     if (s.winW > 0 && s.winH > 0)
         out += L"window=" + std::to_wstring(s.winX) + L"," + std::to_wstring(s.winY) + L"," + std::to_wstring(s.winW) + L"," +
                std::to_wstring(s.winH) + L"," + (s.winMax ? L"1" : L"0") + L"\n";
@@ -238,6 +293,7 @@ DialogChanges mergeDialogSettings(Settings& current, const Settings& fromDialog,
     c.prefetch = fromDialog.prefetchMB != current.prefetchMB;
     c.profiles = !sameProfiles(fromDialog.profiles, current.profiles) || fromDialog.profileName != current.profileName;
     c.language = _wcsicmp(fromDialog.language.c_str(), current.language.c_str()) != 0;
+    c.plugins = !samePluginSettings(fromDialog.plugins, current.plugins);
     // 換了模式、或正在用的那個內容被改了，就要重新套用（目前的值 = 模式本體）。
     const Profile* np = findProfile(fromDialog, fromDialog.profileName);
     const Profile* op = findProfile(current, current.profileName);
@@ -279,6 +335,21 @@ Settings mergeSettings(const Settings& base, const Settings& mine, const Setting
     if (mine.winX != base.winX || mine.winY != base.winY || mine.winW != base.winW || mine.winH != base.winH ||
         mine.winMax != base.winMax) {
         out.winX = mine.winX; out.winY = mine.winY; out.winW = mine.winW; out.winH = mine.winH; out.winMax = mine.winMax;
+    }
+    // plugin：逐個。這個視窗改過（狀態不同、加了、刪了紀錄）的照 mine，其他照 disk。
+    for (const auto* list : {&base.plugins, &mine.plugins}) {
+        for (const auto& entry : *list) {
+            const PluginSetting* m = findPluginSetting(mine, entry.id);
+            const PluginSetting* b = findPluginSetting(base, entry.id);
+            if ((m == nullptr) == (b == nullptr) && (!m || m->state == b->state)) continue; // 沒改
+            if (m) {
+                setPluginState(out, m->id, m->state);
+            } else {
+                out.plugins.erase(std::remove_if(out.plugins.begin(), out.plugins.end(),
+                                                 [&](const PluginSetting& x) { return _wcsicmp(x.id.c_str(), entry.id.c_str()) == 0; }),
+                                  out.plugins.end());
+            }
+        }
     }
     // 密碼：逐筆。disk 的每一筆都留，除了這個視窗刪掉的；這個視窗加的接在後面。
     out.passwords.clear();

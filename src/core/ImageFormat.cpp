@@ -6,6 +6,7 @@
 #include <cstring>
 
 #include "core/Lang.h"
+#include "core/Plugins.h"
 #include "core/TextUtil.h"
 
 namespace mp {
@@ -102,16 +103,16 @@ std::wstring saveDialogFilter() {
     return out;
 }
 
-bool isSupportedExtension(const std::wstring& ext) { return imageFormatOfExtension(ext) != ImageFormat::Unknown; }
+bool isSupportedExtension(const std::wstring& ext) {
+    return imageFormatOfExtension(ext) != ImageFormat::Unknown || pluginHandlesExtension(ext);
+}
 
-const std::vector<std::wstring>& supportedExtensions() {
-    static const std::vector<std::wstring> all = [] {
-        std::vector<std::wstring> v;
-        for (const auto& f : imageFormats())
-            for (const wchar_t* e : f.extensions) v.push_back(e);
-        return v;
-    }();
-    return all;
+std::vector<std::wstring> supportedExtensions() {
+    std::vector<std::wstring> v;
+    for (const auto& f : imageFormats())
+        for (const wchar_t* e : f.extensions) v.push_back(e);
+    for (auto& e : pluginExtensions()) v.push_back(std::move(e));
+    return v;
 }
 
 bool canSaveExtension(const std::wstring& ext) {

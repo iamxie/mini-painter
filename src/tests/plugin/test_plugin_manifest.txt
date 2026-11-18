@@ -1,0 +1,5 @@
+api=1
+name=Test plugin
+version=0.1
+format=MPTEST image|.mpt
+format=MPTEST other|.mpt2;.mpu

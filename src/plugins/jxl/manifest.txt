@@ -1,0 +1,4 @@
+api=1
+name=JPEG XL
+version=1.0.0
+format=JPEG XL image|.jxl

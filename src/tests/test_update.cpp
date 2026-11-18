@@ -774,16 +774,29 @@ TEST_CASE("removeOldFiles：只找這一版發佈包會放檔案的資料夾（�
     writeBytes(app + L"\\a.txt.mpainter.tempold", "old");
     writeBytes(app + L"\\lang\\zh-TW.txt", "new");
     writeBytes(app + L"\\lang\\zh-TW.txt.mpainter.tempold", "old");
-    // 別的子資料夾（例如解壓縮的暫存、使用者自己的東西）不碰
+    writeBytes(app + L"\\plugins\\jxl\\jxl.dll", "new");
+    writeBytes(app + L"\\plugins\\jxl\\jxl.dll.mpainter.tempold", "old");
+    // 別的子資料夾（例如解壓縮的暫存、使用者自己裝的 plugin、使用者自己的東西）不碰
     writeBytes(app + L"\\temp\\b.txt", "x");
     writeBytes(app + L"\\temp\\b.txt.mpainter.tempold", "user");
+    writeBytes(app + L"\\plugins\\mine\\mine.dll.mpainter.tempold", "user");
     CHECK(removeOldFiles(app) == 0);
     CHECK_FALSE(exists(app + L"\\a.txt.mpainter.tempold"));
     CHECK_FALSE(exists(app + L"\\lang\\zh-TW.txt.mpainter.tempold"));
+    CHECK_FALSE(exists(app + L"\\plugins\\jxl\\jxl.dll.mpainter.tempold"));
     CHECK(exists(app + L"\\temp\\b.txt.mpainter.tempold"));
-    bool hasLang = false;
-    for (const wchar_t* sub : kPackageSubdirs) hasLang = hasLang || std::wstring(sub) == L"lang";
-    CHECK(hasLang); // 發佈包現在的結構：lang 是唯一的子資料夾，改了打包要一起改這個表
+    CHECK(exists(app + L"\\plugins\\mine\\mine.dll.mpainter.tempold"));
+    // 發佈包現在的結構：lang 與每個隨附 plugin 的 plugins\<id>。改了打包要一起改這個表
+    auto has = [](const std::wstring& dir) {
+        for (const wchar_t* sub : kPackageSubdirs)
+            if (_wcsicmp(sub, dir.c_str()) == 0) return true;
+        return false;
+    };
+    CHECK(has(L"lang"));
+    for (const wchar_t* id : kBundledPlugins) {
+        INFO(id);
+        CHECK(has(std::wstring(L"plugins\\") + id));
+    }
 }
 
 // 要連外網，平常不跑：mp_tests "[.net]"。對真的 GitHub（HTTPS）在不同的時間點取消，看會不會馬上回來。

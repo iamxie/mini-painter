@@ -33,7 +33,7 @@
 #define IDC_DROPPER 1115
 #define IDC_RESET 1116
 
-// 設定（PropertySheet 四頁）與模式名字對話框
+// 設定（PropertySheet 五頁）與模式名字對話框
 #define IDD_SET_GENERAL 207
 #define IDD_SET_MODES 208
 #define IDD_SET_ARCHIVE 209
@@ -81,6 +81,11 @@
 #define IDC_UNDOMEM 1254
 #define IDC_PREFETCHMEM 1255
 #define IDC_PREFETCHNOTE 1256
+#define IDD_SET_PLUGINS 213
+#define IDC_PLUGNOTE 1257
+#define IDC_PLUGINS 1258
+#define IDC_PLUGDETAIL 1259
+#define IDC_PLUGDIR 1260
 
 // 關於對話框
 #define IDD_ABOUT 204

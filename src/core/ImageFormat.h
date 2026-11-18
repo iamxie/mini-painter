@@ -36,7 +36,7 @@ ImageFormat detectImageFormat(const std::wstring& path);
 // 檔案對話框。
 // 一種格式的檔名樣式，例如 L"*.jpg;*.jpeg;*.jpe;*.jfif"。
 std::wstring imagePatterns(ImageFormat format);
-// 全部支援的圖片副檔名的樣式。
+// 全部開得了的圖片副檔名的樣式（含 plugin 的）。
 std::wstring allImagePatterns();
 // 存檔對話框列出的格式與順序：寫得出來的格式都在，第一個（PNG）是預設。
 const std::vector<ImageFormat>& saveDialogFormats();
@@ -44,10 +44,11 @@ const std::vector<ImageFormat>& saveDialogFormats();
 std::wstring saveDialogFilter();
 
 // 下面幾個是上面那張表的捷徑。
-// 副檔名是不是支援的圖片格式（不分大小寫，含點，例如 L".jpg"）。
+// 開得了的副檔名：上面那張表，加上生效中的讀圖 plugin 接手的（core/Plugins.h）。
+// 副檔名是不是開得了的圖片格式（不分大小寫，含點，例如 L".jpg"）。
 bool isSupportedExtension(const std::wstring& ext);
-// 全部支援的副檔名（小寫、含點）。
-const std::vector<std::wstring>& supportedExtensions();
+// 全部開得了的副檔名（小寫、含點）：表裡的在前，plugin 的接在後面。
+std::vector<std::wstring> supportedExtensions();
 // 存檔用的副檔名是不是支援寫出的格式。
 bool canSaveExtension(const std::wstring& ext);
 // 這個副檔名存檔時留得住透明（PNG、TIFF、WebP）。JPEG、BMP 不行。

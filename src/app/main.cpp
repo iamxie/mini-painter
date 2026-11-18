@@ -9,6 +9,7 @@
 #include "app/MainWindow.h"
 #include "core/Lang.h"
 #include "core/Launch.h"
+#include "core/PluginRun.h"
 
 #pragma comment(lib, "comctl32")
 
@@ -47,6 +48,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
+    // 正常結束：之後還在 plugin 裡的背景執行緒被系統結束，不算 plugin 害的（下次啟動不停用它）。
+    mp::markPluginRunClean();
     CoUninitialize();
     return static_cast<int>(msg.wParam);
 }

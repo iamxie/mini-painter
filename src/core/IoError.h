@@ -18,6 +18,7 @@ enum class IoErrorCode {
     WebPInitFailed,
     WebPDecodeFailed,
     OutOfMemory,      // 圖太大，記憶體配不出來
+    PluginFailed,     // 讀圖 plugin 回報失敗。detail 是英文（plugin id、回傳值、plugin 的說明），不翻譯
     // 存檔
     UnsupportedSaveFormat, // detail 是副檔名
     WebPEncodeFailed,
@@ -39,7 +40,7 @@ struct IoError {
     bool ok() const { return code == IoErrorCode::None; }
 };
 
-// 這個代碼的說明句（英文翻譯 key）。帶 %s 的只有 UnsupportedSaveFormat（填 detail）。None 回空字串。
+// 這個代碼的說明句（英文翻譯 key）。帶 %s 的是 UnsupportedSaveFormat 與 PluginFailed（填 detail）。None 回空字串。
 const wchar_t* ioErrorMessage(IoErrorCode code);
 
 } // namespace mp

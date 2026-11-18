@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 1.0.1 LANGUAGES CXX)
+project(mpainter VERSION 1.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -75,6 +75,9 @@ add_library(mp_core STATIC
     src/core/ViewState.cpp
     src/core/Paging.cpp
     src/core/Launch.cpp
+    src/core/PluginManifest.cpp
+    src/core/PluginRun.cpp
+    src/core/Plugins.cpp
 )
 target_include_directories(mp_core PUBLIC src)
 # 都是實作細節：core 的標頭不露出這些函式庫的型別。
@@ -90,6 +93,25 @@ add_library(mp_render STATIC
     src/render/Renderer.cpp
 )
 target_link_libraries(mp_render PUBLIC mp_core PRIVATE d2d1 dwrite)
+
+# JPEG XL 讀圖 plugin（隨附、預設啟用）：建到 plugins\jxl\jxl.dll，主程式與測試程式旁的 plugins\ 底下。
+# libjxl（BSD-3-Clause）與它的相依 highway（Apache-2.0）、brotli（MIT）、lcms2（MIT）都靜態連結進這個 DLL。
+# vcpkg 的 libjxl 只給 pkg-config，這裡直接找標頭與函式庫；靜態版要定義三個 *_STATIC_DEFINE（pkg-config 的 Cflags 寫的）。
+find_path(MP_JXL_INCLUDE jxl/decode.h REQUIRED)
+set(MP_JXL_LIBS "")
+foreach(lib jxl jxl_cms jxl_threads hwy brotlienc brotlidec brotlicommon lcms2)
+    find_library(MP_LIB_${lib} ${lib} REQUIRED)
+    list(APPEND MP_JXL_LIBS "${MP_LIB_${lib}}")
+endforeach()
+set(MP_JXL_DEFS JXL_STATIC_DEFINE JXL_CMS_STATIC_DEFINE JXL_THREADS_STATIC_DEFINE)
+add_library(mp_plugin_jxl SHARED src/plugins/jxl/jxl.cpp src/plugins/jxl/jxl.rc)
+set_target_properties(mp_plugin_jxl PROPERTIES OUTPUT_NAME jxl
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/jxl"
+    ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugin-implib") # 匯入函式庫用不到，別和 libjxl 的 jxl.lib 放在一起
+target_include_directories(mp_plugin_jxl PRIVATE src)
+target_include_directories(mp_plugin_jxl SYSTEM PRIVATE "${MP_JXL_INCLUDE}")
+target_compile_definitions(mp_plugin_jxl PRIVATE ${MP_JXL_DEFS})
+target_link_libraries(mp_plugin_jxl PRIVATE ${MP_JXL_LIBS})
 
 option(MP_BUILD_APP "建置主程式（關掉時只建 core 和測試）" ON)
 if(MP_BUILD_APP)
@@ -173,7 +195,15 @@ add_executable(mp_tests
     src/tests/test_mem.cpp
     # 時間量測（隱藏標籤，平常不跑）。
     src/tests/test_time.cpp
+    # 讀圖 plugin（用下面的 mp_test_plugin.dll 與 mp_plugin_crash_child.exe）。
+    src/tests/test_plugins.cpp
+    # JPEG XL plugin：測試裡用 libjxl 的編碼器現造 .jxl。
+    src/tests/test_plugin_jxl.cpp
 )
+target_include_directories(mp_tests SYSTEM PRIVATE "${MP_JXL_INCLUDE}")
+target_compile_definitions(mp_tests PRIVATE ${MP_JXL_DEFS})
+target_link_libraries(mp_tests PRIVATE ${MP_JXL_LIBS})
+add_dependencies(mp_tests mp_plugin_jxl)
 # bit7z：測試自己用它現場產 zip / 7z 當 fixture。
 target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Catch2WithMain ws2_32 d2d1 dwrite shell32)
 # 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。建置後複製到測試程式旁的 fixtures\，
@@ -186,6 +216,13 @@ add_custom_command(TARGET mp_tests POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:mp_tests>/fixtures"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MP_FIXTURE_FILES} "$<TARGET_FILE_DIR:mp_tests>/fixtures")
 mp_copy_7z(mp_tests)
+
+# 測試用的讀圖 plugin，與「plugin 害程式當掉」測試用的子行程。輸出在 mp_tests 旁邊，只給測試用、不發佈。
+add_library(mp_test_plugin SHARED src/tests/plugin/test_plugin.cpp src/tests/plugin/test_plugin.rc)
+target_include_directories(mp_test_plugin PRIVATE src)
+add_executable(mp_plugin_crash_child src/tests/plugin/crash_child.cpp)
+target_link_libraries(mp_plugin_crash_child PRIVATE mp_core)
+add_dependencies(mp_tests mp_test_plugin mp_plugin_crash_child)
 
 # ctest --preset release 跑這個。隨機順序：測試之間有順序相依時會露出來（Catch2 會印出 seed，可以重現）。
 enable_testing()

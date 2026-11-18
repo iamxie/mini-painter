@@ -18,6 +18,7 @@
 
 #include "core/FolderNav.h"
 #include "core/Lang.h"
+#include "core/Plugins.h"
 #include "core/TempDir.h"
 #include "core/TextUtil.h"
 
@@ -374,8 +375,9 @@ bool isArchiveEntrySkipped(const std::wstring& relPath) {
 }
 
 std::wstring sniffImageExtension(const std::wstring& path) {
-    const ImageFormatInfo* f = imageFormatInfo(detectImageFormat(path));
-    return f ? f->extensions.front() : L"";
+    if (const ImageFormatInfo* f = imageFormatInfo(detectImageFormat(path))) return f->extensions.front();
+    if (PluginMatch m = matchPluginFile(path)) return m.extension();
+    return L"";
 }
 
 ArchiveError extractAll(const std::wstring& archivePath, const std::wstring& destDir) {

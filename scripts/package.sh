@@ -3,7 +3,8 @@
 # 用法：scripts/package.sh
 # 前提：scripts/vm-sync.sh 已建置成功；tunnel 已開。
 # 產出：
-#   out/                 mpainter.exe、7z.dll、scripts/package-files.txt 列的檔案、lang/（src/lang 的每個語系檔）
+#   out/                 mpainter.exe、7z.dll、scripts/package-files.txt 列的檔案、lang/（src/lang 的每個語系檔）、
+#                        plugins/<id>/<id>.dll（VM 建出來的每個隨附 plugin）
 #   out/release-assets/  7z2605-src.7z（LGPL §4：原始碼要和二進位放在同一個下載處，發佈時一起上傳）
 # 只給本機驗證用；正式的發佈包由 CI 產生，內容照同一份 package-files.txt 與同一個 lang 規則。
 set -euo pipefail
@@ -16,10 +17,16 @@ while IFS='=' read -r k v; do
     declare "LOCK_$k=${v%$'\r'}"
 done < scripts/7zip.lock
 
-rm -rf out/lang
+rm -rf out/lang out/plugins
 mkdir -p out/lang out/release-assets
 vm_get "C:/work/mini-painter/build/mpainter.exe" out/mpainter.exe
 vm_get "C:/work/mini-painter/build/7z.dll" out/7z.dll
+# 隨附的 plugin：build\plugins\<id>\<id>.dll 照原樣放進 out/plugins/<id>/（CI 同一個規則）。
+for id in $(vm 'dir /b /ad C:\work\mini-painter\build\plugins' | tr -d '\r'); do
+    mkdir -p "out/plugins/$id"
+    vm_get "C:/work/mini-painter/build/plugins/$id/$id.dll" "out/plugins/$id/$id.dll"
+done
+[[ -n "$(ls out/plugins 2>/dev/null)" ]] || { echo "VM 的 build\\plugins 底下沒有 plugin"; exit 1; }
 
 check() { # check <file> <sha256>
     local got
@@ -47,4 +54,4 @@ for f in src/lang/*.txt; do
     [[ "$(basename "$f")" == _* ]] || cp "$f" out/lang/
 done
 echo "=== out/ ==="
-ls -la out out/lang out/release-assets
+ls -la out out/lang out/plugins/* out/release-assets

@@ -5,6 +5,7 @@
 #include <cwchar>
 
 #include "core/Lang.h"
+#include "core/PathUtil.h"
 #include "core/TextUtil.h"
 
 namespace mp {
@@ -113,7 +114,8 @@ std::wstring flattenErrorText(const wchar_t* kind, long hr) {
 std::wstring ioErrorText(const IoError& e) {
     if (e.ok()) return L"";
     const wchar_t* key = ioErrorMessage(e.code);
-    std::wstring text = e.code == IoErrorCode::UnsupportedSaveFormat ? fmt1(key, e.detail) : trs(key);
+    const bool hasDetail = e.code == IoErrorCode::UnsupportedSaveFormat || e.code == IoErrorCode::PluginFailed;
+    std::wstring text = hasDetail ? fmt1(key, e.detail) : trs(key);
     if (e.hresult != 0) {
         const wchar_t* f = tr(L"%s (HRESULT 0x%08X)");
         std::wstring out(wcslen(f) + text.size() + 16, L'\0');
@@ -143,5 +145,89 @@ std::wstring metaValueText(const MetaValue& value) {
 }
 
 std::wstring fileSizeText(unsigned long long bytes) { return formatFileSize(bytes, tr(L"%llu bytes")); }
+
+std::wstring quotedNameList(const std::vector<std::wstring>& names) {
+    if (names.empty()) return L"";
+    std::wstring out = fmt1(L"“%s”", names[0]);
+    for (size_t i = 1; i < names.size(); ++i)
+        out = i + 1 == names.size() ? fmt2(L"%s and “%s”", out, names[i]) : fmt2(L"%s, “%s”", out, names[i]);
+    return out;
+}
+
+std::wstring pluginCrashText(const std::wstring& name, const PluginCrash& c) {
+    const std::wstring quoted = quotedNameList({name});
+    const std::wstring text =
+        c.path.empty()
+            ? fmt1(L"Last time mpainter crashed because the plugin %s failed, so the plugin has been disabled. "
+                   L"To use it again, enable it on the “Plugins” page in Settings.",
+                   quoted)
+            : fmt2(L"Last time mpainter crashed while reading %s because the plugin %s failed, so the plugin has been disabled. "
+                   L"To use it again, enable it on the “Plugins” page in Settings.",
+                   fileNameOf(c.path), quoted);
+    std::wstring diag = c.pluginId;
+    if (!c.func.empty()) diag += L", " + c.func;
+    wchar_t code[32];
+    swprintf(code, 32, L"0x%08lX", c.exceptionCode);
+    diag += L", ";
+    diag += c.exceptionCode ? code : L"no exception record";
+    return fmt2(L"%s (%s)", text, diag);
+}
+
+std::wstring pluginConflictText(const std::vector<std::wstring>& names, const PluginConflictGroup& g) {
+    std::wstring exts, diagExts;
+    for (const auto& e : g.extensions) {
+        exts += (exts.empty() ? L"" : L"/") + e;
+        diagExts += (diagExts.empty() ? L"" : L", ") + e;
+    }
+    const std::wstring text =
+        names.size() == 2
+            ? fmt2(L"The plugins %s both want to open %s files and cannot be enabled together, so both have been disabled. "
+                   L"Go to the “Plugins” page in Settings and choose one to enable.",
+                   quotedNameList(names), exts)
+            : fmt2(L"The plugins %s all want to open %s files and cannot be enabled together, so all of them have been disabled. "
+                   L"Go to the “Plugins” page in Settings and choose one to enable.",
+                   quotedNameList(names), exts);
+    std::wstring diag = L"plugin conflict: ";
+    for (size_t i = 0; i < g.ids.size(); ++i) diag += (i ? L", " : L"") + g.ids[i];
+    diag += L": " + diagExts;
+    return fmt2(L"%s (%s)", text, diag);
+}
+
+std::wstring pluginProblemText(const PluginEntry& e, const PluginLoadResult* loaded) {
+    const ManifestRead& m = e.manifest;
+    switch (m.error) {
+    case ManifestError::Unreadable:
+        return fmt2(L"%s (%s)", trs(L"The plugin file could not be read."), L"manifest unreadable, error " + std::to_wstring(m.systemError));
+    case ManifestError::NotFound: return fmt2(L"%s (%s)", trs(L"This is not an mpainter plugin."), L"no MPAINTER_PLUGIN resource");
+    case ManifestError::Invalid: return fmt2(L"%s (%s)", trs(L"The plugin information is not valid."), L"bad manifest: " + m.problem);
+    case ManifestError::None: break;
+    }
+    const wchar_t* otherVersion = trKey(L"This plugin was made for a different version of mpainter.");
+    if (m.manifest.api != kPluginApiVersion)
+        return fmt2(L"%s (%s)", trs(otherVersion),
+                    L"plugin api " + std::to_wstring(m.manifest.api) + L", mpainter api " + std::to_wstring(kPluginApiVersion));
+    if (!loaded) return L"";
+    switch (loaded->error) {
+    case PluginLoadError::LoadFailed:
+        return fmt2(L"%s (%s)", fmt1(L"The plugin could not be loaded: %s", systemErrorText(loaded->systemError)),
+                    L"LoadLibrary error " + std::to_wstring(loaded->systemError));
+    case PluginLoadError::NoEntry: return fmt2(L"%s (%s)", trs(L"This is not an mpainter plugin."), L"no mpPluginGetFuncs export");
+    case PluginLoadError::Incompatible: return fmt2(L"%s (%s)", trs(otherVersion), L"mpPluginGetFuncs returned no usable table");
+    default: return L"";
+    }
+}
+
+std::wstring pluginStatusText(const PluginEntry& e, bool checked, const PluginSetting* record, const PluginLoadResult* loaded) {
+    if (pluginStaticCheck(e) != PluginLoadError::None) return tr(L"Cannot be used");
+    const bool running = loaded && loaded->error == PluginLoadError::None;
+    if (checked) {
+        if (running) return tr(L"Enabled");
+        return loaded ? tr(L"Could not load") : tr(L"Enabled after restart");
+    }
+    if (running) return tr(L"Disabled after restart");
+    if (record && record->state == PluginState::Crashed) return tr(L"Disabled: it crashed mpainter");
+    if (record && record->state == PluginState::Conflict) return tr(L"Disabled: conflicts with another plugin");
+    return tr(L"Disabled");
+}
 
 } // namespace mp

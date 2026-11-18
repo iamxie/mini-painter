@@ -502,7 +502,7 @@ TEST_CASE("Settings 的大小：加欄位時的提醒") {
     // 這個數字變了表示 Settings 加（或拿掉）了欄位。檢視開關加在 MP_VIEW_FLAGS、數字欄位加在 kIntSettings 的話
     // ini 讀寫與 mergeSettings 會自動涵蓋；其他欄位要自己補 parseSettings、serializeSettings、mergeSettings，
     // 再更新這裡的數字。
-    CHECK(sizeof(Settings) == 304);
+    CHECK(sizeof(Settings) == 328);
 }
 
 TEST_CASE("viewModeKey / viewModeFromKey / viewModeName：每個模式往返，不認得的回 FitWindow") {
@@ -725,6 +725,88 @@ TEST_CASE("mergeSettings：密碼逐筆合併，刪掉的不會被救回來") {
     mine.passwords = {L" x "};
     disk.passwords = {L"x"};
     CHECK(mergeSettings(base, mine, disk).passwords == List{L"x", L" x "});
+}
+
+TEST_CASE("Settings：plugin 的狀態 plugin=<id>|on/off/crashed/conflict，往返、壞行略過、重複留第一個") {
+    Settings s = parseSettings(L"[mpainter]\nplugin=jxl|on\nplugin=Foo Bar|off\nplugin=c|crashed\nplugin=d|conflict\n"
+                               L"plugin=JXL|off\nplugin=e|maybe\nplugin=|on\nplugin=noBar\nplugin= f | on \n");
+    REQUIRE(s.plugins.size() == 5);
+    CHECK(s.plugins[0].id == L"jxl");
+    CHECK(s.plugins[0].state == PluginState::Enabled); // 後面的 JXL|off 是重複，略過
+    CHECK(s.plugins[1].id == L"Foo Bar");
+    CHECK(s.plugins[1].state == PluginState::Disabled);
+    CHECK(s.plugins[2].state == PluginState::Crashed);
+    CHECK(s.plugins[3].state == PluginState::Conflict);
+    CHECK(s.plugins[4].id == L"f");
+    CHECK(s.plugins[4].state == PluginState::Enabled);
+
+    Settings back = parseSettings(serializeSettings(s));
+    REQUIRE(back.plugins.size() == s.plugins.size());
+    for (size_t i = 0; i < s.plugins.size(); ++i) {
+        CHECK(back.plugins[i].id == s.plugins[i].id);
+        CHECK(back.plugins[i].state == s.plugins[i].state);
+    }
+    // 沒有紀錄就不寫
+    CHECK(serializeSettings(Settings{}).find(L"plugin=") == std::wstring::npos);
+}
+
+TEST_CASE("findPluginSetting / setPluginState：id 不分大小寫；沒有就加在最後") {
+    Settings s;
+    CHECK(findPluginSetting(s, L"jxl") == nullptr);
+    setPluginState(s, L"jxl", PluginState::Crashed);
+    setPluginState(s, L"other", PluginState::Enabled);
+    setPluginState(s, L"JXL", PluginState::Enabled);
+    REQUIRE(s.plugins.size() == 2);
+    CHECK(s.plugins[0].id == L"jxl"); // 原本的名字不變
+    REQUIRE(findPluginSetting(s, L"Jxl"));
+    CHECK(findPluginSetting(s, L"Jxl")->state == PluginState::Enabled);
+}
+
+TEST_CASE("mergeSettings：plugin 逐個合併，這個視窗改過、加的、刪的照自己的，其他照檔案") {
+    Settings base, mine, disk;
+    setPluginState(base, L"a", PluginState::Enabled);
+    setPluginState(base, L"b", PluginState::Enabled);
+    setPluginState(base, L"c", PluginState::Enabled);
+    mine = base;
+    disk = base;
+    setPluginState(mine, L"a", PluginState::Disabled);    // 這個視窗關了 a
+    mine.plugins.erase(mine.plugins.begin() + 2);          // 這個視窗刪了 c 的紀錄
+    setPluginState(mine, L"new", PluginState::Enabled);    // 這個視窗加了 new
+    setPluginState(disk, L"b", PluginState::Crashed);      // 別的視窗：b 當掉被停用
+    setPluginState(disk, L"theirs", PluginState::Conflict); // 別的視窗加的
+    setPluginState(disk, L"A", PluginState::Crashed);      // 兩邊都改了 a：這個視窗的贏
+    const Settings out = mergeSettings(base, mine, disk);
+    auto state = [&](const wchar_t* id) {
+        const PluginSetting* p = findPluginSetting(out, id);
+        REQUIRE(p);
+        return p->state;
+    };
+    CHECK(state(L"a") == PluginState::Disabled);
+    CHECK(state(L"b") == PluginState::Crashed);
+    CHECK(findPluginSetting(out, L"c") == nullptr);
+    CHECK(state(L"new") == PluginState::Enabled);
+    CHECK(state(L"theirs") == PluginState::Conflict);
+    CHECK(out.plugins.size() == 4);
+    // 沒人動：照檔案
+    CHECK(mergeSettings(base, base, disk).plugins.size() == disk.plugins.size());
+}
+
+TEST_CASE("mergeDialogSettings：plugin 狀態照抄，回報有沒有變（順序不算）") {
+    Settings cur, dlg;
+    setPluginState(cur, L"a", PluginState::Enabled);
+    setPluginState(cur, L"b", PluginState::Crashed);
+    setPluginState(dlg, L"B", PluginState::Crashed);
+    setPluginState(dlg, L"A", PluginState::Enabled);
+    Settings c1 = cur;
+    CHECK_FALSE(mergeDialogSettings(c1, dlg, L"C:\\x\\").plugins);
+    setPluginState(dlg, L"b", PluginState::Enabled);
+    Settings c2 = cur;
+    CHECK(mergeDialogSettings(c2, dlg, L"C:\\x\\").plugins);
+    REQUIRE(findPluginSetting(c2, L"b"));
+    CHECK(findPluginSetting(c2, L"b")->state == PluginState::Enabled);
+    setPluginState(dlg, L"c", PluginState::Disabled); // 多一筆紀錄也算變了
+    Settings c3 = cur;
+    CHECK(mergeDialogSettings(c3, dlg, L"C:\\x\\").plugins);
 }
 
 TEST_CASE("saveSettingsMerged：兩個視窗輪流存，互不蓋掉（v0.9.5：後存的整份蓋掉先存的）") {

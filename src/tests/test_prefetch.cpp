@@ -82,7 +82,22 @@ struct Gate {
         std::unique_lock<std::mutex> lk(m);
         cv.wait(lk, [&] { return entered >= n; });
     }
+    // 等到第 n 次被叫到，最多等 limit；逾時回 false。
+    bool waitEnteredFor(int n, std::chrono::milliseconds limit) {
+        std::unique_lock<std::mutex> lk(m);
+        return cv.wait_for(lk, limit, [&] { return entered >= n; });
+    }
 };
+
+// dir 底下（只看這一層）有幾個檔。
+size_t fileCount(const std::wstring& dir) {
+    size_t n = 0;
+    forEachDirEntry(dir, [&](const DirEntry& e) {
+        if (!e.directory) ++n;
+        return true;
+    });
+    return n;
+}
 
 struct Counting {
     std::atomic<int> count{0};
@@ -434,9 +449,10 @@ TEST_CASE("Prefetch 換本：等的時候第一次問進度就取消，回 Cance
     writePng(shelf + L"\\A\\1.png", 40, 60);
     writePng(shelf + L"\\A\\2.png", 40, 60);
     // 張數多到解壓一定比 takeBook 問一次進度（約 50 ms）久。
+    constexpr size_t kEntries = 4000;
     std::string png = mp::test::pngBytes(2, 2);
     std::vector<std::pair<std::string, std::string>> entries;
-    for (int i = 0; i < 4000; ++i) entries.push_back({std::to_string(i) + ".png", png});
+    for (size_t i = 0; i < kEntries; ++i) entries.push_back({std::to_string(i) + ".png", png});
     makeZip(shelf + L"\\B.zip", entries);
     REQUIRE(createDirectories(tmp));
     Counting c;
@@ -446,16 +462,24 @@ TEST_CASE("Prefetch 換本：等的時候第一次問進度就取消，回 Cance
     req.archiveRoot = tmp;
     pf.setWanted({}, {{shelf + L"\\A\\2.png"}}, req, {}, kBig);
     int calls = 0;
+    bool decodeStarted = false;
+    size_t unpackedAtDecode = 0;
     auto plan = pf.takeBook(shelf + L"\\B.zip", [&](uint64_t, uint64_t) {
         ++calls;
+        // 換本在另一條執行緒解壓，這一頁的解碼不必等它：等解碼器被叫到，再看那時解壓寫完了沒有。
+        // 不假設背景在第一次問進度（約 50 ms）之前就開始解：VM 忙的時候趕不上（v1.1.1 以前這樣寫，偶爾失敗）。
+        decodeStarted = c.gate.waitEnteredFor(1, std::chrono::seconds(10));
+        const auto dirs = unpackDirs(tmp);
+        unpackedAtDecode = dirs.empty() ? 0 : fileCount(dirs[0]);
         return false;
     });
     REQUIRE(plan);
-    REQUIRE(plan->extracted.status == ArchiveStatus::Cancelled); // 不是 Cancelled 表示取消之前就解完了：把張數加大
+    REQUIRE(plan->extracted.status == ArchiveStatus::Cancelled); // 不是 Cancelled 表示第一次問進度之前就解完了：把張數加大
     CHECK(calls == 1);
     CHECK_FALSE(plan->usable());
-    // 換本在另一條執行緒做：這一頁的解碼不必等它
-    CHECK(pf.get(shelf + L"\\A\\2.png"));
+    CHECK(decodeStarted);
+    CHECK(unpackedAtDecode < kEntries); // 解碼開始時解壓還沒寫完
+    CHECK(pf.get(shelf + L"\\A\\2.png")); // 解碼器已經叫到了：get 等它解完
     pf.waitIdle();
     CHECK(unpackDirs(tmp).empty());
     CHECK_FALSE(pf.takeBook(shelf + L"\\B.zip", nullptr)); // 同一個要求不再重做

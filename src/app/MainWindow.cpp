@@ -877,7 +877,8 @@ void MainWindow::schedulePrefetch() {
     prefetchCanvasW_ = cw;
     prefetchCanvasH_ = ch;
     size_t limit = static_cast<size_t>(settings_.prefetchMB) * 1024 * 1024;
-    if (limit == 0 || !doc_.image() || nav_.index() < 0) {
+    // 這一頁讀不了（沒有圖）也照樣準備：current 是那一頁（失敗的結果留在快取裡，不會重解），翻過去的下一屏一樣要先解。
+    if (limit == 0 || nav_.index() < 0) {
         prefetch_.setWanted({}, {}, std::nullopt, {}, 0);
         return;
     }

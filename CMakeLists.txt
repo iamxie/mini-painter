@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 1.1.1 LANGUAGES C CXX) # C：DNG SDK 附的 libjpeg
+project(mpainter VERSION 1.1.2 LANGUAGES C CXX) # C：DNG SDK 附的 libjpeg
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -202,6 +202,12 @@ add_executable(mp_tests
     # 一個視窗的設定：讀檔、存檔時和別的視窗合併、可選的語系。
     src/tests/test_app_settings.cpp
     src/app/AppSettings.cpp
+    # 自動更新的進度框：真的建對話框（範本在 test_dialogs.rc），查詢與下載換成假的。
+    src/tests/test_update_dialogs.cpp
+    src/tests/test_dialogs.rc
+    src/app/UpdateDialogs.cpp
+    src/app/ProgressDialog.cpp
+    src/app/DialogUtil.cpp
     src/tests/test_folder_nav.cpp
     src/tests/test_color_adjust.cpp
     src/tests/test_settings.cpp
@@ -241,7 +247,7 @@ target_compile_definitions(mp_tests PRIVATE ${MP_JXL_DEFS})
 target_link_libraries(mp_tests PRIVATE ${MP_JXL_LIBS} mp_dng_sdk)
 add_dependencies(mp_tests mp_plugin_jxl mp_plugin_dng)
 # bit7z：測試自己用它現場產 zip / 7z 當 fixture。
-target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Catch2WithMain ws2_32 d2d1 dwrite shell32)
+target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Catch2WithMain ws2_32 d2d1 dwrite shell32 comctl32)
 # 測試用的二進位 fixture（rar 沒有開源 writer，只能放現成檔）。建置後複製到測試程式旁的 fixtures\，
 # 測試先找那裡；找不到（例如只搬了 exe）才用原始碼樹的路徑。
 target_compile_definitions(mp_tests PRIVATE "MP_TEST_FIXTURES=L\"${CMAKE_SOURCE_DIR}/src/tests/fixtures\"")

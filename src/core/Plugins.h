@@ -44,8 +44,6 @@ struct PluginEntry {
 };
 // 掃 pluginsDir 底下的子資料夾 <id>，有 <id>.dll 的才算。照 id 排序（不分大小寫）。資料夾不在回空的。
 std::vector<PluginEntry> scanPlugins(const std::wstring& pluginsDir);
-// 給使用者看的名字：資訊裡的 name；別的 plugin 也叫這個名字時加上「 (id)」；找不到這個 id、或資訊讀不到時用 id。
-std::wstring pluginDisplayName(const std::vector<PluginEntry>& entries, const std::wstring& id);
 // 這個 plugin 會接手的副檔名：資訊合格時，宣告的扣掉內建的；不合格是空的。
 std::vector<std::wstring> pluginEffectiveExtensions(const PluginEntry& e);
 

@@ -40,6 +40,9 @@ std::wstring fileSizeText(unsigned long long bytes);
 
 // ---- 讀圖 plugin ----
 
+// 給使用者看的名字：資訊裡的 name；別的 plugin 也叫這個名字時加上 id（「%s (%s)」，括號跟著語系）；
+// 找不到這個 id、或資訊讀不到時用 id。
+std::wstring pluginDisplayName(const std::vector<PluginEntry>& entries, const std::wstring& id);
 // 名字加上引號接成一串，例如「A」、「A」和「B」、「A」、「B」和「C」。
 std::wstring quotedNameList(const std::vector<std::wstring>& names);
 // 啟動時停用 plugin 的說明（對話框）。name / names 是顯示名（pluginDisplayName）。最後附英文的除錯資訊（不翻譯）：

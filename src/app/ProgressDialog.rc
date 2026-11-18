@@ -1,0 +1,13 @@
+// Progress dialog template (app/ProgressDialog). Included by app.rc and by src/tests/test_dialogs.rc.
+// The including file must first have #pragma code_page(65001) and include <windows.h>, app/resource.h and core/Fonts.h.
+// Not listed as a source in CMake: only compiled through those two files. ASCII only.
+
+IDD_PROGRESS DIALOGEX 0, 0, 300, 72
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION
+CAPTION "Unpacking"
+FONT MP_DIALOG_FONT_PT, MP_UI_FONT
+BEGIN
+    LTEXT           "", IDC_PRG_TEXT, 8, 8, 284, 20
+    CONTROL         "", IDC_PRG_BAR, "msctls_progress32", WS_BORDER, 8, 30, 284, 12
+    PUSHBUTTON      "Cancel", IDCANCEL, 242, 50, 50, 16
+END

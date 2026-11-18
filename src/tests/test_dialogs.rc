@@ -1,0 +1,9 @@
+// Dialog templates the tests need (test_update_dialogs.cpp). Same files as the app: no copies. ASCII only.
+// code_page 65001: core/Fonts.h has UTF-8 comments. Without it rc.exe reads them in the system code page (cp950 on the
+// VM) and a comment can swallow the next line's #define.
+#pragma code_page(65001)
+#include <windows.h>
+#include "app/resource.h"
+#include "core/Fonts.h"
+
+#include "app/ProgressDialog.rc"

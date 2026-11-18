@@ -2,7 +2,10 @@
 
 #include <windows.h>
 
+#include <regex>
+
 #include "core/Lang.h"
+#include "core/TextUtil.h"
 #include "test_util.h"
 
 using namespace mp;
@@ -153,5 +156,18 @@ TEST_CASE("隨程式發佈的語系檔：沒有任何一行因為佔位符被丟
         CHECK(t.rejected.empty());
         CHECK(t.map.size() > 300);
         CHECK_FALSE(t.code.empty());
+    }
+}
+
+TEST_CASE("隨程式發佈的中日文語系檔：括號一律全形，只有選單的存取鍵「(&F)」是半形") {
+    const std::wregex accessKey(LR"(\(&.\))");
+    for (auto* name : {L"zh-TW.txt", L"ja-JP.txt"}) {
+        LangTable t;
+        REQUIRE(loadLangFile(std::wstring(MP_SOURCE_LANG_DIR) + L"/" + name, t));
+        for (const auto& [key, value] : t.map) {
+            const std::wstring rest = std::regex_replace(value, accessKey, L"");
+            INFO(wideToUtf8(name) << ": " << wideToUtf8(key) << " = " << wideToUtf8(value));
+            CHECK(rest.find_first_of(L"()") == std::wstring::npos);
+        }
     }
 }

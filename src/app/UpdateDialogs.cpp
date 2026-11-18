@@ -89,20 +89,21 @@ UpdateChoice showUpdateDialog(HWND owner, const ReleaseInfo& release, const std:
     return UpdateChoice::Later;
 }
 
-UpdateError checkUpdateWithProgress(HWND owner, const std::wstring& url, ReleaseInfo& out) {
+UpdateError checkUpdateWithProgress(HWND owner, const std::wstring& url, ReleaseInfo& out, const FetchStep& fetch) {
     ProgressState st;
     st.caption = tr(L"Software Update");
     st.text = tr(L"Checking for updates…");
     HttpCancel http;
     st.onCancel = [&] { http.cancel(); }; // 等伺服器回應的時候卡在 WinHTTP 裡：直接把連線關掉
     UpdateError err;
-    st.work = [&](ProgressState&) { err = fetchLatestRelease(url, out, &http); };
+    st.work = [&](ProgressState&) { err = fetch(url, out, &http); };
     if (!runWithProgress(owner, st)) st.work(st);
     if (st.cancel.load()) err.code = UpdateErrorCode::Cancelled; // 按了取消就算取消，即使剛好查到了
     return err;
 }
 
-UpdateError downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, const std::wstring& workDir, std::wstring& stagingDir) {
+UpdateError downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, const std::wstring& workDir, std::wstring& stagingDir,
+                                       const DownloadStep& download) {
     ProgressState st;
     st.caption = tr(L"Software Update");
     st.text = fmt1(L"Downloading mpainter %s…", release.version);
@@ -119,7 +120,7 @@ UpdateError downloadUpdateWithProgress(HWND owner, const ReleaseInfo& release, c
             if (stage == DownloadStage::Verifying) s.setText(verifying);
             else if (stage == DownloadStage::Unpacking) s.setText(unpacking);
         };
-        err = downloadUpdate(release, workDir, stagingDir, hooks);
+        err = download(release, workDir, stagingDir, hooks);
     };
     if (!runWithProgress(owner, st)) st.work(st);
     // 按了取消就算取消，即使剛好下載、解壓完了（不然會照樣換檔重開）。

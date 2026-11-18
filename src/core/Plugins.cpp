@@ -163,17 +163,6 @@ std::vector<PluginEntry> scanPlugins(const std::wstring& pluginsDir) {
     return out;
 }
 
-std::wstring pluginDisplayName(const std::vector<PluginEntry>& entries, const std::wstring& id) {
-    auto it = std::find_if(entries.begin(), entries.end(), [&](const PluginEntry& e) { return sameId(e.id, id); });
-    if (it == entries.end() || !it->manifest.ok()) return id;
-    const std::wstring& name = it->manifest.manifest.name;
-    // 同一個 plugin 裝了兩份（或兩個 plugin 取了同一個名字）：加上 id 才分得出來。
-    const bool duplicate = std::any_of(entries.begin(), entries.end(), [&](const PluginEntry& e) {
-        return &e != &*it && e.manifest.ok() && _wcsicmp(e.manifest.manifest.name.c_str(), name.c_str()) == 0;
-    });
-    return duplicate ? name + L" (" + it->id + L")" : name;
-}
-
 std::vector<std::wstring> pluginEffectiveExtensions(const PluginEntry& e) {
     std::vector<std::wstring> out;
     if (!e.manifest.ok()) return out;

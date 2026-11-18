@@ -679,6 +679,12 @@ TEST_CASE("pluginDisplayName、pluginStaticCheck；介面版本不同的不算�
     CHECK(pluginDisplayName(dupEntries, L"jxl") == L"JPEG XL (jxl)");
     CHECK(pluginDisplayName(dupEntries, L"jxl2") == L"jpeg xl (jxl2)");
     CHECK(pluginDisplayName(dupEntries, L"other") == L"X");
+    {
+        mp::test::LangGuard guard; // 括號跟著語系
+        setActiveLang(parseLangText(L"_code=zh-TW\n%s (%s)=%s（%s）\n"));
+        CHECK(pluginDisplayName(dupEntries, L"jxl") == L"JPEG XL（jxl）");
+        CHECK(pluginDisplayName(dupEntries, L"other") == L"X");
+    }
     CHECK(pluginStaticCheck(entries[0]) == PluginLoadError::None);
     CHECK(pluginStaticCheck(entries[1]) == PluginLoadError::ApiMismatch);
     CHECK(pluginStaticCheck(entries[2]) == PluginLoadError::BadManifest);

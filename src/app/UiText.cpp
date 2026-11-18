@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cwchar>
 
 #include "core/Lang.h"
@@ -61,7 +62,7 @@ std::wstring updateErrorText(const UpdateError& e) {
     case UpdateErrorCode::FolderNotWritable: text = fillOne(format, e.detail); break;
     default: text = format; break;
     }
-    if (e.systemError != 0) text += L" (" + systemErrorText(e.systemError) + L")";
+    if (e.systemError != 0) text = fmt2(L"%s (%s)", text, systemErrorText(e.systemError));
     return text;
 }
 
@@ -106,7 +107,7 @@ std::wstring flattenErrorText(const wchar_t* kind, long hr) {
         out.resize(n > 0 ? static_cast<size_t>(n) : 0);
         text = out;
         // 系統查得到說明才加（記憶體不足這類通用的碼、Direct2D 的碼在 Win10 都查得到），查不到就只留代碼。
-        if (std::wstring why = systemMessage(static_cast<unsigned long>(hr)); !why.empty()) text += L" (" + why + L")";
+        if (std::wstring why = systemMessage(static_cast<unsigned long>(hr)); !why.empty()) text = fmt2(L"%s (%s)", text, why);
     }
     return text;
 }
@@ -123,7 +124,7 @@ std::wstring ioErrorText(const IoError& e) {
         out.resize(n > 0 ? static_cast<size_t>(n) : 0);
         text = out;
     }
-    if (e.systemError != 0) text += L" (" + systemErrorText(e.systemError) + L")";
+    if (e.systemError != 0) text = fmt2(L"%s (%s)", text, systemErrorText(e.systemError));
     return text;
 }
 
@@ -145,6 +146,18 @@ std::wstring metaValueText(const MetaValue& value) {
 }
 
 std::wstring fileSizeText(unsigned long long bytes) { return formatFileSize(bytes, tr(L"%llu bytes")); }
+
+std::wstring pluginDisplayName(const std::vector<PluginEntry>& entries, const std::wstring& id) {
+    auto same = [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) == 0; };
+    auto it = std::find_if(entries.begin(), entries.end(), [&](const PluginEntry& e) { return same(e.id, id); });
+    if (it == entries.end() || !it->manifest.ok()) return id;
+    const std::wstring& name = it->manifest.manifest.name;
+    // 同一個 plugin 裝了兩份（或兩個 plugin 取了同一個名字）：加上 id 才分得出來。
+    const bool duplicate = std::any_of(entries.begin(), entries.end(), [&](const PluginEntry& e) {
+        return &e != &*it && e.manifest.ok() && same(e.manifest.manifest.name, name);
+    });
+    return duplicate ? fmt2(L"%s (%s)", name, it->id) : name;
+}
 
 std::wstring quotedNameList(const std::vector<std::wstring>& names) {
     if (names.empty()) return L"";

@@ -53,8 +53,11 @@ TEST_CASE("ioErrorText：說明句、HRESULT、系統錯誤、副檔名") {
     CHECK(text.find(systemErrorText(ERROR_ACCESS_DENIED)) != std::wstring::npos);
 
     mp::test::LangGuard guard;
-    setActiveLang(parseLangText(L"_code=zh-TW\nCould not decode this file=無法解碼這個檔案\n%s (HRESULT 0x%08X)=%s（HRESULT 0x%08X）\n"));
+    setActiveLang(parseLangText(L"_code=zh-TW\nCould not decode this file=無法解碼這個檔案\n%s (HRESULT 0x%08X)=%s（HRESULT 0x%08X）\n"
+                                L"Could not replace the original file=無法取代原檔\n%s (%s)=%s（%s）\n"));
     CHECK(ioErrorText(e) == L"無法解碼這個檔案（HRESULT 0x88982F50）");
+    // 系統的說明也跟著語系用全形括號（說明本身是系統的語言）
+    CHECK(ioErrorText(r) == L"無法取代原檔（" + systemErrorText(ERROR_ACCESS_DENIED) + L"）");
 }
 
 TEST_CASE("systemErrorText：有說明、沒有結尾的換行與句點；查不到的碼給數字") {
@@ -89,9 +92,11 @@ TEST_CASE("flattenErrorText：說明句加物件種類（英文）、HRESULT 與
     }
 
     mp::test::LangGuard guard;
-    setActiveLang(parseLangText(
-        L"_code=zh-TW\nCould not draw the annotations onto the image=無法把標註畫到圖上\n%s (HRESULT 0x%08X)=%s（HRESULT 0x%08X）\n"));
+    setActiveLang(parseLangText(L"_code=zh-TW\nCould not draw the annotations onto the image=無法把標註畫到圖上\n"
+                                L"%s (HRESULT 0x%08X)=%s（HRESULT 0x%08X）\n%s (%s)=%s（%s）\n"));
     CHECK(flattenErrorText(L"Mosaic", unknown) == L"無法把標註畫到圖上 [Mosaic]（HRESULT 0x2FFFFFFF）");
+    CHECK(flattenErrorText(L"Text", E_OUTOFMEMORY) == L"無法把標註畫到圖上 [Text]（HRESULT 0x8007000E）（" +
+                                                         systemErrorText(static_cast<unsigned long>(E_OUTOFMEMORY)) + L"）");
 }
 
 TEST_CASE("metaLabelText / metaValueText / fileSizeText") {
@@ -179,11 +184,17 @@ TEST_CASE("updateErrorText：路徑與狀態碼填進句子，系統錯誤加系
     e.code = UpdateErrorCode::ChecksumMismatch;
     CHECK(updateFailureText(e) == L"The downloaded file is damaged (checksum mismatch). Nothing was changed.");
 
-    setActiveLang(parseLangText(L"_code=zh-TW\nThe server answered HTTP %d=伺服器回應 HTTP %d\nThe download failed: %s=下載失敗：%s\n"));
+    setActiveLang(parseLangText(L"_code=zh-TW\nThe server answered HTTP %d=伺服器回應 HTTP %d\nThe download failed: %s=下載失敗：%s\n"
+                                L"Could not rename %s=無法改名 %s\n%s (%s)=%s（%s）\n"));
     e = {};
     e.code = UpdateErrorCode::HttpStatus;
     e.httpStatus = 500;
     CHECK(updateFailureText(e) == L"下載失敗：伺服器回應 HTTP 500");
+    e = {};
+    e.code = UpdateErrorCode::RenameFailed;
+    e.detail = L"C:\\app\\7z.dll";
+    e.systemError = ERROR_ACCESS_DENIED;
+    CHECK(updateErrorText(e) == L"無法改名 C:\\app\\7z.dll（" + systemErrorText(ERROR_ACCESS_DENIED) + L"）");
     setActiveLang({});
 }
 

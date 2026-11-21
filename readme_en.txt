@@ -12,6 +12,8 @@ Usage
   mpainter.exe <image or folder>
 - Supports BMP, TIFF, JPEG, PNG, WebP; the bundled plugins add JPEG XL (.jxl) and DNG (.dng,
   camera raw), which you can view and export but not edit. See "Image plugins" below.
+- HEIC / HEIF (.heic, .heif, .hif, e.g. iPhone photos) are decoded by Windows once you install
+  extensions from Microsoft Store; view and export only. See "HEIC / HEIF" below.
 - Also opens zip / 7z / rar archives (including .cbz / .cb7 / .cbr) and pages through the
   images inside as if they were a folder; see "Archives" below.
 - Left / Right arrows go to the previous / next image in the same folder. Opening a folder
@@ -135,6 +137,18 @@ Updates
   it cannot update itself; it tells you why and offers to open the download page.
 - To stop the automatic check, untick "Check for updates when mpainter starts" in Edit > Settings >
   General. You can still check by hand: Help > About mpainter > Check for Updates.
+
+HEIC / HEIF
+-----------
+- mpainter does not ship a HEIC decoder (HEVC has patent licensing issues); Windows decodes it.
+  Install from Microsoft Store: "HEIF Image Extension" (free) plus "HEVC Video Extensions" (paid).
+  Files with AV1 content (AVIF) need "AV1 Video Extension" (free) instead.
+- When one is missing, the canvas says which, with a link to its Microsoft Store web page.
+- A HEIC image is read-only: you can view it and use Export As (one of the five formats above;
+  exporting to JPEG keeps the EXIF), but not mark it up, adjust or rotate it.
+- Transparency becomes opaque (the Windows decoder gives no alpha). 10-bit HEIC may not open (it
+  does not on our test PC, which has no graphics card).
+- If someone makes a HEIC plugin with its own decoder, enabling it makes .heic open through it.
 
 Image plugins
 -------------

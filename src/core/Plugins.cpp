@@ -29,8 +29,10 @@ bool containsId(const std::vector<std::wstring>& ids, const std::wstring& id) {
     return false;
 }
 
+// 交給系統 codec 解的格式（HEIF）不算內建：plugin 可以接手。
 bool isBuiltInExtension(const std::wstring& ext) {
-    return imageFormatOfExtension(ext) != ImageFormat::Unknown || isArchiveExtension(ext);
+    const ImageFormatInfo* f = imageFormatInfo(imageFormatOfExtension(ext));
+    return (f && !f->systemCodec) || isArchiveExtension(ext);
 }
 
 // 生效中的那一組。背景的預先解碼也會讀，用 mutex 保護 shared_ptr 本身。
@@ -133,7 +135,11 @@ IoError pluginFailure(const PluginMatch& m, const char* func, int32_t rc, const 
 
 bool pluginApiSupported(unsigned api) { return api >= kPluginApiOldest && api <= kPluginApiVersion; }
 
-bool askPluginsFirst(ImageFormat format) { return format == ImageFormat::Tiff || format == ImageFormat::Unknown; }
+bool askPluginsFirst(ImageFormat format) {
+    if (format == ImageFormat::Tiff || format == ImageFormat::Unknown) return true;
+    const ImageFormatInfo* f = imageFormatInfo(format);
+    return f && f->systemCodec;
+}
 
 std::wstring pluginsDirForExe(const std::wstring& exeDir) { return joinPath(exeDir, L"plugins"); }
 

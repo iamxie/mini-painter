@@ -224,6 +224,7 @@ PNG image=PNG 画像
 BMP image=BMP 画像
 TIFF image=TIFF 画像
 WebP image=WebP 画像
+HEIF image=HEIF 画像
 JFIF version=JFIF バージョン
 Density unit=密度の単位
 X density=X 密度
@@ -452,6 +453,10 @@ Settings could not be saved to mpainter.ini. They are kept only until mpainter c
 Saved, but some of the original metadata could not be written to the file.=保存しましたが、元のメタデータの一部をファイルに書き込めませんでした。
 The image is too large: not enough memory=画像が大きすぎます：メモリが足りません
 The plugin could not read this image: %s=プラグインがこの画像を読み込めませんでした：%s
+Opening HEIC / HEIF images needs “HEIF Image Extension” from Microsoft Store=HEIC / HEIF 画像を開くには Microsoft Store の「HEIF 画像表示オプション」が必要です
+This image is HEVC-encoded and needs “HEVC Video Extensions” from Microsoft Store=この画像は HEVC でエンコードされており、Microsoft Store の「HEVC ビデオ拡張機能」が必要です
+This image is AV1-encoded and needs “AV1 Video Extension” from Microsoft Store=この画像は AV1 でエンコードされており、Microsoft Store の「AV1 ビデオ拡張機能」が必要です
+Get it from Microsoft Store=Microsoft Store で入手
 
 # --- 讀圖 plugin ---
 “%s”=「%s」
@@ -490,3 +495,4 @@ The language and plugin changes take effect the next time mpainter starts.\n\nRe
 Plugin changes take effect the next time mpainter starts.\n\nRestart now?=プラグインの変更は、次に mpainter を起動したときに反映されます。\n\n今すぐ再起動しますか？
 # --- v1.2：plugin 讀進來的圖唯讀 ---
 This image was opened by a plugin and is read-only.\n\nUse Export As to save a copy in another format.=この画像はプラグインで読み込んだため読み取り専用です。\n\n残すには「書き出し」で別の形式のコピーを保存してください。
+mpainter cannot save this image format, so the image is read-only.\n\nUse Export As to save a copy in another format.=mpainter はこの画像形式を保存できないため、読み取り専用です。\n\n残すには「書き出し」で別の形式のコピーを保存してください。

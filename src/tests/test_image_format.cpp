@@ -70,6 +70,20 @@ TEST_CASE("canSaveExtension / extensionKeepsTransparency 照表") {
     CHECK_FALSE(extensionKeepsTransparency(L".gif"));
 }
 
+TEST_CASE("saveDialogDefaultName：寫不出來的副檔名換成預設格式的，寫得出來的不動") {
+    // 原本預設檔名留著 .heic：存檔對話框先問「x.heic 已經存在，要取代嗎？」，按「是」存成 x.heic.png。
+    CHECK(saveDialogDefaultName(L"C:\\pics\\photo.heic", ImageFormat::Png) == L"C:\\pics\\photo.png");
+    CHECK(saveDialogDefaultName(L"C:\\pics\\photo.HEIC", ImageFormat::Png) == L"C:\\pics\\photo.png");
+    CHECK(saveDialogDefaultName(L"C:\\pics\\a.b.jxl", ImageFormat::Png) == L"C:\\pics\\a.b.png");
+    CHECK(saveDialogDefaultName(L"C:\\pics\\anim.gif", ImageFormat::Jpeg) == L"C:\\pics\\anim.jpg");
+    CHECK(saveDialogDefaultName(L"C:\\pics\\noext", ImageFormat::Png) == L"C:\\pics\\noext.png");
+    CHECK(saveDialogDefaultName(L"C:\\my.pics\\noext", ImageFormat::Png) == L"C:\\my.pics\\noext.png"); // 資料夾的點不算
+    CHECK(saveDialogDefaultName(L"C:\\pics\\photo.", ImageFormat::Png) == L"C:\\pics\\photo.png");
+    for (auto* p : {L"C:\\pics\\a.png", L"C:\\pics\\a.JPG", L"C:\\pics\\a.tif", L"C:\\pics\\a.webp", L"C:\\pics\\a.bmp"})
+        CHECK(saveDialogDefaultName(p, ImageFormat::Png) == p);
+    CHECK(saveDialogDefaultName(L"", ImageFormat::Png).empty());
+}
+
 TEST_CASE("sniffImageFormat：各格式的檔頭，太短或不認得回 Unknown") {
     auto sniff = [](const std::string& s) { return sniffImageFormat(reinterpret_cast<const unsigned char*>(s.data()), s.size()); };
     CHECK(sniff(std::string("\x89PNG\r\n\x1a\n", 8) + "rest") == ImageFormat::Png);

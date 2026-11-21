@@ -28,7 +28,9 @@
  *
  *   One "format=" line per format: a display name (English), "|", then the extensions (lowercase, with the
  *   dot, separated by ";"). The format index used below is the order of these lines, starting at 0.
- *   Extensions that mpainter reads by itself (.png, .jpg ...) are never given to a plugin. Two enabled
+ *   Extensions that mpainter reads by itself (.png, .jpg ...) are never given to a plugin. HEIC / HEIF
+ *   (.heic, .heif, .hif) are the exception: mpainter leaves them to Windows (WIC), so a plugin with its own
+ *   decoder may claim them, and files that start like a HEIF file are offered to plugins first. Two enabled
  *   plugins may not claim the same extension: mpainter turns both off and asks the user to pick one.
  *
  * Entry point

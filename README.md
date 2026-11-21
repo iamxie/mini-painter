@@ -9,7 +9,7 @@ Single portable `mpainter.exe`, no runtime to install.
 
 ## Features / 功能
 
-- BMP, TIFF, JPEG, PNG, WebP; through the bundled plugins also JPEG XL and DNG (camera raw), view and export only. Arrow keys page through a folder; zip / 7z / rar (cbz / cb7 / cbr) archives open as if they were folders, encrypted ones included.
+- BMP, TIFF, JPEG, PNG, WebP; through the bundled plugins also JPEG XL and DNG (camera raw), view and export only. HEIC / HEIF through Windows once the Microsoft Store extensions are installed, view and export only. Arrow keys page through a folder; zip / 7z / rar (cbz / cb7 / cbr) archives open as if they were folders, encrypted ones included.
 - Annotations as vector objects until you save: sketch, lines and arrows, shapes, speech bubbles, magnifier, mosaic, text. Multi-level undo.
 - Adjust color (levels, exposure, white balance, …), adjust size (Lanczos3) and crop. Saving keeps EXIF / XMP / ICC.
 - View modes for reading: fit to window / width / height, actual size, two pages side by side (right-to-left for manga), continue to the next folder or archive at the end.
@@ -18,7 +18,7 @@ Single portable `mpainter.exe`, no runtime to install.
 - Checks GitHub for a new version at start (can be turned off) and updates itself in place: download, verify, replace, restart.
 - Image plugins add formats to open through a small C interface: see [src/plugins/README.md](src/plugins/README.md). An image opened through a plugin is read-only: view it, or export a copy in one of the formats above. A plugin that crashes mpainter is turned off at the next start.
 
-- 支援 BMP、TIFF、JPEG、PNG、WebP，隨附的 plugin 再加 JPEG XL 與 DNG（相機 raw 檔），這兩種只能看與輸出成；方向鍵翻同資料夾；zip / 7z / rar（cbz / cb7 / cbr）壓縮檔直接當資料夾翻，含加密檔。
+- 支援 BMP、TIFF、JPEG、PNG、WebP，隨附的 plugin 再加 JPEG XL 與 DNG（相機 raw 檔），這兩種只能看與輸出成；HEIC / HEIF 裝了 Microsoft Store 的擴充後交給 Windows 解，也只能看與輸出成；方向鍵翻同資料夾；zip / 7z / rar（cbz / cb7 / cbr）壓縮檔直接當資料夾翻，含加密檔。
 - 標註是向量物件，存檔才壓成像素：塗鴉、直線與箭頭、形狀、對話框、放大鏡、馬賽克、文字；多層復原。
 - 調整顏色（色階、曝光、白平衡…）、調整尺寸（Lanczos3）與裁切；存檔保留 EXIF / XMP / ICC。
 - 看漫畫的檢視模式：符合視窗 / 寬度 / 高度、實際大小、兩頁並排（可由右到左）、翻到底接著看下一本。

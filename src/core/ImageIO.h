@@ -20,11 +20,22 @@ struct LoadResult {
 // 這個檔的函式可以在任何執行緒呼叫。第一次在某條執行緒用到 WIC 時會初始化那條執行緒的 COM（單執行緒 apartment）
 // 並建一個 WIC factory，之後同一條執行緒重用，執行緒結束時放掉。
 
-// 讀檔。格式看檔案內容，不看副檔名：WebP 走 libwebp，BMP、TIFF、JPEG、PNG 走 WIC；內建認不得的先問生效中的
+// 讀檔。格式看檔案內容，不看副檔名：WebP 走 libwebp，BMP、TIFF、JPEG、PNG 走 WIC；內建認不得的與 HEIF 先問生效中的
 // 讀圖 plugin（core/Plugins.h，info.pluginFormat 記格式名），plugin 也不認得的交給 WIC（系統裝的 codec）。
+// HEIF 走 WIC 時由系統的解碼器套用 irot / imir（EXIF 裡的方向欄位它會拿掉，orientation 是 1）；透明會被丟掉
+// （WIC 的 HEIF 解碼器只給 32bppBGR）。缺擴充時錯誤代碼見 classifyHeifFailure。
 // EXIF orientation 會套用到像素上（info.orientation 仍記錄原值；plugin 解的由 plugin 轉，orientation 是 1）。
 // 不丟例外：圖太大、記憶體配不出來時回 OutOfMemory。
 LoadResult loadImage(const std::wstring& path);
+
+// HEIF 檔（檔頭是 HEIF）解不開時，看失敗的那一步與 HRESULT 判斷是不是缺 Microsoft Store 的擴充（2026-11-22 VM 實測）：
+// - 建不出解碼器（DecodeFailed）且是 WINCODEC_ERR_COMPONENTINITIALIZEFAILURE（擴充移除後）或 COMPONENTNOTFOUND
+//   （從沒裝過）：缺 HEIF 影像延伸模組，NeedHeifExtension。
+// - 哪一步都好，HRESULT 是 MF_E_TOPO_CODEC_NOT_FOUND（實測在讀像素那一步）：缺影像編碼的解碼器，codec 是 Av1
+//   回 NeedAv1Extension，其他回 NeedHevcExtension（HEIC 幾乎都是 HEVC；看不出 brand 時也這樣說）。
+// - 其他原封不動（例如檔案損毀、10 位元解不開）。
+// loadImage 用它改寫錯誤代碼，HRESULT 留著（給回報問題用）。公開是為了測試。
+IoErrorCode classifyHeifFailure(IoErrorCode failed, long hresult, HeifCodec codec);
 
 // 只讀尺寸，不解碼像素（兩頁並排要知道每頁寬高）。EXIF orientation 會轉過來（5～8 時寬高對調），
 // 和 loadImage 給的圖同一個方向。讀不到回傳 false。plugin 的格式問 plugin 的 readSize。

@@ -80,6 +80,12 @@ bool inRect(const D2D1_RECT_F& r, POINT p) {
     return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
 }
 
+// 開不了的原因是缺 Microsoft Store 擴充時，那個擴充的網址；其他回空的。
+std::wstring storeLinkOf(const IoError& e) {
+    const wchar_t* url = ioErrorStoreUrl(e.code);
+    return url ? url : L"";
+}
+
 // 登錄裡給使用者看的文字，跟著目前的語系。
 ShellRegOptions shellRegOptions() {
     ShellRegOptions o;
@@ -764,18 +770,21 @@ int MainWindow::spreadStartIfSecond() const {
 
 bool MainWindow::openConfirmed(const std::wstring& path) { return confirmLeaveImage() && openPath(path); }
 
-void MainWindow::showLoadError(const std::wstring& path, const std::wstring& message, bool resetList) {
+void MainWindow::showLoadError(const std::wstring& path, const std::wstring& message, bool resetList, const std::wstring& link) {
     path_ = path;
     if (resetList) {
         nav_ = FolderNav{};
         info_.setData({});
     }
     loadError_ = message;
+    loadErrorLink_ = link;
     editor_.reset(nullptr);
     pluginImage_ = false;
+    viewOnlyFormat_ = false;
     second_.reset();
     secondPath_.clear();
     secondError_.clear();
+    secondErrorLink_.clear();
     updateTitle();
     layout();
     repaint();
@@ -819,7 +828,7 @@ bool MainWindow::showPage(const std::wstring& path, bool inArchive, bool landAtB
     }
     info_.setData(facts); // 圖開不了時面板仍有檔案的部分
     if (!r.image) {
-        showLoadError(path, fmt1(L"Cannot open: %s", ioErrorText(r.error)), false);
+        showLoadError(path, fmt1(L"Cannot open: %s", ioErrorText(r.error)), false, storeLinkOf(r.error));
         if (viewMode_ == ViewMode::TwoPage) {
             // 兩頁並排：和開得了時一樣，開到某屏的第二頁就改開那屏的第一頁；這一頁是第一頁就照樣載入第二頁，
             // 讀不到的這一頁畫佔位框（同一屏好的那一頁不能被跳過）。
@@ -838,11 +847,14 @@ bool MainWindow::showPage(const std::wstring& path, bool inArchive, bool landAtB
         PostMessageW(hwnd_, WM_MP_ASK_DEFAULT, 0, 0);
     }
     loadError_.clear();
+    loadErrorLink_.clear();
     editor_.reset(r.image, r.dpi);
     pluginImage_ = !r.info.pluginFormat.empty();
+    viewOnlyFormat_ = isViewOnlyFormat(r.info.format);
     second_.reset();
     secondPath_.clear();
     secondError_.clear();
+    secondErrorLink_.clear();
     if (viewMode_ == ViewMode::TwoPage) {
         updateSpreads();
         // 開到的是某屏的第二頁：改開那屏的第一頁。
@@ -1140,13 +1152,14 @@ bool MainWindow::pickSavePath(std::wstring& out, bool exporting) {
         if (extensionOf(name).empty()) name += extensionOf(path_);
         initial = archivePath_.substr(0, archivePath_.find_last_of(L"\\/") + 1) + name;
     }
+    // 篩選、預設選哪一種、沒打副檔名時補什麼，都照 core 的格式表。
+    const std::vector<ImageFormat>& formats = saveDialogFormats();
+    initial = saveDialogDefaultName(initial, formats.front()); // HEIC、JPEG XL 這類寫不出來的換成預設格式的副檔名
     wchar_t buf[MAX_PATH];
     wcsncpy_s(buf, initial.c_str(), _TRUNCATE);
     OPENFILENAMEW ofn{sizeof(ofn)};
     ofn.hwndOwner = hwnd_;
     if (exporting) ofn.lpstrTitle = tr(L"Export As");
-    // 篩選、預設選哪一種、沒打副檔名時補什麼，都照 core 的格式表。
-    const std::vector<ImageFormat>& formats = saveDialogFormats();
     const std::wstring filter = saveDialogFilter();
     ofn.lpstrFilter = filter.c_str();
     auto current = std::find(formats.begin(), formats.end(), imageFormatOfExtension(extensionOf(path_)));
@@ -1395,11 +1408,16 @@ void MainWindow::loadSecond() {
     if (path == secondPath_ && (second_ || path.empty())) return; // 讀不到的每次都再試一次
     second_.reset();
     secondError_.clear();
+    secondErrorLink_.clear();
     secondPath_ = path;
     if (path.empty()) return;
     LoadResult r = loadPage(path);
-    if (r.image) second_ = r.image;
-    else secondError_ = fmt1(L"Cannot open: %s", ioErrorText(r.error));
+    if (r.image) {
+        second_ = r.image;
+    } else {
+        secondError_ = fmt1(L"Cannot open: %s", ioErrorText(r.error));
+        secondErrorLink_ = storeLinkOf(r.error);
+    }
 }
 
 namespace {
@@ -1511,6 +1529,7 @@ bool MainWindow::setViewMode(ViewMode m) {
         second_.reset();
         secondPath_.clear();
         secondError_.clear();
+        secondErrorLink_.clear();
     }
     fitToView();
     positionEdit();
@@ -1649,10 +1668,10 @@ void MainWindow::drawCanvas() {
     auto* rt = renderer_.rt();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
     rt->FillRectangle(canvasRc_, renderer_.brush(theme::kCanvasBg));
+    canvasLinks_.clear();
     auto img = currentImage();
     if (!hasView()) { // 沒有圖（兩頁並排時是兩頁都讀不到）：畫面中間寫原因
-        if (!loadError_.empty())
-            renderer_.drawUiText(loadError_, canvasRc_, px(kLoadErrorText), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+        if (!loadError_.empty()) drawLoadProblem(canvasRc_, loadError_, loadErrorLink_, false);
         return;
     }
     rt->PushAxisAlignedClip(canvasRc_, D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1672,7 +1691,7 @@ void MainWindow::drawCanvas() {
         rt->DrawRectangle(D2D1::RectF(tl.x - 0.5f, tl.y - 0.5f, brp.x + 0.5f, brp.y + 0.5f), renderer_.brush(theme::kHairline), 1.0f);
     };
     // 兩頁並排時讀不到的那一頁：在它的位置畫框，框裡寫檔名與原因（不要無聲略過）。
-    auto placeholder = [&](const Rc& r, const std::wstring& name, const std::wstring& why) {
+    auto placeholder = [&](const Rc& r, const std::wstring& name, const std::wstring& why, const std::wstring& link) {
         rt->SetTransform(D2D1::Matrix3x2F::Identity());
         POINT tl = toClient({r.left, r.top}), brp = toClient({r.right, r.bottom});
         D2D1_RECT_F box = D2D1::RectF(static_cast<float>(tl.x), static_cast<float>(tl.y), static_cast<float>(brp.x),
@@ -1681,8 +1700,7 @@ void MainWindow::drawCanvas() {
         rt->DrawRectangle(box, renderer_.brush(theme::kChromeLine), 1.0f);
         const float pad = px(kLoadErrorText);
         D2D1_RECT_F text = D2D1::RectF(box.left + pad, box.top + pad, box.right - pad, box.bottom - pad);
-        renderer_.drawUiText(name + L"\n\n" + why, text, px(kLoadErrorText), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER, false,
-                             DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true, true);
+        drawLoadProblem(text, name + L"\n\n" + why, link, true);
     };
     // 兩頁並排：第二頁先畫（它不帶標註），再畫第一頁與它的標註。第一頁的位置由 pageRect 決定。
     Rc r1 = pageRect(false);
@@ -1695,11 +1713,11 @@ void MainWindow::drawCanvas() {
             ctx2.mosaic = nullptr; // 第二頁不帶標註
             drawImage(ctx2);
         } else {
-            placeholder(r2, displayName(secondPath_), secondError_);
+            placeholder(r2, displayName(secondPath_), secondError_, secondErrorLink_);
         }
     }
     if (!img) { // 第一頁讀不到（兩頁並排，另一頁讀到了）
-        placeholder(r1, displayName(path_), loadError_);
+        placeholder(r1, displayName(path_), loadError_, loadErrorLink_);
         rt->SetTransform(D2D1::Matrix3x2F::Identity());
         rt->PopAxisAlignedClip();
         return;
@@ -1723,6 +1741,35 @@ void MainWindow::drawCanvas() {
     drawSelection();
     drawCrop();
     rt->PopAxisAlignedClip();
+}
+
+void MainWindow::drawLoadProblem(const D2D1_RECT_F& box, const std::wstring& text, const std::wstring& url, bool wrap) {
+    const float size = px(kLoadErrorText);
+    if (url.empty()) {
+        renderer_.drawUiText(text, box, size, theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER, false, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true, wrap);
+        return;
+    }
+    // 訊息照 box 的寬度換行，連結（一行、強調色、底線）接在下面，兩段一起垂直置中。
+    const std::wstring linkText = tr(L"Get it from Microsoft Store");
+    const float width = box.right - box.left;
+    float textH = 0, linkH = 0;
+    renderer_.measureUiText(text, size, false, width, &textH);
+    const float linkW = std::min(renderer_.measureUiText(linkText, size, false, 1e6f, &linkH), width);
+    const float gap = size;
+    const float top = std::max(box.top, (box.top + box.bottom - (textH + gap + linkH)) / 2);
+    renderer_.drawUiText(text, D2D1::RectF(box.left, top, box.right, top + textH), size, theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER,
+                         false, DWRITE_PARAGRAPH_ALIGNMENT_NEAR, true, true);
+    const float cx = (box.left + box.right) / 2, y = top + textH + gap;
+    const D2D1_RECT_F link = D2D1::RectF(cx - linkW / 2, y, cx + linkW / 2, y + linkH);
+    renderer_.drawUiText(linkText, link, size, theme::kAccent, DWRITE_TEXT_ALIGNMENT_CENTER, false, DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+    renderer_.rt()->DrawLine({link.left, link.bottom}, {link.right, link.bottom}, renderer_.brush(theme::kAccent), px(1));
+    canvasLinks_.push_back({link, url});
+}
+
+const std::wstring* MainWindow::linkAt(POINT pt) const {
+    for (const auto& l : canvasLinks_)
+        if (inRect(l.rc, pt)) return &l.url;
+    return nullptr;
 }
 
 void MainWindow::drawSelection() {
@@ -1868,6 +1915,10 @@ void MainWindow::onLButtonDown(POINT pt) {
         if (info_.click(pt)) repaint();
         return;
     }
+    if (const std::wstring* url = linkAt(pt)) { // 缺擴充時的 Microsoft Store 連結
+        ShellExecuteW(hwnd_, L"open", url->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return;
+    }
     if (!inRect(canvasRc_, pt) || !hasView()) return;
     if (edit_) endTextEdit(true);
 
@@ -1983,6 +2034,10 @@ bool MainWindow::onSetCursor() {
     POINT pt;
     GetCursorPos(&pt);
     ScreenToClient(hwnd_, &pt);
+    if (linkAt(pt)) {
+        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return true;
+    }
     if (!inRect(canvasRc_, pt) || !doc_.image()) return false;
     LPCWSTR id = nullptr;
     switch (editor_.cursorAt(pointerAt(pt), twoPage())) {
@@ -2374,7 +2429,7 @@ bool MainWindow::runImageOp(const std::function<void()>& op) {
 
 void MainWindow::rotateImage() {
     if (!doc_.image()) return; // 壓縮檔內也能轉：當成檢視動作，翻頁就重置
-    if (!rotateAllowed(editLock())) { // plugin 讀進來的圖：只能輸出成
+    if (!rotateAllowed(editLock())) { // plugin 讀進來的圖、寫不出來的格式：只能輸出成
         editGuard();
         return;
     }

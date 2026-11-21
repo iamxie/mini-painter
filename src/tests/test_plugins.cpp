@@ -449,6 +449,52 @@ TEST_CASE("TIFF 檔頭的檔先問 plugin（像 DNG）；plugin 不認的照舊�
     CHECK(r.info.pluginFormat.empty());
 }
 
+TEST_CASE("HEIF 交給系統 codec：plugin 可以宣告 .heic，HEIF 檔頭的檔先問 plugin，plugin 不認的照舊走 WIC") {
+    CHECK(askPluginsFirst(ImageFormat::Heif));
+    CHECK_FALSE(askPluginsFirst(ImageFormat::Png));
+    CHECK_FALSE(askPluginsFirst(ImageFormat::Jpeg));
+
+    const std::wstring dir = freshDir(L"heif-first");
+    installPlugin(dir, L"myheic", manifestWith("format=MPTEST image|.mpt\nformat=HEIC test|.heic;.HIF\n").c_str());
+    auto entries = scanPlugins(dir);
+    REQUIRE(entries.size() == 1);
+    CHECK(entries[0].builtInOverlap.empty()); // .heic 不算內建
+    CHECK(pluginEffectiveExtensions(entries[0]) == std::vector<std::wstring>{L".mpt", L".heic", L".hif"});
+    activateAll(dir);
+    auto exts = supportedExtensions();
+    CHECK(std::count(exts.begin(), exts.end(), L".heic") == 1); // 表裡有、plugin 也有：只列一次
+    CHECK(std::count(exts.begin(), exts.end(), L".hif") == 1);
+
+    // 自帶解碼器的 HEIC plugin：HEIF 檔頭，第 100 byte 起是 test plugin 的檔頭（見 test_plugin.cpp）。
+    std::string fake = std::string("\0\0\0\x18" "ftyp" "heic", 12) + std::string(4, '\0') + "mif1heic";
+    fake.resize(100, '\0');
+    std::string record = mptBytes('2', 5, 4, 'O');
+    record.replace(0, 8, std::string("MPHEIF\0\0", 8));
+    fake += record;
+    const std::wstring p = tempPath(L"plugin.heic");
+    writeBytes(p, fake);
+    REQUIRE(detectImageFormat(p) == ImageFormat::Heif);
+    LoadResult r = loadImage(p);
+    REQUIRE(r.error.ok());
+    CHECK(r.info.pluginFormat == L"HEIC test");
+    CHECK(r.image->width == 5);
+    CHECK(r.image->height == 4);
+    int w = 0, h = 0;
+    CHECK(readImageSize(p, w, h));
+    CHECK(w == 5);
+    CHECK(h == 4);
+    const std::wstring noext = tempPath(L"plugin-heic-noext");
+    writeBytes(noext, fake);
+    CHECK(sniffImageExtension(noext) == L".heic");
+
+    // 真的 HEIC：plugin 不認，交給 WIC（解不解得開看機器，見 test_heif.cpp）。
+    r = loadImage(fixturePath(L"heic-exif-orient6.heic"));
+    CHECK(r.info.pluginFormat.empty());
+
+    setActivePlugins(nullptr);
+    CHECK(isSupportedExtension(L".heic")); // 沒有 plugin 時是內建的
+}
+
 TEST_CASE("sniffImageExtension：壓縮檔裡沒副檔名的檔，plugin 認得就補它的副檔名") {
     const std::wstring dir = freshDir(L"sniff");
     const std::wstring p = tempPath(L"noext");

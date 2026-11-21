@@ -1,0 +1,16 @@
+HEIC test fixtures (used by src/tests/test_heif.cpp and test_plugins.cpp)
+
+Made by this project with scripts/make_heic_fixtures.py (pillow-heif: libheif + x265; Pillow's AVIF encoder).
+They are our own test data, under the project's license. The program does not link any HEIF / HEVC / AV1 code:
+these files are only decoded through Windows WIC when the Microsoft Store extensions are installed.
+
+Picture: 64 x 48, gray (128,128,128) with an 8 x 8 red (255,0,0) block in the top-left corner.
+
+heic-exif-orient6.heic
+  HEVC (ftyp heic, compatible mif1 heic miaf). EXIF: Make "mpainter test", Model "heic fixture", Orientation 6.
+  libheif stores the rotation as irot, so decoders show it as 48 x 64 with the red block in the top-right corner.
+  SHA-256 74e4a926d8acf8101dd278942885803a8fa2c5345d681e15e6a96f809542d6b4
+
+heic-avif.heic
+  AVIF content (AV1, ftyp avif, compatible avif mif1 miaf MA1B) with a .heic name. 64 x 48, no EXIF.
+  SHA-256 92df92f6de0f2c0a3bdd3f657f59d70ba7ae927c0ce5dbecc2cb2058af6301dc

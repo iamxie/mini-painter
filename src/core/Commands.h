@@ -81,9 +81,11 @@ struct CommandState {
 bool commandEnabled(int id, const CommandState& s);
 
 // 這張圖為什麼不能編輯。壓縮檔裡的圖：不能編輯與儲存，旋轉當成看圖動作照樣可以；
-// plugin 讀進來的圖（不管在不在壓縮檔裡）：只負責讀與顯示，連旋轉都不行，只能「輸出成」。
-enum class EditLock { None, Archive, Plugin };
-EditLock editLockFor(bool inArchive, bool fromPlugin);
+// plugin 讀進來的圖（不管在不在壓縮檔裡）：只負責讀與顯示，連旋轉都不行，只能「輸出成」；
+// 寫不出來的格式（HEIF，core/ImageFormat 的 isViewOnlyFormat）：和 plugin 的圖一樣，只能「輸出成」。
+// 幾個條件同時成立時，說明用比較嚴的那個（plugin 先於格式，格式先於壓縮檔）。
+enum class EditLock { None, Archive, Plugin, Format };
+EditLock editLockFor(bool inArchive, bool fromPlugin, bool viewOnlyFormat);
 bool rotateAllowed(EditLock lock);
 
 // 鍵盤：虛擬鍵碼加 Ctrl / Shift 的狀態對應到哪個指令；不是指令回 IDM_NONE。

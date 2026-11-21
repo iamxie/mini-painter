@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 1.1.2 LANGUAGES C CXX) # C：DNG SDK 附的 libjpeg
+project(mpainter VERSION 1.1.3 LANGUAGES C CXX) # C：DNG SDK 附的 libjpeg
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -241,6 +241,8 @@ add_executable(mp_tests
     # DNG plugin：解碼的部分直接連進來測（例如換執行緒數），也經過 loadImage 走真的 plugin。
     src/tests/test_plugin_dng.cpp
     src/plugins/dng/DngRender.cpp
+    # HEIC / HEIF：走系統的 WIC，結果看機器裝了哪些 Microsoft Store 擴充（fixtures/heic-*.heic）。
+    src/tests/test_heif.cpp
 )
 target_include_directories(mp_tests SYSTEM PRIVATE "${MP_JXL_INCLUDE}")
 target_compile_definitions(mp_tests PRIVATE ${MP_JXL_DEFS})
@@ -253,7 +255,8 @@ target_link_libraries(mp_tests PRIVATE mp_core mp_render bit7z::bit7z Catch2::Ca
 target_compile_definitions(mp_tests PRIVATE "MP_TEST_FIXTURES=L\"${CMAKE_SOURCE_DIR}/src/tests/fixtures\"")
 # 隨程式發佈的語系檔：測試檢查每一行的佔位符。
 target_compile_definitions(mp_tests PRIVATE "MP_SOURCE_LANG_DIR=L\"${CMAKE_SOURCE_DIR}/src/lang\"")
-file(GLOB MP_FIXTURE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.rar" "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.dng")
+file(GLOB MP_FIXTURE_FILES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.rar" "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.dng"
+     "${CMAKE_SOURCE_DIR}/src/tests/fixtures/*.heic")
 add_custom_command(TARGET mp_tests POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:mp_tests>/fixtures"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MP_FIXTURE_FILES} "$<TARGET_FILE_DIR:mp_tests>/fixtures")

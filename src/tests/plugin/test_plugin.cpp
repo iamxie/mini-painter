@@ -4,6 +4,8 @@
 //   0..7   "MPTEST1\0"（格式 0，.mpt）或 "MPTEST2\0"（格式 1，.mpt2 / .mpu）
 //          "MPTESTL\0"：第 100 byte 是 'L' 才認（格式 0）—— 要看到整個檔（v2）才認得出來
 //          "II*\0"（TIFF 檔頭）：第 100 起是 "MPTIFF" 才認（格式 1），像 DNG 一樣藏在 TIFF 裡
+//          "....ftyp"（HEIF 檔頭）：第 100 起是一份完整的 24 bytes 檔頭、開頭 "MPHEIF\0\0" 才認（格式 1），
+//          像自帶解碼器的 HEIC plugin；寬高、指令、顏色從那一份讀
 //   8..11  寬   12..15 高   16 指令   17..20 B G R A   21..23 不用
 // 指令（decode）：'O' 照寬高填顏色；'D' 同 'O' 再給 300 × 150 dpi；'E' 回 MP_ERR_CORRUPT 加說明；
 //   'N' 回成功但沒配置；'A' 寫入 NULL（存取違規）；'F' __fastfail；'W' 睡 30 秒再成功（給「主程式別的執行緒當掉」的測試）。
@@ -34,6 +36,16 @@ void crash() {
     *p = 1;
 }
 
+constexpr size_t kHeifRecord = 100;
+
+bool isHeifFake(const uint8_t* data, size_t size) {
+    return size >= kHeifRecord + kHeader && std::memcmp(data + 4, "ftyp", 4) == 0 &&
+           std::memcmp(data + kHeifRecord, "MPHEIF\0\0", 8) == 0;
+}
+
+// 寬高、指令、顏色從哪裡讀：HEIF 檔頭的假檔在第 100 byte，其他在開頭。
+const uint8_t* recordOf(const uint8_t* data, size_t size) { return isHeifFake(data, size) ? data + kHeifRecord : data; }
+
 int32_t probe(const uint8_t* data, size_t size) {
     if (size >= 17 && data[16] == 'P' && std::memcmp(data, "MPTEST", 6) == 0) crash();
     if (size < 8) return -1;
@@ -41,11 +53,13 @@ int32_t probe(const uint8_t* data, size_t size) {
     if (std::memcmp(data, "MPTEST2\0", 8) == 0) return 1;
     if (std::memcmp(data, "MPTESTL\0", 8) == 0) return size > 100 && data[100] == 'L' ? 0 : -1;
     if (std::memcmp(data, "II*\0", 4) == 0) return size >= 106 && std::memcmp(data + 100, "MPTIFF", 6) == 0 ? 1 : -1;
+    if (std::memcmp(data + 4, "ftyp", 4) == 0) return isHeifFake(data, size) ? 1 : -1;
     return -1;
 }
 
 int32_t readSize(int32_t, const uint8_t* data, size_t size, int32_t* width, int32_t* height) {
     if (size < kHeader) return MP_ERR_CORRUPT;
+    data = recordOf(data, size);
     if (data[16] == 'a') crash();
     if (data[16] == 'z') return MP_ERR_CORRUPT;
     *width = readI32(data + 8);
@@ -58,6 +72,7 @@ int32_t decode(int32_t, const uint8_t* data, size_t size, const MpHost* host, Mp
         strcpy_s(info->message, sizeof(info->message), "file too short");
         return MP_ERR_CORRUPT;
     }
+    data = recordOf(data, size);
     const uint8_t cmd = data[16];
     switch (cmd) {
     case 'E': strcpy_s(info->message, sizeof(info->message), "test failure"); return MP_ERR_CORRUPT;

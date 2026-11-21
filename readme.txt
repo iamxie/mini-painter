@@ -10,6 +10,8 @@ plugins\jxl 與 plugins\dng 只給開 JPEG XL 與 DNG 用，不需要這些功�
 - 把圖片拖到視窗上、「檔案 > 開啟」，或在命令列給路徑：mpainter.exe 圖片或資料夾
 - 支援 BMP、TIFF、JPEG、PNG、WebP；隨附的 plugin 再加上 JPEG XL（.jxl）與 DNG（.dng，相機的 raw 檔），
   這兩種只能看與「輸出成」，見下方「讀圖 plugin」。
+- HEIC / HEIF（.heic、.heif、.hif，例如 iPhone 的照片）交給 Windows 解，要先從 Microsoft Store 裝擴充，
+  只能看與「輸出成」，見下方「HEIC / HEIF」。
 - 也能直接開 zip / 7z / rar（含 .cbz / .cb7 / .cbr）壓縮檔，把裡面的圖片當一個資料夾翻頁，見下方「壓縮檔」。
 - ← → 翻同資料夾的上一張 / 下一張。開資料夾時從第一張開始。翻到底會提示「已經是最後一張了」。
 - 看漫畫時把「顯示 > 翻到底時接著看下一個資料夾或壓縮檔」打開（預設關；內建的「漫畫模式」是開的）：
@@ -94,6 +96,17 @@ plugins\jxl 與 plugins\dng 只給開 JPEG XL 與 DNG 用，不需要這些功�
   會提示原因並可以打開下載頁面自己下載。
 - 不想自動檢查：「編輯 > 設定 > 一般」取消「啟動時自動檢查更新」。之後要更新時，到「說明 > 關於 mpainter」
   按「檢查更新…」。
+
+HEIC / HEIF
+-----------
+- mpainter 不附 HEIC 的解碼器（HEVC 有專利授權的問題），交給 Windows 解。要先從 Microsoft Store 安裝：
+  「HEIF 影像延伸模組」（免費），加上「HEVC 視訊延伸模組」（付費）。內容是 AV1 的檔（AVIF）要的是
+  「AV1 視訊延伸模組」（免費）。
+- 少裝了哪一個，畫面上會寫出來，下面有連到 Microsoft Store 網頁的連結。
+- HEIC 開起來是唯讀的：可以看，也可以「輸出成」上面五種格式（輸出成 JPEG 時 EXIF 會帶過去）；
+  不能標註、調整、旋轉。
+- 透明的部分會變成不透明（Windows 的解碼器不給透明）。10 位元的 HEIC 可能開不了（我們沒有顯示卡的測試機上開不了）。
+- 有人另外做了 HEIC 的 plugin（自帶解碼器）時，啟用後 .heic 改由那個 plugin 開。
 
 讀圖 plugin
 -----------

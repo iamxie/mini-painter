@@ -250,6 +250,8 @@ std::wstring editLockText(EditLock lock) {
         return tr(L"This image is inside an archive and is read-only.\n\nExtract the archive first if you want to edit it.");
     case EditLock::Plugin:
         return tr(L"This image was opened by a plugin and is read-only.\n\nUse Export As to save a copy in another format.");
+    case EditLock::Format:
+        return tr(L"mpainter cannot save this image format, so the image is read-only.\n\nUse Export As to save a copy in another format.");
     case EditLock::None: break;
     }
     return L"";

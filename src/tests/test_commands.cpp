@@ -185,12 +185,16 @@ TEST_CASE("commandForKey：目前的按鍵，含選單沒寫出來的") {
     }
 }
 
-TEST_CASE("editLockFor / rotateAllowed：壓縮檔裡的圖能轉不能改；plugin 讀進來的只能輸出成，在壓縮檔裡也一樣") {
-    CHECK(editLockFor(false, false) == EditLock::None);
-    CHECK(editLockFor(true, false) == EditLock::Archive);
-    CHECK(editLockFor(false, true) == EditLock::Plugin);
-    CHECK(editLockFor(true, true) == EditLock::Plugin);
+TEST_CASE("editLockFor / rotateAllowed：壓縮檔裡的圖能轉不能改；plugin 讀進來的與寫不出來的格式只能輸出成，在壓縮檔裡也一樣") {
+    CHECK(editLockFor(false, false, false) == EditLock::None);
+    CHECK(editLockFor(true, false, false) == EditLock::Archive);
+    CHECK(editLockFor(false, true, false) == EditLock::Plugin);
+    CHECK(editLockFor(true, true, false) == EditLock::Plugin);
+    CHECK(editLockFor(false, false, true) == EditLock::Format);
+    CHECK(editLockFor(true, false, true) == EditLock::Format);
+    CHECK(editLockFor(false, true, true) == EditLock::Plugin);
     CHECK(rotateAllowed(EditLock::None));
     CHECK(rotateAllowed(EditLock::Archive));
     CHECK_FALSE(rotateAllowed(EditLock::Plugin));
+    CHECK_FALSE(rotateAllowed(EditLock::Format));
 }

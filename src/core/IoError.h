@@ -19,6 +19,10 @@ enum class IoErrorCode {
     WebPDecodeFailed,
     OutOfMemory,      // 圖太大，記憶體配不出來
     PluginFailed,     // 讀圖 plugin 回報失敗。detail 是英文（plugin id、回傳值、plugin 的說明），不翻譯
+    // HEIF 解不開，因為系統缺 Microsoft Store 的擴充（判斷規則見 ImageIO.h 的 classifyHeifFailure）。
+    NeedHeifExtension, // 「HEIF 影像延伸模組」
+    NeedHevcExtension, // 「HEVC 視訊延伸模組」
+    NeedAv1Extension,  // 「AV1 視訊延伸模組」
     // 存檔
     UnsupportedSaveFormat, // detail 是副檔名
     WebPEncodeFailed,
@@ -42,5 +46,9 @@ struct IoError {
 
 // 這個代碼的說明句（英文翻譯 key）。帶 %s 的是 UnsupportedSaveFormat 與 PluginFailed（填 detail）。None 回空字串。
 const wchar_t* ioErrorMessage(IoErrorCode code);
+
+// 缺擴充的那幾個代碼：Microsoft Store 網頁上那個擴充的網址（沒裝 Store app 的電腦也開得了，網頁上可以轉到 Store app）。
+// 其他代碼回 nullptr。
+const wchar_t* ioErrorStoreUrl(IoErrorCode code);
 
 } // namespace mp

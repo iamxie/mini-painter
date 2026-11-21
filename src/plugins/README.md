@@ -52,7 +52,9 @@ one of mpainter's own formats (PNG, JPEG, BMP, TIFF, WebP). Editing, rotating an
 - Never let a C++ exception or `abort()` leave the plugin. On failure, return an `MP_ERR_*` code
   and put a short English reason in `info->message`. The user sees that text as it is.
 - Extensions that mpainter opens by itself (`.png`, `.jpg`, `.zip`, ...) are never given to a
-  plugin.
+  plugin. HEIC / HEIF (`.heic`, `.heif`, `.hif`) are the exception: mpainter leaves them to Windows,
+  which needs extensions from Microsoft Store. A plugin with its own decoder may claim them, and
+  files that start like a HEIF file are offered to plugins before Windows.
 - Two enabled plugins may not claim the same extension. The Plugins page asks the user to pick one.
   If the ini turns both on anyway, mpainter turns both off at the next start.
 

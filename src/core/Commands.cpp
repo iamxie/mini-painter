@@ -91,12 +91,13 @@ const CommandInfo* commandInfo(int id) {
     return nullptr;
 }
 
-EditLock editLockFor(bool inArchive, bool fromPlugin) {
+EditLock editLockFor(bool inArchive, bool fromPlugin, bool viewOnlyFormat) {
     if (fromPlugin) return EditLock::Plugin; // 比較嚴的那個優先
+    if (viewOnlyFormat) return EditLock::Format;
     return inArchive ? EditLock::Archive : EditLock::None;
 }
 
-bool rotateAllowed(EditLock lock) { return lock != EditLock::Plugin; }
+bool rotateAllowed(EditLock lock) { return lock == EditLock::None || lock == EditLock::Archive; }
 
 bool commandEnabled(int id, const CommandState& s) {
     if (s.dragging) return false;

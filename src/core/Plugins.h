@@ -26,7 +26,8 @@ constexpr unsigned kPluginApiOldest = 1;
 bool pluginApiSupported(unsigned api);
 
 // 檔頭是這個內建格式（或認不得）的檔，要先問 plugin、沒有 plugin 認才走內建：TIFF 是很多格式的容器
-// （DNG、NEF、CR2 的檔頭都和 TIFF 一樣）。PNG、JPEG、WebP、BMP 直接走內建，不問 plugin。
+// （DNG、NEF、CR2 的檔頭都和 TIFF 一樣）；交給系統 codec 解的格式（HEIF，ImageFormatInfo::systemCodec）
+// 讓自帶解碼器的 plugin 接手。PNG、JPEG、WebP、BMP 直接走內建，不問 plugin。
 bool askPluginsFirst(ImageFormat format);
 
 // exe 旁的 plugins 資料夾。
@@ -39,7 +40,7 @@ struct PluginEntry {
     std::wstring id; // 資料夾名
     std::wstring dllPath;
     ManifestRead manifest;
-    // 宣告的副檔名裡，內建已經在用的（圖片格式與壓縮檔）：不交給這個 plugin，設定頁註明。
+    // 宣告的副檔名裡，內建已經在用的（圖片格式與壓縮檔；交給系統 codec 的 HEIF 不算）：不交給這個 plugin，設定頁註明。
     std::vector<std::wstring> builtInOverlap;
 };
 // 掃 pluginsDir 底下的子資料夾 <id>，有 <id>.dll 的才算。照 id 排序（不分大小寫）。資料夾不在回空的。

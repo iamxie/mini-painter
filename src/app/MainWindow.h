@@ -80,7 +80,8 @@ private:
     void undoRedo(bool undo);
     void togglePairing(bool& flag, bool saved); // 兩頁並排的配對選項開 / 關
     // 開不了：把訊息畫在畫布上，目前的圖清掉。resetList：連翻頁清單與檔案資訊也清掉（資料夾沒圖、壓縮檔打不開）。
-    void showLoadError(const std::wstring& path, const std::wstring& message, bool resetList);
+    // link：缺 Microsoft Store 擴充時那個擴充的網址，訊息下面畫成可以點的連結；空的就不畫。
+    void showLoadError(const std::wstring& path, const std::wstring& message, bool resetList, const std::wstring& link = {});
     LoadResult loadPage(const std::wstring& path); // 解一頁：預先解好的直接拿，沒有就現在解（解好的交給 prefetch_ 留著）
     // 預先解碼：告訴背景目前這屏、翻頁方向的下一屏、上一屏，到一本的盡頭時加上換本預備。翻頁、改檢視設定、畫布大小變了時呼叫。
     void schedulePrefetch();
@@ -117,8 +118,8 @@ private:
     bool openArchive(const std::wstring& path, std::wstring* failMsg = nullptr, bool openLast = false);
     void closeArchive();                         // 刪這個壓縮檔的暫存、清狀態
     bool insideArchive(const std::wstring& path) const; // path 是不是目前壓縮檔解出來的檔
-    // 唯讀：壓縮檔裡的圖（還能旋轉）、plugin 讀進來的圖（只能輸出成）。規則在 core/Commands 的 EditLock。
-    EditLock editLock() const { return editLockFor(!archivePath_.empty(), pluginImage_); }
+    // 唯讀：壓縮檔裡的圖（還能旋轉）、plugin 讀進來的圖與寫不出來的格式（只能輸出成）。規則在 core/Commands 的 EditLock。
+    EditLock editLock() const { return editLockFor(!archivePath_.empty(), pluginImage_, viewOnlyFormat_); }
     bool readOnly() const { return editLock() != EditLock::None; }
     bool editGuard();                            // 唯讀時提示並回傳 false
     // 整張圖的動作（裁切、旋轉、調整尺寸、調色）。記憶體不夠時 Editor 丟 std::bad_alloc、文件不動：說一聲，回 false。
@@ -220,6 +221,9 @@ private:
     void paint();
     void drawChrome();
     void drawCanvas();
+    // 圖開不了的訊息畫在 box 裡（置中）。url 不是空的時，訊息下面加一行可以點的連結，位置記進 canvasLinks_。
+    void drawLoadProblem(const D2D1_RECT_F& box, const std::wstring& text, const std::wstring& url, bool wrap);
+    const std::wstring* linkAt(POINT pt) const; // 滑鼠下的連結的網址；沒有回 nullptr
     void drawSelection();
     void repaint() { InvalidateRect(hwnd_, nullptr, FALSE); }
 
@@ -308,6 +312,14 @@ private:
     std::wstring path_;
     std::wstring loadedFrom_; // 這張圖的 metadata 來源：原本開的檔；存檔成功後就是存的那個檔
     std::wstring loadError_;
+    std::wstring loadErrorLink_; // 開不了的原因是缺 Store 擴充時，那個擴充的網址；其他是空的
+    bool viewOnlyFormat_ = false; // 目前的圖是寫不出來的格式（HEIF；唯讀，只能輸出成）
+    // 畫布上可以點的連結（最近一次畫的；位置是視窗座標）。每次畫畫布時重填。
+    struct CanvasLink {
+        D2D1_RECT_F rc;
+        std::wstring url;
+    };
+    std::vector<CanvasLink> canvasLinks_;
     // 壓縮檔
     LibraryLoad archiveLoad_;             // 最近一次載入 7z.dll 的結果
     InstanceTempDir tempDir_;             // 本執行個體的暫存資料夾，第一次開壓縮檔（或預開下一本）時建立
@@ -339,6 +351,7 @@ private:
     ImagePtr second_;              // 同一屏的另一頁；沒有就是 nullptr
     std::wstring secondPath_;
     std::wstring secondError_;     // 另一頁讀不到時的原因（畫在它的佔位框裡）；讀到了或沒有另一頁是空的
+    std::wstring secondErrorLink_; // 另一頁的原因是缺 Store 擴充時，那個擴充的網址
     SpreadCache spreadCache_;      // 目前這本的配對與每頁是不是寬圖；清單或選項變了會自己重算
     bool shiftOne_ = false;        // 「錯開一頁」，不存 ini
 

@@ -1,6 +1,7 @@
 #include "core/ImageIO.h"
 
 #include <windows.h>
+#include <mferror.h>
 #include <wincodec.h>
 #include <wincodecsdk.h>
 #include <wrl/client.h>
@@ -181,6 +182,7 @@ ImageFormat formatOfContainer(const GUID& container) {
     if (isGuid(container, GUID_ContainerFormatPng)) return ImageFormat::Png;
     if (isGuid(container, GUID_ContainerFormatBmp)) return ImageFormat::Bmp;
     if (isGuid(container, GUID_ContainerFormatTiff)) return ImageFormat::Tiff;
+    if (isGuid(container, GUID_ContainerFormatHeif)) return ImageFormat::Heif;
     return ImageFormat::Unknown;
 }
 
@@ -1317,15 +1319,27 @@ LoadResult loadWithPlugin(const PluginMatch& m, const std::wstring& path) {
 }
 } // namespace
 
+IoErrorCode classifyHeifFailure(IoErrorCode failed, long hresult, HeifCodec codec) {
+    if (failed == IoErrorCode::DecodeFailed &&
+        (hresult == WINCODEC_ERR_COMPONENTINITIALIZEFAILURE || hresult == WINCODEC_ERR_COMPONENTNOTFOUND))
+        return IoErrorCode::NeedHeifExtension;
+    if (failed != IoErrorCode::None && hresult == MF_E_TOPO_CODEC_NOT_FOUND)
+        return codec == HeifCodec::Av1 ? IoErrorCode::NeedAv1Extension : IoErrorCode::NeedHevcExtension;
+    return failed;
+}
+
 LoadResult loadImage(const std::wstring& path) {
     try {
         const ImageFormat format = detectImageFormat(path);
         if (format == ImageFormat::WebP) return loadWebP(path);
-        // TIFF 檔頭（可能是 DNG 這類以 TIFF 為容器的格式）與認不得的先問 plugin；plugin 不認的交給 WIC
-        // （內建的 TIFF，或系統裝的 codec，例如 GIF）。
+        // TIFF 檔頭（可能是 DNG 這類以 TIFF 為容器的格式）、HEIF 與認不得的先問 plugin；plugin 不認的交給 WIC
+        // （內建的 TIFF，或系統裝的 codec，例如 GIF、HEIF）。
         if (askPluginsFirst(format))
             if (PluginMatch m = matchPluginFile(path)) return loadWithPlugin(m, path);
-        return loadWithWic(path);
+        LoadResult r = loadWithWic(path);
+        if (format == ImageFormat::Heif && !r.error.ok())
+            r.error.code = classifyHeifFailure(r.error.code, r.error.hresult, detectHeifCodec(path));
+        return r;
     } catch (const std::bad_alloc&) {
         // 檔頭宣稱的尺寸配不出記憶體（超大圖，或刻意構造的檔）。背景執行緒也會走到這裡，不能讓例外飛出去。
         LoadResult r;

@@ -198,10 +198,27 @@ TEST_CASE("updateErrorText：路徑與狀態碼填進句子，系統錯誤加系
     setActiveLang({});
 }
 
-TEST_CASE("editLockText：壓縮檔與 plugin 各一句說明，沒鎖是空字串") {
+TEST_CASE("editLockText：壓縮檔、plugin、寫不出來的格式各一句說明，沒鎖是空字串") {
     CHECK(editLockText(EditLock::None).empty());
     CHECK(editLockText(EditLock::Archive).find(L"inside an archive and is read-only") != std::wstring::npos);
     const std::wstring plugin = editLockText(EditLock::Plugin);
     CHECK(plugin.find(L"opened by a plugin and is read-only") != std::wstring::npos);
     CHECK(plugin.find(L"Export As") != std::wstring::npos);
+    const std::wstring format = editLockText(EditLock::Format);
+    CHECK(format.find(L"cannot save this image format") != std::wstring::npos);
+    CHECK(format.find(L"Export As") != std::wstring::npos);
+}
+
+TEST_CASE("ioErrorText：缺 Store 擴充的說明帶擴充名與 HRESULT") {
+    IoError e;
+    e.code = IoErrorCode::NeedHevcExtension;
+    e.hresult = static_cast<long>(0xC00D5212L);
+    CHECK(ioErrorText(e) == L"This image is HEVC-encoded and needs “HEVC Video Extensions” from Microsoft Store (HRESULT 0xC00D5212)");
+    setActiveLang(parseLangText(L"_code=zh-TW\n%s (HRESULT 0x%08X)=%s（HRESULT 0x%08X）\n"
+                                L"Opening HEIC / HEIF images needs “HEIF Image Extension” from Microsoft Store="
+                                L"開啟 HEIC / HEIF 圖片需要 Microsoft Store 的「HEIF 影像延伸模組」\n"));
+    e.code = IoErrorCode::NeedHeifExtension;
+    e.hresult = static_cast<long>(0x88982F8BL);
+    CHECK(ioErrorText(e) == L"開啟 HEIC / HEIF 圖片需要 Microsoft Store 的「HEIF 影像延伸模組」（HRESULT 0x88982F8B）");
+    setActiveLang({});
 }

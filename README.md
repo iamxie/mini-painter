@@ -33,13 +33,17 @@ Usage details are in [readme.txt](readme.txt) (中文) and [readme_en.txt](readm
 
 ## Videos / 教學影片
 
-Traditional Chinese UI with Chinese and English subtitles. Click a picture to play.
+Each topic comes in two versions: English UI with English subtitles, and Traditional Chinese UI with Chinese and English subtitles. Click a picture to play. In *Browsing folders*, the folder tree and dates come from Windows, which is Chinese on the recording PC.
 
-繁中介面，中英雙語字幕。點圖播放。
+每個主題有兩個版本：英文介面配英文字幕，繁中介面配中英雙語字幕。點圖播放。
 
-| Reading comics · 看漫畫 (0:41) | Marking up images · 標註圖片 (0:58) | Modes · 模式 (1:04) |
-|:---:|:---:|:---:|
-| [![Reading comics](media/video-comic.png)](https://livid.com/watch/S_23UjAK9UuU) | [![Marking up images](media/video-markup.png)](https://livid.com/watch/fNybBc7yjcfj) | [![Modes](media/video-modes.png)](https://livid.com/watch/1PbhclUnaPT9) |
+| | English UI | 繁中介面 |
+|---|:---:|:---:|
+| **Reading comics**<br>看漫畫 | [![Reading comics, English UI](media/video-comic-en.png)](https://livid.com/watch/8vhxkxbv7f2k)<br>0:41 | [![看漫畫，繁中介面](media/video-comic.png)](https://livid.com/watch/zBQh7HW2urtD)<br>0:40 |
+| **Marking up images**<br>標註圖片 | [![Marking up images, English UI](media/video-markup-en.png)](https://livid.com/watch/RLTtOFZWSlEz)<br>0:58 | [![標註圖片，繁中介面](media/video-markup.png)](https://livid.com/watch/C9nCyyNqVT_p)<br>0:58 |
+| **Modes**<br>模式 | [![Modes, English UI](media/video-modes-en.png)](https://livid.com/watch/yeD8ShjwAft9)<br>1:05 | [![模式，繁中介面](media/video-modes.png)](https://livid.com/watch/8JunuW8QfkmD)<br>1:04 |
+| **Browsing folders**<br>瀏覽資料夾 | [![Browsing folders, English UI](media/video-browse-en.png)](https://livid.com/watch/Hq7FFhtwysBS)<br>0:51 | [![瀏覽資料夾，繁中介面](media/video-browse.png)](https://livid.com/watch/u9RU_S_tExQS)<br>0:51 |
+| **Fixing a photo**<br>修照片 | [![Fixing a photo, English UI](media/video-photo-en.png)](https://livid.com/watch/qiaHePx7aSQk)<br>0:52 | [![修照片，繁中介面](media/video-photo.png)](https://livid.com/watch/9HRK6jegEWmw)<br>0:52 |
 
 ## Download / 下載
 

@@ -5,9 +5,11 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
+#include "app/BrowseView.h"
 #include "app/ImageDialogs.h"
 #include "app/AppSettings.h"
 #include "app/InfoPanel.h"
@@ -30,6 +32,8 @@
 #include "core/Settings.h"
 #include "core/Spreads.h"
 #include "core/TempDir.h"
+#include "core/ThumbCache.h"
+#include "core/Thumbnails.h"
 #include "core/Update.h"
 #include "core/ViewFit.h"
 #include "core/ViewState.h"
@@ -38,7 +42,7 @@
 
 namespace mp {
 
-class MainWindow : public ColorAdjustHost, private UpdateHost {
+class MainWindow : public ColorAdjustHost, private UpdateHost, private BrowseHost {
 public:
     // 剛被自動更新重啟（main 收到 --after-update）：開好視窗後提示「已更新」。create 前呼叫。
     void setJustUpdated(bool v) { justUpdated_ = v; }
@@ -269,6 +273,29 @@ private:
     void applyCrop();   // 框是整張圖時等於 cancelCrop
     void drawCrop();
 
+    // 瀏覽資料夾（目錄瀏覽模式）：左上資料夾樹、左下預覽、右邊縮圖（子視窗在 browse_，app/BrowseView）。
+    // 進入時這張圖的編輯紀錄清掉、圖不留在記憶體；壓縮檔的暫存留著，離開時回到原本那一頁。規則見 history.md 2026-11-24。
+    void toggleBrowse();       // 按鈕、選單、Esc
+    bool confirmEnterBrowse(); // 有沒存的修改：存檔後進入 / 放棄後進入 / 不進入；存過但還有復原紀錄：提醒會清空
+    // 不問，直接進入（或換資料夾）：資料夾 folder，選中 select（空的就不選）。
+    void enterBrowse(const std::wstring& folder, const std::wstring& select);
+    // 離開瀏覽。reopen：回到進入前那張圖（從磁碟重開）、本來就沒開圖就回空白；false：呼叫端接著開別的檔。
+    void leaveBrowse(bool reopen);
+    void ensureThumbCache();         // 第一次要縮圖時開縮圖快取（暫存位置底下的 thumbs.mpainter.db）
+    void reopenThumbCache();         // 暫存位置或上限改了
+    void showThumbSizeMenu();        // 按鈕右邊的三角形：小 / 中 / 大
+    void setThumbSize(int index);
+    void layoutBrowse();             // layout 的瀏覽模式部分：三塊與兩條分隔線
+    void drawBrowse();               // 預覽（畫布的位置）
+    D2D1_RECT_F previewImageBox() const; // 預覽框裡放圖的範圍（扣掉留白與底下的資訊列）
+    void requestPreview();           // 照目前的選取與預覽框大小解預覽圖
+    int splitterAt(POINT pt) const;  // 1 = 左右之間的分隔線，2 = 樹與預覽之間的，0 = 都不是
+    bool browseKey(const MSG& msg);  // 瀏覽模式時子視窗收到的按鍵（Esc、Tab、Backspace、Ctrl+快捷鍵）
+    // BrowseHost
+    void browseSelectionChanged() override;
+    void browseActivated(int index) override;
+    void browseFolderChanged() override;
+
     // 文字編輯
     void beginTextEdit(uint32_t id, bool selectAll);
     void endTextEdit(bool commit);
@@ -363,6 +390,26 @@ private:
     HWND edit_ = nullptr;
     HFONT editFont_ = nullptr;
     HBRUSH editBrush_ = nullptr;
+
+    // 瀏覽資料夾（縮圖快取宣告在 browse_ 之前：browse_ 的背景執行緒會用它，要先停）
+    ThumbCache thumbCache_;          // 自己算的縮圖（SQLite）；暫存位置在網路磁碟、上限是 0 時不開
+    bool thumbCacheTried_ = false;
+    BrowseView browse_;
+    bool browsing_ = false;
+    PreviewWorker preview_;          // 預覽圖的背景解碼（只做最新的那一個）
+    std::mutex previewMu_;
+    struct PreviewDone {
+        uint64_t ticket = 0;
+        std::wstring path;
+        ScaledDecode result;
+    };
+    std::vector<PreviewDone> previewDone_; // 背景解好、還沒收進來的
+    uint64_t previewTicket_ = 0;
+    ImagePtr previewImage_;
+    std::wstring previewPath_, previewInfo_;
+    int previewReqW_ = 0, previewReqH_ = 0; // 上次解預覽用的框大小；框變大很多就重解
+    D2D1_RECT_F treeRc_{}, listRc_{}, previewRc_{}, vSplitRc_{}, hSplitRc_{};
+    int splitDrag_ = 0;              // 正在拖哪條分隔線（splitterAt 的值）
 
     // 自動更新
     UpdateFlow updates_{*this};

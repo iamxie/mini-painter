@@ -18,6 +18,7 @@ constexpr float kTextBtnRadius = 6;   // 文字按鈕的圓角
 constexpr float kTextBtnPad = 28;     // 文字按鈕的寬度 = 字寬 + 這麼多
 constexpr float kDropInset = 7;       // 下拉三角離按鈕右下角
 constexpr float kDropStroke = 1.2f;
+constexpr float kDropZoneW = 12;      // 一顆分兩半的按鈕：右邊這麼寬是下拉三角那一塊
 
 bool inRect(const D2D1_RECT_F& r, POINT p) { return p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom; }
 
@@ -28,6 +29,7 @@ int commandOf(int button) {
     case BTN_ZOOMOUT: return IDM_ZOOMOUT;
     case BTN_ZOOM100: return IDM_ZOOM100;
     case BTN_ROTATE: return IDM_ROTATE;
+    case BTN_BROWSE: return IDM_BROWSE;
     case BTN_MARKUP: return IDM_MARKUP;
     case BTN_INFO: return IDM_INFO;
     default: return IDM_NONE;
@@ -57,6 +59,8 @@ void Toolbar::layout(const D2D1_RECT_F& toolbar, const D2D1_RECT_F& markup, cons
     x = add(BTN_ZOOMIN, x, y);
     x += px(kGroupGap);
     x = add(BTN_ROTATE, x, y);
+    x += px(kGroupGap); // 瀏覽資料夾是切換模式，不是對圖片的操作：自己一組
+    x = add(BTN_BROWSE, x, y, true);
     const float right = toolbar.right - px(kBarMargin) - bw;
     add(BTN_INFO, right, y);
     add(BTN_MARKUP, right - bw - gap, y);
@@ -93,6 +97,7 @@ void Toolbar::layout(const D2D1_RECT_F& toolbar, const D2D1_RECT_F& markup, cons
         case BTN_ZOOM100: b.enabled = !state.zoomIsActual; break;
         case BTN_MARKUP: b.pressed = state.showMarkup; break;
         case BTN_INFO: b.pressed = state.showInfo; break;
+        case BTN_BROWSE: b.pressed = state.browsing; break;
         case BTN_FREEHAND: b.pressed = state.freehand; break;
         case BTN_ADJCOLOR: b.pressed = state.adjusting; break;
         case BTN_CROP: b.pressed = state.cropping; break;
@@ -101,7 +106,7 @@ void Toolbar::layout(const D2D1_RECT_F& toolbar, const D2D1_RECT_F& markup, cons
         // 對應到指令的按鈕還要指令能用（「1:1」另外要倍率不是 1）；其他的工具按鈕要有圖才能按。
         const int command = commandOf(b.id);
         if (command != IDM_NONE) b.enabled = b.enabled && commandEnabled(command, commands);
-        else if (!state.hasImage) b.enabled = false;
+        else if (!state.hasImage || state.browsing) b.enabled = false; // 瀏覽資料夾時標示工具列整列灰
     }
 }
 
@@ -144,6 +149,12 @@ int Toolbar::hit(POINT pt, const Button** out) const {
     return BTN_NONE;
 }
 
+bool Toolbar::inDropZone(int id, POINT pt, UiScale px) const {
+    if (id != BTN_BROWSE) return false;
+    const Button* b = find(id);
+    return b && inRect(b->rect, pt) && pt.x >= b->rect.right - px(kDropZoneW);
+}
+
 const Button* Toolbar::find(int id) const {
     for (const Button& b : buttons_)
         if (b.id == id) return &b;
@@ -168,6 +179,7 @@ const wchar_t* Toolbar::name(int id) {
     case BTN_FILL: return tr(L"Fill Color");
     case BTN_FORMAT: return tr(L"Text Format");
     case BTN_CROP: return tr(L"Crop");
+    case BTN_BROWSE: return tr(L"Browse Folder");
     default: return L"";
     }
 }

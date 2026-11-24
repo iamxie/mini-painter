@@ -38,6 +38,11 @@ std::wstring metaValueText(const MetaValue& value);
 // 檔案大小，例如「1.5 KB」；不到 1 KB 的單位會翻譯。
 std::wstring fileSizeText(unsigned long long bytes);
 
+// 瀏覽資料夾的預覽底下：「寬 × 高  ·  色深  ·  檔案大小」，換行接修改日期（和 FastStone 一樣的四項；
+// 日期自己一行：左欄窄時一行放不下，中日文會從「下午」中間折開）。
+// bits 是 0、mtime 是 0（FILETIME，讀不到）的那一項不寫。日期照使用者的地區設定（短日期加時分）。
+std::wstring previewInfoText(int width, int height, int bits, unsigned long long bytes, long long mtime);
+
 // ---- 讀圖 plugin ----
 
 // 給使用者看的名字：資訊裡的 name；別的 plugin 也叫這個名字時加上 id（「%s (%s)」，括號跟著語系）；

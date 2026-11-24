@@ -327,7 +327,7 @@ This image is inside an archive and is read-only.\n\nExtract the archive first i
 Unpack to:=展開先：
 Unpacking=展開中
 Unpacking “%s”…=「%s」を展開しています…
-Uses libwebp (BSD-3-Clause), 7-Zip's 7z.dll (LGPL 2.1), bit7z (MPL 2.0) and JSON for Modern C++ (MIT). See THIRD-PARTY-NOTICES.txt.=libwebp（BSD-3-Clause）、7-Zip の 7z.dll（LGPL 2.1）、bit7z（MPL 2.0）、JSON for Modern C++（MIT）を使用しています。ライセンスは THIRD-PARTY-NOTICES.txt を参照。
+Uses libwebp (BSD-3-Clause), 7-Zip's 7z.dll (LGPL 2.1), bit7z (MPL 2.0), JSON for Modern C++ (MIT) and SQLite (public domain). See THIRD-PARTY-NOTICES.txt.=libwebp（BSD-3-Clause）、7-Zip の 7z.dll（LGPL 2.1）、bit7z（MPL 2.0）、JSON for Modern C++（MIT）、SQLite（パブリックドメイン）を使用しています。ライセンスは THIRD-PARTY-NOTICES.txt を参照。
 Wrong password. Try again.=パスワードが違います。もう一度入力してください。
 not a supported archive=対応しているアーカイブ形式ではありません
 “%s” is encrypted. Enter the password:=「%s」は暗号化されています。パスワードを入力してください：
@@ -496,3 +496,15 @@ Plugin changes take effect the next time mpainter starts.\n\nRestart now?=プラ
 # --- v1.2：plugin 讀進來的圖唯讀 ---
 This image was opened by a plugin and is read-only.\n\nUse Export As to save a copy in another format.=この画像はプラグインで読み込んだため読み取り専用です。\n\n残すには「書き出し」で別の形式のコピーを保存してください。
 mpainter cannot save this image format, so the image is read-only.\n\nUse Export As to save a copy in another format.=mpainter はこの画像形式を保存できないため、読み取り専用です。\n\n残すには「書き出し」で別の形式のコピーを保存してください。
+# --- 瀏覽資料夾（目錄瀏覽模式）---
+Browse Folder=フォルダーを閲覧
+Thumbnail Size=サムネイルのサイズ
+Small=小
+Medium=中
+Large=大
+Browsing the folder clears the undo history of this image, so these changes can no longer be undone. Continue?=フォルダーを閲覧すると、この画像の元に戻す履歴が消え、これらの変更は元に戻せなくなります。続行しますか？
+%s bit=%s ビット
+Thumbnails stored now: %s=保存中のサムネイル：%s
+Thumbnail cache limit (MB):=サムネイルキャッシュの上限（MB）：
+Clear thumbnails=サムネイルを消去
+Browse Folder keeps the thumbnails it makes here, so folders open faster next time. Over the limit, the ones unused for the longest are dropped. 0 keeps none.=フォルダーの閲覧で作ったサムネイルをここに保存し、次回同じフォルダーを速く開きます。上限を超えると、最も長く使っていないものから削除します。0 にすると保存しません。

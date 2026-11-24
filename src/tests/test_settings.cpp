@@ -502,7 +502,7 @@ TEST_CASE("Settings 的大小：加欄位時的提醒") {
     // 這個數字變了表示 Settings 加（或拿掉）了欄位。檢視開關加在 MP_VIEW_FLAGS、數字欄位加在 kIntSettings 的話
     // ini 讀寫與 mergeSettings 會自動涵蓋；其他欄位要自己補 parseSettings、serializeSettings、mergeSettings，
     // 再更新這裡的數字。
-    CHECK(sizeof(Settings) == 328);
+    CHECK(sizeof(Settings) == 344);
 }
 
 TEST_CASE("viewModeKey / viewModeFromKey / viewModeName：每個模式往返，不認得的回 FitWindow") {

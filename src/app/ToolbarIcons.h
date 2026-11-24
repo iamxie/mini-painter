@@ -16,6 +16,7 @@ enum ButtonId {
     BTN_ZOOMOUT, BTN_ZOOM100, BTN_ZOOMIN, BTN_ROTATE, BTN_MARKUP, BTN_INFO,
     BTN_FREEHAND, BTN_SHAPES, BTN_TEXT, BTN_ADJCOLOR, BTN_ADJSIZE, BTN_LINESTYLE, BTN_LINECOLOR, BTN_FILL, BTN_FORMAT,
     BTN_CROP,       // 標示工具列：進入 / 取消裁切模式
+    BTN_BROWSE,     // 主工具列：瀏覽資料夾的開關；右下角的三角形跳縮圖大小（Toolbar::inDropZone）
     BTN_CROP_APPLY, // 裁切模式中才有：標示工具列最右邊的「裁切」文字按鈕
 };
 

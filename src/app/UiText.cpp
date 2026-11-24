@@ -147,6 +147,23 @@ std::wstring metaValueText(const MetaValue& value) {
 
 std::wstring fileSizeText(unsigned long long bytes) { return formatFileSize(bytes, tr(L"%llu bytes")); }
 
+std::wstring previewInfoText(int width, int height, int bits, unsigned long long bytes, long long mtime) {
+    const wchar_t* sep = L"  ·  ";
+    std::wstring s = std::to_wstring(width) + L" × " + std::to_wstring(height);
+    if (bits > 0) s += sep + fmt1(L"%s bit", std::to_wstring(bits));
+    s += sep + fileSizeText(bytes);
+    if (mtime != 0) {
+        FILETIME utc{static_cast<DWORD>(mtime & 0xFFFFFFFF), static_cast<DWORD>(static_cast<unsigned long long>(mtime) >> 32)}, local{};
+        SYSTEMTIME st{};
+        wchar_t date[64] = L"", time[64] = L"";
+        if (FileTimeToLocalFileTime(&utc, &local) && FileTimeToSystemTime(&local, &st) &&
+            GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st, nullptr, date, 64, nullptr) &&
+            GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, &st, nullptr, time, 64))
+            s += L"\n" + std::wstring(date) + L" " + time;
+    }
+    return s;
+}
+
 std::wstring pluginDisplayName(const std::vector<PluginEntry>& entries, const std::wstring& id) {
     auto same = [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) == 0; };
     auto it = std::find_if(entries.begin(), entries.end(), [&](const PluginEntry& e) { return same(e.id, id); });

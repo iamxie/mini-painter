@@ -43,6 +43,7 @@ void forEachDirEntry(const std::wstring& dir, const std::function<bool(const Dir
         e.directory = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
         e.reparsePoint = (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
         e.readOnly = (fd.dwFileAttributes & FILE_ATTRIBUTE_READONLY) != 0;
+        e.hidden = (fd.dwFileAttributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM)) != 0;
         e.size = e.directory ? 0 : (static_cast<uint64_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
         if (!fn(e)) break;
     } while (FindNextFileW(h, &fd));

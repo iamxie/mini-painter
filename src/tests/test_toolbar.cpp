@@ -45,7 +45,7 @@ POINT centerOf(const Button& b) { return {static_cast<LONG>((b.rect.left + b.rec
 TEST_CASE("Toolbar：主工具列的位置。左邊從 10 開始、每顆 36×30、間隔 4，右邊兩顆靠右") {
     Fixture t;
     t.layout(withImage());
-    REQUIRE(t.bar.buttons().size() == 6);
+    REQUIRE(t.bar.buttons().size() == 7);
     const Button& zoomOut = t.button(BTN_ZOOMOUT);
     CHECK(zoomOut.rect.left == 10);
     CHECK(zoomOut.rect.top == 7); // (44 - 30) / 2
@@ -54,6 +54,8 @@ TEST_CASE("Toolbar：主工具列的位置。左邊從 10 開始、每顆 36×30
     CHECK(t.button(BTN_ZOOM100).rect.left == 50);
     CHECK(t.button(BTN_ZOOMIN).rect.left == 90);
     CHECK(t.button(BTN_ROTATE).rect.left == 142); // 多空一組的間隔
+    CHECK(t.button(BTN_BROWSE).rect.left == 194);  // 瀏覽資料夾自己一組：再多空一組的間隔
+    CHECK(t.button(BTN_BROWSE).dropdown);
     CHECK(t.button(BTN_INFO).rect.right == 790);
     CHECK(t.button(BTN_MARKUP).rect.right == 750);
     CHECK(t.bar.find(BTN_FREEHAND) == nullptr); // 標示工具列沒開
@@ -64,7 +66,7 @@ TEST_CASE("Toolbar：標示工具列開著時多一列；裁切模式才有「�
     ToolbarState st = withImage();
     st.showMarkup = true;
     t.layout(st);
-    CHECK(t.bar.buttons().size() == 16);
+    CHECK(t.bar.buttons().size() == 17);
     CHECK(t.button(BTN_FREEHAND).rect.left == 10);
     CHECK(t.button(BTN_FREEHAND).rect.top == 49); // 44 + (40 - 30) / 2
     CHECK(t.button(BTN_SHAPES).dropdown);
@@ -133,6 +135,42 @@ TEST_CASE("Toolbar：兩頁並排、第一頁讀不到只有第二頁時，縮�
     st.zoomIsActual = true; // 已經是 1:1 時「1:1」照樣不能按
     t.layout(st);
     CHECK_FALSE(t.button(BTN_ZOOM100).enabled);
+}
+
+TEST_CASE("Toolbar：瀏覽資料夾。要有開著的檔才能按、瀏覽時亮起；右邊 12 像素是下拉三角那一塊") {
+    Fixture t;
+    ToolbarState st; // 沒開檔
+    t.layout(st);
+    CHECK_FALSE(t.button(BTN_BROWSE).enabled);
+    st.commands.canBrowse = true; // 圖開不了也算有開檔
+    t.layout(st);
+    CHECK(t.button(BTN_BROWSE).enabled);
+    CHECK_FALSE(t.button(BTN_BROWSE).pressed);
+
+    st = withImage();
+    st.commands.canBrowse = true;
+    st.commands.browsing = true;
+    st.browsing = true;
+    st.showMarkup = true;
+    t.layout(st);
+    CHECK(t.button(BTN_BROWSE).enabled);
+    CHECK(t.button(BTN_BROWSE).pressed);
+    CHECK_FALSE(t.button(BTN_ZOOMIN).enabled); // 瀏覽時看圖、編輯的都灰
+    CHECK_FALSE(t.button(BTN_ROTATE).enabled);
+    CHECK_FALSE(t.button(BTN_MARKUP).enabled);
+    CHECK_FALSE(t.button(BTN_FREEHAND).enabled); // 標示工具列開著的話照樣顯示、整列灰
+    CHECK_FALSE(t.button(BTN_CROP).enabled);
+    CHECK(t.button(BTN_INFO).enabled);
+
+    const D2D1_RECT_F r = t.button(BTN_BROWSE).rect; // 194～230
+    const LONG y = static_cast<LONG>((r.top + r.bottom) / 2);
+    CHECK(t.bar.inDropZone(BTN_BROWSE, POINT{static_cast<LONG>(r.right) - 2, y}, UiScale{1.0f}));
+    CHECK(t.bar.inDropZone(BTN_BROWSE, POINT{static_cast<LONG>(r.right) - 12, y}, UiScale{1.0f}));
+    CHECK_FALSE(t.bar.inDropZone(BTN_BROWSE, POINT{static_cast<LONG>(r.right) - 13, y}, UiScale{1.0f}));
+    CHECK_FALSE(t.bar.inDropZone(BTN_BROWSE, POINT{static_cast<LONG>(r.right) + 2, y}, UiScale{1.0f})); // 按鈕外
+    // 其他按鈕沒有這一塊
+    const D2D1_RECT_F s = t.button(BTN_ROTATE).rect;
+    CHECK_FALSE(t.bar.inDropZone(BTN_ROTATE, POINT{static_cast<LONG>(s.right) - 2, y}, UiScale{1.0f}));
 }
 
 TEST_CASE("Toolbar：命中。按鈕上回它的 id，空隙回 BTN_NONE") {

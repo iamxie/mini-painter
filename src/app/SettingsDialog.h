@@ -20,6 +20,8 @@ struct SettingsDialogInfo {
     std::vector<std::pair<std::wstring, std::wstring>> languages; // (代碼, 名稱)，語言下拉的順序；「跟隨系統」由對話框自己加在最前面
     std::wstring exeDir;                // 算預設暫存位置用
     std::wstring unzipRootInUse;        // 目前實際使用中的暫存根目錄（顯示路徑與用量）
+    std::wstring thumbCachePath;        // 縮圖快取的檔（顯示用量；「壓縮檔」頁）
+    std::function<void()> onClearThumbs; // 按「清除縮圖」
     std::wstring pluginsDir;                     // exe 旁的 plugins
     std::vector<PluginEntry> plugins;            // 打開面板時掃到的
     std::vector<PluginLoadResult> pluginResults; // 這次啟動時的載入結果（狀態與用不了的原因）

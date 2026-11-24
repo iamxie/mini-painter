@@ -17,5 +17,10 @@ constexpr UINT WM_MP_ASK_DEFAULT = WM_APP + 2;     // 第一次開圖後詢問�
 // （選完項目關閉的；編輯中就還給編輯框）；1 是別的視窗被啟用而關的，不必搶焦點。
 constexpr UINT WM_MP_POPUP_CLOSED = WM_APP + 3;
 constexpr UINT WM_MP_UPDATE_FOUND = WM_APP + 4;    // 背景查到新版：lParam = new 出來的 ReleaseInfo*，收到的人 delete
+// 瀏覽資料夾：背景算好縮圖了（結果在 BrowseView 裡排著，收到的人取走）、預覽解好了（在主視窗排著）、
+// 正在看的資料夾有變動（SHChangeNotifyRegister 送來的，wParam / lParam 要交給 SHChangeNotification_Lock）。
+constexpr UINT WM_MP_THUMBS_READY = WM_APP + 5;
+constexpr UINT WM_MP_PREVIEW_READY = WM_APP + 6;
+constexpr UINT WM_MP_BROWSE_FSCHANGE = WM_APP + 7;
 
 } // namespace mp

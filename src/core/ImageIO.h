@@ -28,6 +28,25 @@ struct LoadResult {
 // 不丟例外：圖太大、記憶體配不出來時回 OutOfMemory。
 LoadResult loadImage(const std::wstring& path);
 
+// 快速解碼（瀏覽資料夾的縮圖與預覽：要求是快，不講究縮圖品質）。縮到 maxW × maxH 以內（不放大），EXIF 方向轉正。
+// WIC 的解碼器能直接縮小解的（JPEG 可以 1/2、1/4、1/8）就縮小解，其他先解整張再用 resampleFast 縮。
+// 格式的判斷和 loadImage 一樣（WebP、plugin、WIC；HEIF 缺擴充時的錯誤代碼也一樣）。
+struct ScaledDecode {
+    ImagePtr image;            // 縮好的圖；失敗時為 nullptr
+    int width = 0, height = 0; // 原圖（轉正後）的寬高
+    ImageInfo info;            // withMetadata 是 false 時只有格式、色彩模型、位元深度、orientation
+    IoError error;
+};
+ScaledDecode decodeScaled(const std::wstring& path, int maxW, int maxH, bool withMetadata);
+// w × h 照比例縮進 maxW × maxH（不放大），每邊至少 1。
+void fitWithin(int w, int h, int maxW, int maxH, int& outW, int& outH);
+// 縮圖存進快取的位元組：不透明的存 JPEG，有透明的存 PNG。失敗回空的。
+std::vector<uint8_t> encodeThumbnail(const Image& img);
+// encodeThumbnail 的反向（WIC 解得開的都行）。失敗回 nullptr。
+ImagePtr decodeThumbnail(const std::vector<uint8_t>& bytes);
+// 讓這條執行緒初始化 COM（和這個檔的 WIC 共用同一份，執行緒結束時收掉）。背景執行緒用 shell 的 COM 物件之前呼叫。
+void ensureThreadCom();
+
 // HEIF 檔（檔頭是 HEIF）解不開時，看失敗的那一步與 HRESULT 判斷是不是缺 Microsoft Store 的擴充（2026-11-22 VM 實測）：
 // - 建不出解碼器（DecodeFailed）且是 WINCODEC_ERR_COMPONENTINITIALIZEFAILURE（擴充移除後）或 COMPONENTNOTFOUND
 //   （從沒裝過）：缺 HEIF 影像延伸模組，NeedHeifExtension。

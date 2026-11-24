@@ -19,6 +19,9 @@ under the BSD-3-Clause license.
 This product includes bit7z, Copyright (c) Riccardo Ostani, distributed
 under the Mozilla Public License 2.0.
 
+This product includes SQLite (https://www.sqlite.org), which is in the
+public domain.
+
 This product uses 7z.dll from 7-Zip, Copyright (C) 1999-2026 Igor Pavlov,
 distributed under the GNU LGPL 2.1 (with the unRAR license restriction for
 the RAR decoder). 7z.dll is loaded at run time and is not linked into

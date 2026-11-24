@@ -32,6 +32,7 @@ struct ToolbarState {
     bool freehand = false, adjusting = false, cropping = false;
     bool hasImage = false;
     bool zoomIsActual = false; // 倍率就是 1：「1:1」那一顆不能按
+    bool browsing = false;     // 正在瀏覽資料夾：「瀏覽資料夾」那一顆亮起
     CommandState commands;     // 對應到指令的按鈕用指令的可用條件（和選單、快捷鍵同一份）
     Color stroke, fill;        // 「線條顏色」「填色」兩顆顯示的顏色
 };
@@ -45,6 +46,8 @@ public:
     // 畫所有按鈕（底色、圖示、下拉三角）。
     void draw(Surface& surface, UiScale px) const;
 
+    // 「瀏覽資料夾」這種一顆分兩半的按鈕：pt 在右邊下拉三角那一塊（按了跳選單，不是切換）。其他按鈕一律 false。
+    bool inDropZone(int id, POINT pt, UiScale px) const;
     // pt（視窗座標）上的按鈕；沒有回 BTN_NONE。
     int hit(POINT pt, const Button** out = nullptr) const;
     const Button* find(int id) const;

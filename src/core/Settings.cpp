@@ -197,11 +197,13 @@ Settings parseSettings(const std::wstring& text) {
         if (key == L"password") val = raw.substr(raw.find(L'=') + 1);
         if (setPrefKey(s.view, key, val)) continue;
         bool isInt = false;
-        for (const IntSetting& f : kIntSettings) {
-            if (key != f.key) continue;
+        auto readInt = [&](const IntSetting& f) {
+            if (key != f.key) return;
             s.*f.member = intSettingFromText(f, val, s.*f.member);
             isInt = true;
-        }
+        };
+        for (const IntSetting& f : kIntSettings) readInt(f);
+        for (const IntSetting& f : kStateIntSettings) readInt(f);
         if (isInt) continue;
         if (key == L"askedDefault") s.askedDefault = parseBool(val, s.askedDefault);
         else if (key == L"tipShown") { try { s.tipShown = std::stoi(val); } catch (...) {} }
@@ -267,6 +269,7 @@ std::wstring serializeSettings(const Settings& s) {
     out += L"autoCheckUpdate=" + std::wstring(s.autoCheckUpdate ? L"1" : L"0") + L"\n";
     out += L"skipVersion=" + s.skipVersion + L"\n";
     for (const IntSetting& f : kIntSettings) out += std::wstring(f.key) + L"=" + std::to_wstring(s.*f.member) + L"\n";
+    for (const IntSetting& f : kStateIntSettings) out += std::wstring(f.key) + L"=" + std::to_wstring(s.*f.member) + L"\n";
     if (!s.updateUrl.empty()) out += L"updateUrl=" + s.updateUrl + L"\n";
     std::wstring pinned;
     for (const auto& n : s.pinnedNames) pinned += (pinned.empty() ? L"" : L"|") + n;
@@ -325,6 +328,7 @@ Settings mergeSettings(const Settings& base, const Settings& mine, const Setting
     pick(&Settings::pinnedNames);
     pick(&Settings::profileName);
     for (const IntSetting& f : kIntSettings) pick(f.member);
+    for (const IntSetting& f : kStateIntSettings) pick(f.member);
     // 目前的檢視值：模式與每個開關各自算。
     if (mine.view.viewMode != base.view.viewMode) out.view.viewMode = mine.view.viewMode;
     for (const ViewFlag& f : kViewFlags)

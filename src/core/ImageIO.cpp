@@ -13,6 +13,7 @@
 #include <webp/mux.h>
 #include <shlwapi.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -1530,5 +1531,213 @@ SaveResult saveImage(const Image& img, const std::wstring& path, const SaveOptio
         return res;
     }
 }
+
+
+// ---- 瀏覽資料夾：快速解碼與縮圖的位元組 ----
+
+namespace {
+
+constexpr float kThumbJpegQuality = 0.85f;
+
+// 整張解好的圖縮進 maxW × maxH（loadImage 走的那幾條：WebP、plugin）。
+ScaledDecode scaledFromFull(LoadResult&& r, int maxW, int maxH) {
+    ScaledDecode d;
+    d.info = std::move(r.info);
+    d.error = r.error;
+    if (!r.image) return d;
+    d.width = r.image->width;
+    d.height = r.image->height;
+    int tw = 0, th = 0;
+    fitWithin(d.width, d.height, maxW, maxH, tw, th);
+    d.image = tw == d.width && th == d.height ? r.image : std::make_shared<const Image>(resampleFast(*r.image, tw, th));
+    return d;
+}
+
+// JPEG 這類解碼器能直接縮小解：挑 1/8、1/4、1/2 裡最小、但還不小於目標的那一種。解不了回 nullptr（呼叫端解整張）。
+ComPtr<IWICBitmapSource> scaledSource(IWICImagingFactory* factory, IWICBitmapFrameDecode* frame, UINT w, UINT h, UINT tw, UINT th) {
+    ComPtr<IWICBitmapSourceTransform> xf;
+    if (FAILED(frame->QueryInterface(IID_PPV_ARGS(&xf)))) return nullptr;
+    for (UINT div : {8u, 4u, 2u}) {
+        UINT cw = (w + div - 1) / div, ch = (h + div - 1) / div;
+        if (cw < tw || ch < th) continue;
+        if (FAILED(xf->GetClosestSize(&cw, &ch)) || cw < tw || ch < th || cw >= w) continue;
+        WICPixelFormatGUID pf = GUID_WICPixelFormat32bppPBGRA;
+        if (FAILED(xf->GetClosestPixelFormat(&pf))) continue;
+        const int bpp = bitsPerPixelOf(factory, pf);
+        if (bpp <= 0) continue;
+        const UINT stride = (cw * static_cast<UINT>(bpp) + 31) / 32 * 4;
+        std::vector<BYTE> buf(static_cast<size_t>(stride) * ch);
+        if (FAILED(xf->CopyPixels(nullptr, cw, ch, &pf, WICBitmapTransformRotate0, stride, static_cast<UINT>(buf.size()), buf.data())))
+            continue;
+        ComPtr<IWICBitmap> bmp;
+        if (FAILED(factory->CreateBitmapFromMemory(cw, ch, pf, stride, static_cast<UINT>(buf.size()), buf.data(), &bmp))) continue;
+        return bmp;
+    }
+    return nullptr;
+}
+
+ScaledDecode decodeScaledWic(const std::wstring& path, int maxW, int maxH, bool withMetadata) {
+    ScaledDecode d;
+    auto factory = makeFactory();
+    if (!factory) { d.error = failure(IoErrorCode::WicUnavailable); return d; }
+    ComPtr<IWICBitmapDecoder> decoder;
+    HRESULT hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (FAILED(hr)) { d.error = failure(IoErrorCode::DecodeFailed, hr); return d; }
+    GUID container{};
+    if (SUCCEEDED(decoder->GetContainerFormat(&container))) d.info.format = formatOfContainer(container);
+    ComPtr<IWICBitmapFrameDecode> frame;
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr)) { d.error = failure(IoErrorCode::NoFrame, hr); return d; }
+    GUID fmt{};
+    if (SUCCEEDED(frame->GetPixelFormat(&fmt))) {
+        d.info.colorModel = colorModelOf(fmt);
+        d.info.bitsPerPixel = bitsPerPixelOf(factory.Get(), fmt);
+    }
+    UINT w = 0, h = 0;
+    hr = frame->GetSize(&w, &h);
+    if (FAILED(hr) || w == 0 || h == 0) { d.error = failure(IoErrorCode::EmptyImage, FAILED(hr) ? hr : S_OK); return d; }
+    d.info.orientation = orientationOf(frame.Get());
+    const bool swap = d.info.orientation >= 5 && d.info.orientation <= 8;
+    d.width = static_cast<int>(swap ? h : w);
+    d.height = static_cast<int>(swap ? w : h);
+    // 目標大小照轉正後的方向算，再換回檔案裡的方向（轉正放在最後）。
+    int tw = 0, th = 0;
+    fitWithin(d.width, d.height, maxW, maxH, tw, th);
+    if (swap) std::swap(tw, th);
+
+    ComPtr<IWICBitmapSource> source = scaledSource(factory.Get(), frame.Get(), w, h, static_cast<UINT>(tw), static_cast<UINT>(th));
+    if (!source) source = frame;
+    UINT sw = 0, sh = 0;
+    source->GetSize(&sw, &sh);
+    ComPtr<IWICFormatConverter> conv;
+    hr = factory->CreateFormatConverter(&conv);
+    if (SUCCEEDED(hr))
+        hr = conv->Initialize(source.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeMedianCut);
+    if (FAILED(hr)) { d.error = failure(IoErrorCode::ConvertFailed, hr); return d; }
+    Image img(static_cast<int>(sw), static_cast<int>(sh));
+    hr = conv->CopyPixels(nullptr, static_cast<UINT>(img.stride()), static_cast<UINT>(img.pixels.size()), img.pixels.data());
+    if (FAILED(hr)) { d.error = failure(IoErrorCode::ReadPixelsFailed, hr); return d; }
+    if (img.width != tw || img.height != th) img = resampleFast(img, tw, th);
+    if (withMetadata) {
+        readMetadata(frame.Get(), d.info);
+        readColorProfile(factory.Get(), frame.Get(), d.info);
+    }
+    Dpi dpi;
+    d.image = oriented(std::move(img), d.info.orientation, dpi);
+    return d;
+}
+
+} // namespace
+
+void fitWithin(int w, int h, int maxW, int maxH, int& outW, int& outH) {
+    outW = w;
+    outH = h;
+    if (w <= 0 || h <= 0 || maxW <= 0 || maxH <= 0) return;
+    if (w <= maxW && h <= maxH) return;
+    const double s = std::min(static_cast<double>(maxW) / w, static_cast<double>(maxH) / h);
+    outW = std::max(1, static_cast<int>(w * s + 0.5));
+    outH = std::max(1, static_cast<int>(h * s + 0.5));
+    outW = std::min(outW, maxW);
+    outH = std::min(outH, maxH);
+}
+
+ScaledDecode decodeScaled(const std::wstring& path, int maxW, int maxH, bool withMetadata) {
+    try {
+        const ImageFormat format = detectImageFormat(path);
+        if (format == ImageFormat::WebP) return scaledFromFull(loadWebP(path), maxW, maxH);
+        if (askPluginsFirst(format))
+            if (PluginMatch m = matchPluginFile(path)) return scaledFromFull(loadWithPlugin(m, path), maxW, maxH);
+        ScaledDecode d = decodeScaledWic(path, maxW, maxH, withMetadata);
+        if (format == ImageFormat::Heif && !d.error.ok())
+            d.error.code = classifyHeifFailure(d.error.code, d.error.hresult, detectHeifCodec(path));
+        return d;
+    } catch (const std::bad_alloc&) {
+        ScaledDecode d;
+        d.error = failure(IoErrorCode::OutOfMemory);
+        return d;
+    }
+}
+
+std::vector<uint8_t> encodeThumbnail(const Image& img) {
+    try {
+        auto factory = makeFactory();
+        if (!factory || img.width <= 0 || img.height <= 0) return {};
+        const bool alpha = hasTransparency(img);
+        // PNG 存未乘 alpha 的 BGRA；不透明的圖 premultiplied 和 straight 一樣，JPEG 直接拿去編。
+        Image copy;
+        const PixelBuffer* src = &img;
+        StraightImage straight;
+        if (alpha) {
+            copy = img;
+            straight = toStraight(std::move(copy));
+            src = &straight;
+        }
+        ComPtr<IWICBitmap> bmp;
+        HRESULT hr = factory->CreateBitmapFromMemory(static_cast<UINT>(src->width), static_cast<UINT>(src->height),
+                                                     GUID_WICPixelFormat32bppBGRA, static_cast<UINT>(src->stride()),
+                                                     static_cast<UINT>(src->pixels.size()), const_cast<BYTE*>(src->pixels.data()), &bmp);
+        if (FAILED(hr)) return {};
+        ComPtr<IStream> stream;
+        if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &stream))) return {};
+        ComPtr<IWICBitmapEncoder> enc;
+        if (FAILED(factory->CreateEncoder(alpha ? GUID_ContainerFormatPng : GUID_ContainerFormatJpeg, nullptr, &enc))) return {};
+        if (FAILED(enc->Initialize(stream.Get(), WICBitmapEncoderNoCache))) return {};
+        ComPtr<IWICBitmapFrameEncode> frame;
+        ComPtr<IPropertyBag2> props;
+        if (FAILED(enc->CreateNewFrame(&frame, &props))) return {};
+        if (!alpha && props) {
+            PROPBAG2 opt{};
+            wchar_t name[] = L"ImageQuality";
+            opt.pstrName = name;
+            VARIANT v;
+            VariantInit(&v);
+            v.vt = VT_R4;
+            v.fltVal = kThumbJpegQuality;
+            props->Write(1, &opt, &v);
+        }
+        if (FAILED(frame->Initialize(props.Get()))) return {};
+        if (FAILED(frame->SetSize(static_cast<UINT>(src->width), static_cast<UINT>(src->height)))) return {};
+        WICPixelFormatGUID pf = alpha ? GUID_WICPixelFormat32bppBGRA : GUID_WICPixelFormat24bppBGR;
+        if (FAILED(frame->SetPixelFormat(&pf))) return {};
+        if (FAILED(frame->WriteSource(bmp.Get(), nullptr)) || FAILED(frame->Commit()) || FAILED(enc->Commit())) return {};
+        STATSTG stat{};
+        if (FAILED(stream->Stat(&stat, STATFLAG_NONAME))) return {};
+        std::vector<uint8_t> out(static_cast<size_t>(stat.cbSize.QuadPart));
+        const LARGE_INTEGER zero{};
+        if (FAILED(stream->Seek(zero, STREAM_SEEK_SET, nullptr))) return {};
+        ULONG read = 0;
+        if (FAILED(stream->Read(out.data(), static_cast<ULONG>(out.size()), &read)) || read != out.size()) return {};
+        return out;
+    } catch (const std::bad_alloc&) {
+        return {};
+    }
+}
+
+ImagePtr decodeThumbnail(const std::vector<uint8_t>& bytes) {
+    try {
+        auto factory = makeFactory();
+        if (!factory || bytes.empty()) return nullptr;
+        ComPtr<IStream> stream = memStream(bytes);
+        if (!stream) return nullptr;
+        ComPtr<IWICBitmapDecoder> decoder;
+        if (FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder))) return nullptr;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        if (FAILED(decoder->GetFrame(0, &frame))) return nullptr;
+        UINT w = 0, h = 0;
+        if (FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0) return nullptr;
+        ComPtr<IWICFormatConverter> conv;
+        if (FAILED(factory->CreateFormatConverter(&conv)) ||
+            FAILED(conv->Initialize(frame.Get(), GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeMedianCut)))
+            return nullptr;
+        auto img = std::make_shared<Image>(static_cast<int>(w), static_cast<int>(h));
+        if (FAILED(conv->CopyPixels(nullptr, static_cast<UINT>(img->stride()), static_cast<UINT>(img->pixels.size()), img->pixels.data())))
+            return nullptr;
+        return img;
+    } catch (const std::bad_alloc&) {
+        return nullptr;
+    }
+}
+
+void ensureThreadCom() { makeFactory(); }
 
 } // namespace mp

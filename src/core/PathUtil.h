@@ -23,6 +23,7 @@ struct DirEntry {
     bool directory = false;
     bool reparsePoint = false; // 連結點、符號連結：走訪整棵樹時不要跟進去
     bool readOnly = false;
+    bool hidden = false;       // 隱藏或系統屬性（檔案總管預設不顯示的）
     uint64_t size = 0;         // 檔案大小；資料夾是 0
 };
 

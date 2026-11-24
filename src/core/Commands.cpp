@@ -9,6 +9,7 @@ static_assert(IDM_LANG_FIRST <= IDM_LANG_LAST && IDM_PROFILE_FIRST <= IDM_PROFIL
 static_assert(IDM_LANG_LAST < IDM_PROFILE_SAVE, "language ids must stay below the profile commands");
 static_assert(IDM_ABOUT < IDM_LANG_FIRST && IDM_LANG_SYSTEM < IDM_LANG_FIRST, "fixed commands must stay out of the language range");
 static_assert(IDM_PROFILE_MANAGE < IDM_PROFILE_FIRST, "fixed commands must stay out of the profile range");
+static_assert(IDM_THUMB_LARGE < IDM_LANG_FIRST, "thumbnail size commands must stay out of the language range");
 
 namespace {
 
@@ -77,6 +78,10 @@ const std::vector<CommandInfo>& commands() {
         {IDM_AUTONEXT, trKey(L"Continue to the next folder or archive at the end"), nullptr},
         {IDM_MARKUP, trKey(L"Markup Toolbar"), nullptr},
         {IDM_INFO, trKey(L"Info Panel"), nullptr},
+        {IDM_BROWSE, trKey(L"Browse Folder"), nullptr},
+        {IDM_THUMB_SMALL, trKey(L"Small"), nullptr},
+        {IDM_THUMB_MEDIUM, trKey(L"Medium"), nullptr},
+        {IDM_THUMB_LARGE, trKey(L"Large"), nullptr},
         {IDM_LANG_SYSTEM, trKey(L"Follow System"), nullptr},
         {IDM_ABOUT, trKey(L"About mpainter…"), nullptr},
         {IDM_PROFILE_MANAGE, trKey(L"Manage Modes…"), nullptr},
@@ -101,7 +106,30 @@ bool rotateAllowed(EditLock lock) { return lock == EditLock::None || lock == Edi
 
 bool commandEnabled(int id, const CommandState& s) {
     if (s.dragging) return false;
+    if (s.browsing) {
+        // 瀏覽資料夾時：看圖與編輯的指令都不能用；開檔、設定、模式、語言、說明、資訊面板照常。
+        if (isLanguageCommand(id) || isProfileCommand(id)) return true;
+        switch (id) {
+        case IDM_BROWSE:
+        case IDM_THUMB_SMALL:
+        case IDM_THUMB_MEDIUM:
+        case IDM_THUMB_LARGE:
+        case IDM_OPEN:
+        case IDM_EXIT:
+        case IDM_SETTINGS:
+        case IDM_INFO:
+        case IDM_LANG_SYSTEM:
+        case IDM_ABOUT:
+        case IDM_PROFILE_MANAGE: return true;
+        case IDM_PROFILE_SAVE: return s.profileModified;
+        default: return false;
+        }
+    }
     switch (id) {
+    case IDM_BROWSE: return s.canBrowse;
+    case IDM_THUMB_SMALL:
+    case IDM_THUMB_MEDIUM:
+    case IDM_THUMB_LARGE: return false; // 只在瀏覽資料夾時能選
     case IDM_SAVE: return s.hasImage && s.dirty && !s.twoPage;
     case IDM_SAVEAS: return s.hasImage;
     case IDM_UNDO: return (s.canUndo || s.cropping) && !s.twoPage;

@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 
+#include "core/BrowseList.h"
 #include "core/UndoLimits.h"
 #include "core/ViewFit.h"
 
@@ -9,6 +10,10 @@ namespace mp {
 
 // 預先解碼最多佔多少記憶體（MB = MiB）：預設值與設定面板允許的範圍。0 = 關閉。
 constexpr int kPrefetchDefaultMB = 512, kPrefetchMinMB = 0, kPrefetchMaxMB = 65536;
+// 瀏覽資料夾的縮圖快取（core/ThumbCache.h）的容量上限（MB = MiB）：預設值與設定面板允許的範圍。0 = 不留縮圖快取。
+constexpr int kThumbCacheDefaultMB = 500, kThumbCacheMinMB = 0, kThumbCacheMaxMB = 65536;
+// 瀏覽資料夾的版面（左欄寬、資料夾樹的高，邏輯像素）存 ini 的範圍。0 = 沒拖過，用預設的版面。
+constexpr int kBrowsePaneMax = 100000;
 // 使用者輸入或 ini 裡的文字 → 上限。不是數字（含空字串）回 fallback，數字夾進範圍。
 int prefetchMBFromText(const std::wstring& text, int fallback);
 
@@ -71,6 +76,10 @@ struct Settings {
     int undoLimit = kUndoLimitDefault; // undo 最多留幾步（1～999，讀進來時夾進範圍）；整圖操作每一步佔一張圖的記憶體
     int undoMemoryMB = kUndoMemoryDefaultMB; // undo 歷史裡的底圖最多佔多少 MB；超過丟最舊的步驟（最近一步一定留）
     int prefetchMB = kPrefetchDefaultMB;     // 預先解碼（下一屏、上一屏、下一本的第一屏）最多佔多少 MB；0 = 關閉
+    int thumbCacheMB = kThumbCacheDefaultMB; // 瀏覽資料夾自己算的縮圖最多存多少 MB；超過丟最久沒用到的；0 = 不存
+    // 瀏覽資料夾：縮圖大小（0 小、1 中、2 大）、左欄寬與資料夾樹的高（邏輯像素，0 = 預設）。不在設定面板，ini 照存。
+    int browseThumbSize = kThumbSizeDefault;
+    int browseLeftW = 0, browseTreeH = 0;
     std::wstring unzipDir;        // 壓縮檔解到哪裡；空字串 = exe 旁的 temp（建不了就退回 %TEMP%\mpainter\unzip）
     // 置頂檔名：清單裡的檔名（不分大小寫，只比檔名不比路徑）排在最前面，依清單順序。ini 用 | 隔開（檔名不能含 |）。
     std::vector<std::wstring> pinnedNames = {L"cover.jpg", L"cover.png", L"cover.webp"};
@@ -90,7 +99,7 @@ struct Settings {
 };
 constexpr int kTipMaxShown = 3;
 
-// 設定面板「一般」頁的數字欄位：ini 的 key、成員、允許的範圍。ini 的讀寫與設定面板共用這張表。
+// 設定面板的數字欄位（「一般」頁與「壓縮檔」頁）：ini 的 key、成員、允許的範圍。ini 的讀寫與設定面板共用這張表。
 struct IntSetting {
     const wchar_t* key;
     int Settings::*member;
@@ -100,6 +109,13 @@ inline constexpr IntSetting kIntSettings[] = {
     {L"undoLimit", &Settings::undoLimit, kUndoLimitMin, kUndoLimitMax},
     {L"undoMemoryMB", &Settings::undoMemoryMB, kUndoMemoryMinMB, kUndoMemoryMaxMB},
     {L"prefetchMB", &Settings::prefetchMB, kPrefetchMinMB, kPrefetchMaxMB},
+    {L"thumbCacheMB", &Settings::thumbCacheMB, kThumbCacheMinMB, kThumbCacheMaxMB},
+};
+// 不在設定面板、程式自己記的數字（瀏覽資料夾的縮圖大小與版面）。ini 的讀寫、合併和上面那張表一樣。
+inline constexpr IntSetting kStateIntSettings[] = {
+    {L"browseThumbSize", &Settings::browseThumbSize, 0, kThumbSizeCount - 1},
+    {L"browseLeftW", &Settings::browseLeftW, 0, kBrowsePaneMax},
+    {L"browseTreeH", &Settings::browseTreeH, 0, kBrowsePaneMax},
 };
 // 文字 → 這個欄位的值。不是數字（含空字串）回 fallback，數字夾進範圍。
 int intSettingFromText(const IntSetting& field, const std::wstring& text, int fallback);

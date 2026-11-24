@@ -305,7 +305,7 @@ This image is inside an archive and is read-only.\n\nExtract the archive first i
 Unpack to:=解壓縮到：
 Unpacking=解壓縮中
 Unpacking “%s”…=正在解開「%s」…
-Uses libwebp (BSD-3-Clause), 7-Zip's 7z.dll (LGPL 2.1), bit7z (MPL 2.0) and JSON for Modern C++ (MIT). See THIRD-PARTY-NOTICES.txt.=使用 libwebp（BSD-3-Clause）、7-Zip 的 7z.dll（LGPL 2.1）、bit7z（MPL 2.0）與 JSON for Modern C++（MIT），授權見 THIRD-PARTY-NOTICES.txt。
+Uses libwebp (BSD-3-Clause), 7-Zip's 7z.dll (LGPL 2.1), bit7z (MPL 2.0), JSON for Modern C++ (MIT) and SQLite (public domain). See THIRD-PARTY-NOTICES.txt.=使用 libwebp（BSD-3-Clause）、7-Zip 的 7z.dll（LGPL 2.1）、bit7z（MPL 2.0）、JSON for Modern C++（MIT）與 SQLite（public domain），授權見 THIRD-PARTY-NOTICES.txt。
 Wrong password. Try again.=密碼不對，請再試一次。
 not a supported archive=不是支援的壓縮檔格式
 “%s” is encrypted. Enter the password:=「%s」有加密，請輸入密碼：
@@ -474,3 +474,15 @@ Plugin changes take effect the next time mpainter starts.\n\nRestart now?=plugin
 # --- v1.2：plugin 讀進來的圖唯讀 ---
 This image was opened by a plugin and is read-only.\n\nUse Export As to save a copy in another format.=這張圖片由 plugin 讀取，唯讀。\n\n要留一份請用「輸出成」存成其他格式。
 mpainter cannot save this image format, so the image is read-only.\n\nUse Export As to save a copy in another format.=mpainter 無法儲存這種圖片格式，這張圖片唯讀。\n\n要留一份請用「輸出成」存成其他格式。
+# --- 瀏覽資料夾（目錄瀏覽模式）---
+Browse Folder=瀏覽資料夾
+Thumbnail Size=縮圖大小
+Small=小
+Medium=中
+Large=大
+Browsing the folder clears the undo history of this image, so these changes can no longer be undone. Continue?=瀏覽資料夾會清空這張圖的復原紀錄，這些修改之後就不能復原了。要繼續嗎？
+%s bit=%s 位元
+Thumbnails stored now: %s=目前存的縮圖：%s
+Thumbnail cache limit (MB):=縮圖快取上限（MB）：
+Clear thumbnails=清除縮圖
+Browse Folder keeps the thumbnails it makes here, so folders open faster next time. Over the limit, the ones unused for the longest are dropped. 0 keeps none.=瀏覽資料夾自己算的縮圖存在這裡，下次開同一個資料夾比較快。超過上限時，丟掉最久沒用到的。0 = 不存。

@@ -12,8 +12,10 @@
 #include "app/UiText.h"
 #include "app/resource.h"
 #include "core/Lang.h"
+#include "core/PathUtil.h"
 #include "core/TempDir.h"
 #include "core/TextUtil.h"
+#include "core/ThumbCache.h"
 
 namespace mp {
 
@@ -115,7 +117,7 @@ void pageApplied(SheetState& st) {
 // ----- 一般 -----
 
 // 數字欄位：控制項 id、core 的欄位定義（ini key、成員、範圍）、最多打幾位數。加一個欄位：core 的 kIntSettings 加一列、
-// 這裡加一列、app.rc 加一個編輯框。
+// 這裡（放在哪一頁就加在那一頁的表）加一列、app.rc 加一個編輯框。
 struct IntField {
     int id;
     int Settings::*member;
@@ -126,7 +128,12 @@ const IntField kIntFields[] = {
     {IDC_UNDOMEM, &Settings::undoMemoryMB, 5},
     {IDC_PREFETCHMEM, &Settings::prefetchMB, 5},
 };
-static_assert(std::size(kIntFields) == std::size(kIntSettings), "every numeric setting needs an edit box on the General page");
+// 「壓縮檔」頁的數字欄位。
+const IntField kArchiveIntFields[] = {
+    {IDC_THUMBCACHE, &Settings::thumbCacheMB, 5},
+};
+static_assert(std::size(kIntFields) + std::size(kArchiveIntFields) == std::size(kIntSettings),
+              "every numeric setting needs an edit box on the General or Archives page");
 
 // 這個欄位在 core 的定義（範圍）。
 const IntSetting& settingOf(const IntField& f) {
@@ -406,8 +413,13 @@ INT_PTR CALLBACK modesPageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 
 // ----- 壓縮檔 -----
 
-void updateUnzipState(HWND dlg, const std::wstring& root) {
-    SetDlgItemTextW(dlg, IDC_UNZIPSTATE, fmt2(L"In use: %s (%s)", root, fileSizeText(directorySize(root))).c_str());
+// 暫存位置的用量：解出來的壓縮檔（不含縮圖快取）與縮圖快取分開寫。
+void updateUnzipState(HWND dlg, const std::wstring& root, const std::wstring& thumbPath) {
+    const unsigned long long thumbs = thumbCacheFileBytes(thumbPath);
+    const unsigned long long all = directorySize(root);
+    const bool thumbsInRoot = _wcsicmp(thumbPath.c_str(), joinPath(root, kThumbCacheFileName).c_str()) == 0;
+    SetDlgItemTextW(dlg, IDC_UNZIPSTATE, fmt2(L"In use: %s (%s)", root, fileSizeText(thumbsInRoot && all >= thumbs ? all - thumbs : all)).c_str());
+    SetDlgItemTextW(dlg, IDC_THUMBSTATE, fmt1(L"Thumbnails stored now: %s", fileSizeText(thumbs)).c_str());
 }
 
 INT_PTR CALLBACK archivePageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
@@ -421,7 +433,11 @@ INT_PTR CALLBACK archivePageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         SetDlgItemTextW(dlg, IDC_UNZIPDIR, st->s.unzipDir.c_str());
         SetDlgItemTextW(dlg, IDC_PINNED, joinLines(st->s.pinnedNames).c_str());
         SetDlgItemTextW(dlg, IDC_PASSWORDS, joinLines(st->s.passwords).c_str());
-        updateUnzipState(dlg, st->info->unzipRootInUse);
+        for (const IntField& f : kArchiveIntFields) {
+            SendDlgItemMessageW(dlg, f.id, EM_SETLIMITTEXT, static_cast<WPARAM>(f.digits), 0);
+            SetDlgItemInt(dlg, f.id, static_cast<UINT>(st->s.*f.member), FALSE);
+        }
+        updateUnzipState(dlg, st->info->unzipRootInUse, st->info->thumbCachePath);
         return TRUE;
     }
     case WM_COMMAND: {
@@ -431,7 +447,12 @@ INT_PTR CALLBACK archivePageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             if (!picked.empty()) SetDlgItemTextW(dlg, IDC_UNZIPDIR, picked.c_str()); // EN_CHANGE 會標記變更
             return TRUE;
         }
-        if ((id == IDC_UNZIPDIR || id == IDC_PINNED || id == IDC_PASSWORDS) && code == EN_CHANGE) { markChanged(dlg); return TRUE; }
+        if ((id == IDC_UNZIPDIR || id == IDC_PINNED || id == IDC_PASSWORDS || id == IDC_THUMBCACHE) && code == EN_CHANGE) { markChanged(dlg); return TRUE; }
+        if (id == IDC_THUMBCLEAR) {
+            if (st->info->onClearThumbs) st->info->onClearThumbs();
+            updateUnzipState(dlg, st->info->unzipRootInUse, st->info->thumbCachePath);
+            return TRUE;
+        }
         break;
     }
     case WM_NOTIFY:
@@ -440,8 +461,14 @@ INT_PTR CALLBACK archivePageProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
             st->s.unzipDir = trim(dlgText(dlg, IDC_UNZIPDIR));
             st->s.pinnedNames = readLines(dlg, IDC_PINNED, true);
             st->s.passwords = readLines(dlg, IDC_PASSWORDS, false);
+            for (const IntField& f : kArchiveIntFields) {
+                int& value = st->s.*f.member;
+                value = intSettingFromText(settingOf(f), dlgText(dlg, f.id), value);
+                SetDlgItemInt(dlg, f.id, static_cast<UINT>(value), FALSE);
+            }
             pageApplied(*st);
-            updateUnzipState(dlg, resolveUnzipRoot(st->s.unzipDir, st->info->exeDir));
+            const std::wstring root = resolveUnzipRoot(st->s.unzipDir, st->info->exeDir);
+            updateUnzipState(dlg, root, joinPath(root, kThumbCacheFileName));
             SetWindowLongPtrW(dlg, DWLP_MSGRESULT, PSNRET_NOERROR);
             return TRUE;
         }

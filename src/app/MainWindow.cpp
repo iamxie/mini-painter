@@ -19,6 +19,7 @@
 #include "app/UpdateDialogs.h"
 #include "app/resource.h"
 #include "app/version.h"
+#include "core/BrowseList.h"
 #include "core/ImageIO.h"
 #include "core/ImageOps.h"
 #include "core/Launch.h"
@@ -35,7 +36,7 @@ namespace mp {
 namespace {
 
 constexpr UINT_PTR kTipTimer = 1, kTipHideTimer = 2, kBtnTipTimer = 3, kHqTimer = 4, kToastTimer = 5, kArmTimer = 6,
-                   kUpdateTimer = 7, kPrefetchTimer = 8;
+                   kUpdateTimer = 7, kPrefetchTimer = 8, kBrowseRefreshTimer = 9, kPreviewTimer = 10;
 constexpr UINT kToastMs = 2000, kArmMs = 3000;
 constexpr UINT kUndoToastMs = 6000; // 復原紀錄快滿的提示比較長，多留一點時間
 constexpr UINT kSettingsToastMs = 10000; // 設定檔讀不到的提示：影響整次執行，留久一點
@@ -72,6 +73,12 @@ constexpr float kItemTipDx = 16, kItemTipDy = 22;    // 物件教學提示：出
 constexpr float kButtonTipGap = 4;                   // 按鈕名稱提示：離按鈕下緣多遠
 constexpr float kInfoWheelScale = 0.5f;              // 資訊面板：滾輪一格（120）捲 60 個邏輯像素
 constexpr UINT_PTR kEditSubclass = 1;
+// 瀏覽資料夾的版面（邏輯像素）：分隔線寬、左欄預設寬與最窄、縮圖區最窄、樹與預覽最矮；樹預設佔左欄的高度比例。
+constexpr float kSplitW = 6, kBrowseLeftDefault = 300, kBrowseLeftMin = 160, kBrowseListMin = 200, kBrowsePaneMin = 100;
+constexpr float kBrowseTreeRatio = 0.55f;
+constexpr float kPreviewPad = 8, kPreviewInfoH = 40, kPreviewInfoText = 12; // 預覽：圖到框的留白、底下資訊列的高（兩行）與字級
+constexpr UINT kBrowseRefreshMs = 300; // 資料夾有變動：等這麼久沒有新的變動才重新列（一次複製很多檔時不要一直重列）
+constexpr UINT kPreviewResizeMs = 300; // 預覽框變大：停下來才重解
 
 bool ctrlDown() { return (GetKeyState(VK_CONTROL) & 0x8000) != 0; }
 bool shiftDown() { return (GetKeyState(VK_SHIFT) & 0x8000) != 0; }
@@ -202,6 +209,8 @@ void MainWindow::rememberPlacement() {
 }
 
 bool MainWindow::preTranslate(MSG& msg) {
+    // 瀏覽資料夾：子視窗（樹、縮圖、路徑列）收到的 Esc、Tab、Backspace、Ctrl+快捷鍵由主視窗處理。
+    if (browsing_ && msg.message == WM_KEYDOWN && browse_.owns(msg.hwnd) && browseKey(msg)) return true;
     // modeless 的調整顏色面板要靠 IsDialogMessage 才有 Tab / Esc / Enter。
     if (HWND panel = adjustPanel_.hwnd()) {
         if (IsDialogMessageW(panel, &msg)) return true;
@@ -264,7 +273,10 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_LBUTTONUP: onLButtonUp({GET_X_LPARAM(lp), GET_Y_LPARAM(lp)}); return 0;
     case WM_CAPTURECHANGED:
         // 拖到一半滑鼠被別的視窗拿走（跳出對話框、切到別的程式）：這次拖曳不算，不然會一直卡在拖曳中。
-        if (reinterpret_cast<HWND>(lp) != hwnd_) endDrag(false);
+        if (reinterpret_cast<HWND>(lp) != hwnd_) {
+            endDrag(false);
+            splitDrag_ = 0;
+        }
         return 0;
     case WM_MOUSELEAVE:
         trackingMouse_ = false;
@@ -318,6 +330,44 @@ LRESULT MainWindow::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CTLCOLOREDIT:
         if (reinterpret_cast<HWND>(lp) == edit_) return reinterpret_cast<LRESULT>(editColors(reinterpret_cast<HDC>(wp)));
         break;
+    case WM_NOTIFY: {
+        LRESULT r = 0;
+        if (browse_.onNotify(reinterpret_cast<NMHDR*>(lp), r)) return r;
+        break;
+    }
+    case WM_CTLCOLORSTATIC:
+        if (HBRUSH b = browse_.onCtlColor(reinterpret_cast<HDC>(wp), reinterpret_cast<HWND>(lp))) return reinterpret_cast<LRESULT>(b);
+        break;
+    case WM_MP_THUMBS_READY: browse_.onThumbsReady(); return 0;
+    case WM_MP_PREVIEW_READY: {
+        std::vector<PreviewDone> got;
+        {
+            std::lock_guard<std::mutex> lock(previewMu_);
+            got.swap(previewDone_);
+        }
+        for (auto& d : got) {
+            if (!browsing_ || d.ticket != previewTicket_) continue;
+            previewImage_ = d.result.image;
+            ThumbStamp st;
+            fileStamp(d.path, st);
+            previewInfo_ = d.result.image ? previewInfoText(d.result.width, d.result.height, d.result.info.bitsPerPixel, st.size, st.mtime)
+                                          : fmt1(L"Cannot open: %s", ioErrorText(d.result.error));
+            InfoData facts;
+            fillFileFacts(facts, d.path);
+            if (d.result.image) {
+                facts.info = d.result.info;
+                facts.width = d.result.width;
+                facts.height = d.result.height;
+            }
+            info_.setData(std::move(facts));
+            repaint();
+        }
+        return 0;
+    }
+    case WM_MP_BROWSE_FSCHANGE:
+        BrowseView::ackFsChange(wp, lp);
+        if (browsing_) SetTimer(hwnd_, kBrowseRefreshTimer, kBrowseRefreshMs, nullptr);
+        return 0;
     case WM_MP_EDIT_LOST_FOCUS:
         if (edit_ && GetFocus() != edit_) endTextEdit(true);
         return 0;
@@ -376,6 +426,7 @@ void MainWindow::onDpiChanged(unsigned dpi, const RECT& suggested) {
     if (tip_) SendMessageW(tip_, TTM_SETMAXTIPWIDTH, 0, px.round(kTipMaxW)); // 提示的折行寬度跟著新的 DPI
     SetWindowPos(hwnd_, nullptr, suggested.left, suggested.top, suggested.right - suggested.left, suggested.bottom - suggested.top,
                  SWP_NOZORDER | SWP_NOACTIVATE);
+    if (browse_.created()) browse_.setScale(px);
     layout();
     updateEditFont();
 }
@@ -399,6 +450,14 @@ bool MainWindow::onTimer(UINT_PTR id) {
         offerPendingUpdate();
         return true;
     case kPrefetchTimer: schedulePrefetch(); return true;
+    case kBrowseRefreshTimer:
+        KillTimer(hwnd_, kBrowseRefreshTimer);
+        if (browsing_) {
+            browse_.refresh();
+            updateTitle();
+        }
+        return true;
+    case kPreviewTimer: requestPreview(); return true;
     case kHqTimer:
         KillTimer(hwnd_, kHqTimer);
         hqBusy_ = false;
@@ -437,6 +496,9 @@ void MainWindow::onClose() {
 }
 
 void MainWindow::onDestroy() {
+    preview_.shutdown();
+    browse_.destroy(); // 縮圖的背景執行緒在用縮圖快取：先停
+    thumbCache_.close();
     prefetch_.shutdown();
     closeArchive();
     tempDir_.release();
@@ -475,6 +537,7 @@ void MainWindow::layout() {
     float infoW = showInfo_ ? px(kInfoW) : 0;
     canvasRc_ = D2D1::RectF(0, y, w - infoW, h);
     infoRc_ = D2D1::RectF(w - infoW, y, w, h);
+    if (browsing_) layoutBrowse();
     buildButtons();
     if (doc_.image() && (canvasRc_.right - canvasRc_.left != prefetchCanvasW_ || canvasRc_.bottom - canvasRc_.top != prefetchCanvasH_))
         SetTimer(hwnd_, kPrefetchTimer, kPrefetchDelayMs, nullptr);
@@ -489,6 +552,7 @@ void MainWindow::buildButtons() {
     st.cropping = editor_.cropping();
     st.hasImage = doc_.image() != nullptr;
     st.zoomIsActual = view_.atActualSize();
+    st.browsing = browsing_;
     st.commands = commandState();
     const StrokeStyle stroke = editor_.currentStroke();
     st.stroke = stroke.stroke;
@@ -509,6 +573,8 @@ CommandState MainWindow::commandState() const {
     st.cropping = editor_.cropping();
     st.profileModified = profileModified(settings_) && findProfile(settings_, settings_.profileName) != nullptr;
     st.dragging = editor_.dragging();
+    st.canBrowse = !path_.empty();
+    st.browsing = browsing_;
     return st;
 }
 
@@ -555,6 +621,13 @@ void MainWindow::buildMenu() {
     profileMenu_ = CreatePopupMenu();
     rebuildProfileMenu();
     AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(profileMenu_), tr(L"Mode"));
+    sep(view);
+    item(view, IDM_BROWSE);
+    HMENU thumbs = CreatePopupMenu();
+    item(thumbs, IDM_THUMB_SMALL);
+    item(thumbs, IDM_THUMB_MEDIUM);
+    item(thumbs, IDM_THUMB_LARGE);
+    AppendMenuW(view, MF_POPUP, reinterpret_cast<UINT_PTR>(thumbs), tr(L"Thumbnail Size"));
     sep(view);
     item(view, IDM_ZOOMIN);
     item(view, IDM_ZOOMOUT);
@@ -659,6 +732,8 @@ void MainWindow::updateMenu() {
     chk(IDM_RTL, settings_.view.rightToLeft);
     chk(IDM_FIRSTALONE, settings_.view.firstPageAlone);
     chk(IDM_SHIFTONE, shiftOne_);
+    chk(IDM_BROWSE, browsing_);
+    CheckMenuRadioItem(menu_, kThumbSizeCommandFirst, kThumbSizeCommandLast, kThumbSizeCommandFirst + settings_.browseThumbSize, MF_BYCOMMAND);
 }
 
 void MainWindow::onCommand(int id) {
@@ -710,6 +785,10 @@ void MainWindow::onCommand(int id) {
         schedulePrefetch();
         break;
     case IDM_MARKUP: onButton(BTN_MARKUP); break;
+    case IDM_BROWSE: toggleBrowse(); break;
+    case IDM_THUMB_SMALL:
+    case IDM_THUMB_MEDIUM:
+    case IDM_THUMB_LARGE: setThumbSize(id - IDM_THUMB_SMALL); break;
     case IDM_INFO: onButton(BTN_INFO); break;
     case IDM_LANG_SYSTEM: selectLanguage(L""); break;
     case IDM_ABOUT: endTextEdit(true); if (showAboutDialog(hwnd_)) updates_.checkNow(); break;
@@ -797,19 +876,18 @@ bool MainWindow::openPath(const std::wstring& path, bool landAtBottom) {
     disarmJump();
     hoverItem_ = 0;
     editor_.select(0);
-    // 先決定要開的是什麼（core/Shelf.h）：壓縮檔交給 openArchive；資料夾換成裡面的第一張圖或第一本書。
+    // 先決定要開的是什麼（core/Shelf.h）：資料夾一律進瀏覽資料夾（命令列、拖進來、右鍵「用 mpainter 開啟」；
+    // 使用者 2026-11-24 定），壓縮檔交給 openArchive。
     const PathKind kind = classifyPath(path);
+    if (kind == PathKind::Folder) {
+        enterBrowse(browseFolderOf(path), L"");
+        return true;
+    }
+    if (browsing_) leaveBrowse(false);
     if (kind == PathKind::Archive) return openArchive(path);
     // 不是目前壓縮檔解出來的檔就離開壓縮檔模式（刪暫存）。
     bool inArchive = insideArchive(path);
     if (!inArchive) closeArchive();
-    if (kind == PathKind::Folder) {
-        // 右鍵資料夾「用 mpainter 開啟」：從第一張開始。沒有散圖但有書（子資料夾 / 壓縮檔）就開第一本。
-        const std::wstring first = firstInFolder(path);
-        if (!first.empty()) return openPath(first, landAtBottom);
-        showLoadError(path, tr(L"This folder has no supported images"), true);
-        return false;
-    }
     return showPage(path, inArchive, landAtBottom);
 }
 
@@ -1467,6 +1545,10 @@ Rc MainWindow::pageRect(bool second) const {
 }
 
 void MainWindow::updateTitle() {
+    if (browsing_) {
+        SetWindowTextW(hwnd_, composeBrowseTitle(browse_.displayName(), tr(L"Browse Folder"), kAppName).c_str());
+        return;
+    }
     TitleInfo t;
     if (!path_.empty()) {
         t.name = displayName(path_);
@@ -1625,7 +1707,8 @@ void MainWindow::paint() {
     rt->BeginDraw();
     rt->SetTransform(D2D1::Matrix3x2F::Identity());
     rt->Clear(theme::kChromeBg);
-    drawCanvas();
+    if (browsing_) drawBrowse();
+    else drawCanvas();
     drawChrome();
     drawToast();
     if (showInfo_) {
@@ -1660,7 +1743,7 @@ void MainWindow::drawChrome() {
         std::wstring a = displayName(path_), b = displayName(secondPath_);
         name = settings_.view.rightToLeft ? b + L"   |   " + a : a + L"   |   " + b;
     }
-    renderer_.drawUiText(name, nameRc_, px(kUiTextSize), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER);
+    if (!browsing_) renderer_.drawUiText(name, nameRc_, px(kUiTextSize), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER); // 瀏覽時是路徑列（子視窗）
     toolbar_.draw(renderer_.surface(), px);
 }
 
@@ -1816,6 +1899,7 @@ void MainWindow::onButton(int id) {
     case BTN_ZOOM100: setViewMode(ViewMode::Actual); break;
     case BTN_ZOOMIN: zoomStep(1); break;
     case BTN_ROTATE: rotateImage(); break;
+    case BTN_BROWSE: toggleBrowse(); break;
     case BTN_MARKUP:
         if (!editGuard()) break;
         showMarkup_ = !showMarkup_;
@@ -1915,6 +1999,10 @@ void MainWindow::onLButtonDown(POINT pt) {
         if (info_.click(pt)) repaint();
         return;
     }
+    if (browsing_) {
+        if ((splitDrag_ = splitterAt(pt)) != 0) SetCapture(hwnd_);
+        return;
+    }
     if (const std::wstring* url = linkAt(pt)) { // 缺擴充時的 Microsoft Store 連結
         ShellExecuteW(hwnd_, L"open", url->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return;
@@ -1951,6 +2039,15 @@ void MainWindow::onMouseMove(POINT pt, WPARAM) {
         TrackMouseEvent(&tme);
         trackingMouse_ = true;
     }
+    if (splitDrag_) {
+        // 存邏輯像素：換了 DPI 的螢幕版面比例不變。實際範圍在 layoutBrowse 夾。
+        const float unit = px(1.0f);
+        if (splitDrag_ == 1) settings_.browseLeftW = std::clamp(static_cast<int>((pt.x - canvasRc_.left) / unit + 0.5f), 1, kBrowsePaneMax);
+        else settings_.browseTreeH = std::clamp(static_cast<int>((pt.y - canvasRc_.top) / unit + 0.5f), 1, kBrowsePaneMax);
+        layout();
+        repaint();
+        return;
+    }
     if (!editor_.dragging()) {
         int id = toolbar_.hit(pt);
         if (id != toolbar_.hover) {
@@ -1986,7 +2083,17 @@ void MainWindow::onLButtonUp(POINT pt) {
         int id = toolbar_.pressed;
         toolbar_.pressed = BTN_NONE;
         repaint();
-        if (toolbar_.hit(pt) == id) onButton(id);
+        if (toolbar_.hit(pt) == id) {
+            if (toolbar_.inDropZone(id, pt, px)) showThumbSizeMenu(); // 「瀏覽資料夾」右邊的三角形
+            else onButton(id);
+        }
+        return;
+    }
+    if (splitDrag_) {
+        splitDrag_ = 0;
+        if (GetCapture() == hwnd_) ReleaseCapture();
+        saveSettingsQuiet();
+        requestPreview(); // 預覽框的大小變了
         return;
     }
     endDrag(true);
@@ -2036,6 +2143,10 @@ bool MainWindow::onSetCursor() {
     ScreenToClient(hwnd_, &pt);
     if (linkAt(pt)) {
         SetCursor(LoadCursorW(nullptr, IDC_HAND));
+        return true;
+    }
+    if (const int split = splitDrag_ ? splitDrag_ : splitterAt(pt)) {
+        SetCursor(LoadCursorW(nullptr, split == 1 ? IDC_SIZEWE : IDC_SIZENS));
         return true;
     }
     if (!inRect(canvasRc_, pt) || !doc_.image()) return false;
@@ -2166,8 +2277,8 @@ void MainWindow::selectLanguage(const std::wstring& code) {
 void MainWindow::askRestart(const std::wstring& question) {
     if (MessageBoxW(hwnd_, question.c_str(), kAppName, MB_YESNO | MB_ICONQUESTION) != IDYES) return;
     if (!confirmDiscard()) return;
-    // 重開自己並開回目前的檔案。壓縮檔用壓縮檔路徑：解出來的暫存檔在這個程式關閉時就刪了。
-    std::wstring reopen = !archivePath_.empty() ? archivePath_ : path_;
+    // 重開自己並開回目前的檔案。壓縮檔用壓縮檔路徑：解出來的暫存檔在這個程式關閉時就刪了。瀏覽資料夾時開回那個資料夾。
+    std::wstring reopen = reopenAfterUpdate();
     ShellExecuteW(nullptr, L"open", store_.exePath().c_str(), openArgs(reopen).c_str(), nullptr, SW_SHOWNORMAL);
     popups_.close();
     adjustPanel_.close();
@@ -2219,6 +2330,11 @@ void MainWindow::showSettings(int startPage) {
     } else {
         info.unzipRootInUse = resolveUnzipRoot(settings_.unzipDir, exeDir());
     }
+    info.thumbCachePath = thumbCache_.isOpen() ? thumbCache_.path() : joinPath(resolveUnzipRoot(settings_.unzipDir, exeDir()), kThumbCacheFileName);
+    info.onClearThumbs = [this] {
+        ensureThumbCache();
+        thumbCache_.clear();
+    };
     info.pluginsDir = pluginsDirForExe(exeDir());
     info.plugins = scanPlugins(info.pluginsDir); // 重掃：執行中放進來的 plugin 也列出來
     info.pluginResults = plugins_.results;
@@ -2244,8 +2360,15 @@ void MainWindow::showSettings(int startPage) {
 
 void MainWindow::applySettingsFromDialog(const Settings& s, std::wstring& pendingLang, bool& pluginsTouched) {
     pendingLang = s.language; // 語言最後才處理（要問要不要重新啟動）
+    const int oldThumbMB = settings_.thumbCacheMB;
     // 面板交回整份設定：併進來，再照「哪些變了」套用。
     const DialogChanges changed = mergeDialogSettings(settings_, s, exeDir());
+    // 縮圖快取：位置跟著暫存位置走，上限變了立刻丟到上限以內。沒開過（這次沒瀏覽過資料夾）就等第一次用到再開。
+    if (thumbCacheTried_ && (changed.unzipRoot || settings_.thumbCacheMB != oldThumbMB)) reopenThumbCache();
+    if (changed.pinnedNames && browsing_) {
+        browse_.setPinned(settings_.pinnedNames);
+        browse_.refresh();
+    }
     if (changed.plugins) pluginsTouched = true; // 重新啟動才生效：面板關掉後再問
     if (changed.contextMenu) {
         if (settings_.contextMenu) registerContextMenu(store_.exePath(), shellRegOptions());
@@ -2320,6 +2443,10 @@ bool MainWindow::onKeyDown(WPARAM vk) {
     const bool ctrl = ctrlDown(), shift = shiftDown();
     // 滑鼠正拖著東西時不接受鍵盤：這時復原、刪除會讓拖曳手上那份物件清單和文件對不上。
     if (editor_.dragging()) return true;
+    if (browsing_ && vk == VK_ESCAPE) { // 焦點在主視窗本身時（子視窗收到的由 preTranslate 處理）
+        toggleBrowse();
+        return true;
+    }
     const bool arrow = vk == VK_LEFT || vk == VK_RIGHT || vk == VK_UP || vk == VK_DOWN;
     if (!ctrl && arrow) {
         // 有選取物件：方向鍵微移（Shift 一次 10 像素）。沒有：← → 翻頁（照下面的指令表），↑ ↓ 捲動。
@@ -2684,12 +2811,299 @@ void MainWindow::skipUpdateVersion(const std::wstring& version) {
 }
 
 // 重開時開回目前這本：壓縮檔用壓縮檔路徑（解出來的暫存檔關閉時就刪了）。
-std::wstring MainWindow::reopenAfterUpdate() const { return !archivePath_.empty() ? archivePath_ : path_; }
+std::wstring MainWindow::reopenAfterUpdate() const {
+    if (browsing_ && !browse_.folder().empty()) return browse_.folder(); // 帶資料夾啟動就是進瀏覽資料夾
+    return !archivePath_.empty() ? archivePath_ : path_;
+}
 
 void MainWindow::closeForRelaunch(const std::wstring& relaunchArgs) {
     relaunchArgs_ = relaunchArgs;
     updating_ = true; // 已經問過存檔，WM_CLOSE 不再問
     PostMessageW(hwnd_, WM_CLOSE, 0, 0);
+}
+
+
+// ---------------------------------------------------------------------------
+// 瀏覽資料夾（目錄瀏覽模式）
+
+bool MainWindow::confirmEnterBrowse() {
+    endTextEdit(true);
+    if (!doc_.image() || readOnly()) return true;
+    switch (doc_.leavePrompt()) {
+    // 是 = 存檔後進入、否 = 放棄修改後進入、取消 = 不進入（使用者 2026-11-24 定的三條路）
+    case LeavePrompt::AskSave: return confirmDiscard(true);
+    case LeavePrompt::WarnHistory:
+        return askOk(hwnd_, tr(L"Browsing the folder clears the undo history of this image, so these changes can no longer be undone. Continue?"),
+                     TD_WARNING_ICON, true);
+    default: return true;
+    }
+}
+
+void MainWindow::toggleBrowse() {
+    if (browsing_) {
+        leaveBrowse(true);
+        return;
+    }
+    if (!commandEnabled(IDM_BROWSE, commandState())) return;
+    if (!confirmEnterBrowse()) return;
+    // 看壓縮檔時是壓縮檔所在的資料夾、選中那個壓縮檔；其他是這張圖所在的資料夾、選中這張。
+    std::wstring folder, select;
+    if (!archivePath_.empty()) {
+        folder = browseFolderOf(archivePath_);
+        select = archivePath_;
+    } else {
+        folder = browseFolderOf(path_);
+        select = isDirectoryPath(path_) ? L"" : path_;
+    }
+    if (folder.empty()) return;
+    enterBrowse(folder, select);
+}
+
+void MainWindow::enterBrowse(const std::wstring& folder, const std::wstring& select) {
+    endInteraction(false);
+    popups_.close();
+    hideTip();
+    disarmJump();
+    hoverItem_ = 0;
+    if (!browsing_) {
+        // 這張圖的編輯紀錄與像素放掉（path_ 與壓縮檔的暫存留著：離開時回到這裡）。
+        editor_.reset(nullptr);
+        undoWarned_ = false;
+        second_.reset();
+        secondPath_.clear();
+        secondError_.clear();
+        secondErrorLink_.clear();
+        loadError_.clear();
+        loadErrorLink_.clear();
+        pluginImage_ = false;
+        viewOnlyFormat_ = false;
+        prefetch_.setWanted({}, {}, std::nullopt, {}, 0); // 預先解好的頁也放掉
+        info_.setData({});
+        if (!browse_.created()) {
+            ensureThumbCache();
+            if (!browse_.create(hwnd_, this, px, &thumbCache_)) return;
+            preview_.start([](const std::wstring& p, int w, int h) { return decodeScaled(p, w, h, true); },
+                           [this](uint64_t ticket, const std::wstring& p, ScaledDecode&& d) {
+                               {
+                                   std::lock_guard<std::mutex> lock(previewMu_);
+                                   previewDone_.push_back({ticket, p, std::move(d)});
+                               }
+                               PostMessageW(hwnd_, WM_MP_PREVIEW_READY, 0, 0);
+                           });
+        }
+        browse_.setThumbSize(settings_.browseThumbSize);
+        // Direct2D 畫的範圍不蓋到子視窗（樹、縮圖、路徑列）上。
+        SetWindowLongPtrW(hwnd_, GWL_STYLE, GetWindowLongPtrW(hwnd_, GWL_STYLE) | WS_CLIPCHILDREN);
+        browsing_ = true;
+        layout();
+        browse_.show(true);
+    }
+    browse_.setPinned(settings_.pinnedNames);
+    browse_.navigate(folder, select);
+    updateTitle();
+    repaint();
+    browse_.focusList();
+}
+
+void MainWindow::leaveBrowse(bool reopen) {
+    if (!browsing_) return;
+    browsing_ = false;
+    splitDrag_ = 0;
+    KillTimer(hwnd_, kBrowseRefreshTimer);
+    KillTimer(hwnd_, kPreviewTimer);
+    preview_.cancel();
+    ++previewTicket_;
+    previewImage_.reset();
+    previewPath_.clear();
+    previewInfo_.clear();
+    browse_.show(false);
+    SetWindowLongPtrW(hwnd_, GWL_STYLE, GetWindowLongPtrW(hwnd_, GWL_STYLE) & ~WS_CLIPCHILDREN);
+    SetFocus(hwnd_);
+    info_.setData({});
+    layout();
+    if (!reopen) return;
+    // 回到進入前那張圖（從磁碟重開，沒有復原紀錄）；壓縮檔裡的頁從暫存直接開。本來就沒開圖（用資料夾啟動）回空白。
+    if (path_.empty() || isDirectoryPath(path_)) {
+        path_.clear();
+        nav_ = FolderNav{};
+        updateTitle();
+        repaint();
+        return;
+    }
+    if (insideArchive(path_)) showPage(path_, true, false);
+    else openPath(path_);
+}
+
+void MainWindow::ensureThumbCache() {
+    if (thumbCacheTried_) return;
+    thumbCacheTried_ = true;
+    reopenThumbCache();
+}
+
+void MainWindow::reopenThumbCache() {
+    const uint64_t limit = static_cast<uint64_t>(settings_.thumbCacheMB) * 1024 * 1024;
+    // 放在壓縮檔的暫存位置；建不了（exe 在唯讀的地方）就和壓縮檔一樣退回 %TEMP%。網路磁碟上 ThumbCache 自己不開。
+    std::wstring root = resolveUnzipRoot(settings_.unzipDir, exeDir());
+    if (!createDirectories(root)) {
+        root = fallbackUnzipRoot();
+        if (!createDirectories(root)) { thumbCache_.close(); return; }
+    }
+    thumbCache_.open(joinPath(root, kThumbCacheFileName), limit);
+    thumbCache_.setLimit(limit); // 上限改小：現在就丟到上限以內
+}
+
+void MainWindow::showThumbSizeMenu() {
+    if (!browsing_) return; // 不在瀏覽資料夾時三角形沒反應（使用者 2026-11-24 定）
+    HMENU m = CreatePopupMenu();
+    for (int id = kThumbSizeCommandFirst; id <= kThumbSizeCommandLast; ++id) AppendMenuW(m, MF_STRING, static_cast<UINT_PTR>(id), trs(commandInfo(id)->name).c_str());
+    CheckMenuRadioItem(m, kThumbSizeCommandFirst, kThumbSizeCommandLast, kThumbSizeCommandFirst + settings_.browseThumbSize, MF_BYCOMMAND);
+    const RECT r = buttonScreenRect(BTN_BROWSE);
+    const int cmd = TrackPopupMenu(m, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, r.left, r.bottom, 0, hwnd_, nullptr);
+    DestroyMenu(m);
+    if (cmd) onCommand(cmd);
+}
+
+void MainWindow::setThumbSize(int index) {
+    if (index < 0 || index >= kThumbSizeCount || index == settings_.browseThumbSize) return;
+    settings_.browseThumbSize = index;
+    saveSettingsQuiet();
+    if (browse_.created()) browse_.setThumbSize(index);
+}
+
+void MainWindow::layoutBrowse() {
+    const float L = canvasRc_.left, T = canvasRc_.top, R = canvasRc_.right, B = canvasRc_.bottom;
+    const float gap = px(kSplitW), w = R - L, h = B - T;
+    float leftW = settings_.browseLeftW > 0 ? px(static_cast<float>(settings_.browseLeftW)) : px(kBrowseLeftDefault);
+    leftW = std::clamp(leftW, px(kBrowseLeftMin), std::max(px(kBrowseLeftMin), w - gap - px(kBrowseListMin)));
+    float treeH = settings_.browseTreeH > 0 ? px(static_cast<float>(settings_.browseTreeH)) : std::round(h * kBrowseTreeRatio);
+    treeH = std::clamp(treeH, px(kBrowsePaneMin), std::max(px(kBrowsePaneMin), h - gap - px(kBrowsePaneMin)));
+    leftW = std::round(leftW);
+    treeH = std::round(treeH);
+    treeRc_ = D2D1::RectF(L, T, L + leftW, T + treeH);
+    hSplitRc_ = D2D1::RectF(L, T + treeH, L + leftW, T + treeH + gap);
+    previewRc_ = D2D1::RectF(L, T + treeH + gap, L + leftW, B);
+    vSplitRc_ = D2D1::RectF(L + leftW, T, L + leftW + gap, B);
+    listRc_ = D2D1::RectF(L + leftW + gap, T, R, B);
+    auto toRect = [](const D2D1_RECT_F& r) {
+        return RECT{static_cast<LONG>(r.left), static_cast<LONG>(r.top), static_cast<LONG>(r.right), static_cast<LONG>(r.bottom)};
+    };
+    browse_.layout(toRect(treeRc_), toRect(listRc_), toRect(nameRc_));
+    // 預覽框變大很多（例如拖大視窗）：停下來後照新的大小重解，不然預覽是糊的。
+    const D2D1_RECT_F box = previewImageBox();
+    if (!previewPath_.empty() && (box.right - box.left > previewReqW_ * 1.25f || box.bottom - box.top > previewReqH_ * 1.25f))
+        SetTimer(hwnd_, kPreviewTimer, kPreviewResizeMs, nullptr);
+}
+
+D2D1_RECT_F MainWindow::previewImageBox() const {
+    const float pad = px(kPreviewPad);
+    return D2D1::RectF(previewRc_.left + pad, previewRc_.top + pad, std::max(previewRc_.left + pad, previewRc_.right - pad),
+                       std::max(previewRc_.top + pad, previewRc_.bottom - px(kPreviewInfoH)));
+}
+
+void MainWindow::drawBrowse() {
+    auto* rt = renderer_.rt();
+    rt->SetTransform(D2D1::Matrix3x2F::Identity());
+    rt->FillRectangle(canvasRc_, renderer_.brush(theme::kChromeBg));
+    rt->FillRectangle(previewRc_, renderer_.brush(theme::kCanvasBg));
+    // 分隔線的中線：細線
+    const float vx = std::floor((vSplitRc_.left + vSplitRc_.right) / 2) + 0.5f, hy = std::floor((hSplitRc_.top + hSplitRc_.bottom) / 2) + 0.5f;
+    rt->DrawLine(D2D1::Point2F(vx, vSplitRc_.top), D2D1::Point2F(vx, vSplitRc_.bottom), renderer_.brush(theme::kChromeLine), 1.0f);
+    rt->DrawLine(D2D1::Point2F(hSplitRc_.left, hy), D2D1::Point2F(hSplitRc_.right, hy), renderer_.brush(theme::kChromeLine), 1.0f);
+    const D2D1_RECT_F box = previewImageBox();
+    if (previewImage_) {
+        if (const ImageBitmap* b = renderer_.imageBitmap(previewImage_)) {
+            // 快速：Direct2D 的線性內插，不放大（解的時候已經縮到框的大小）。
+            const float iw = static_cast<float>(previewImage_->width), ih = static_cast<float>(previewImage_->height);
+            const float s = std::min(1.0f, std::min((box.right - box.left) / iw, (box.bottom - box.top) / ih));
+            const float dw = std::round(iw * s), dh = std::round(ih * s);
+            const float x = std::round((box.left + box.right - dw) / 2), y = std::round((box.top + box.bottom - dh) / 2);
+            rt->DrawBitmap(b->bitmap.Get(), D2D1::RectF(x, y, x + dw, y + dh), 1.0f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+        }
+    }
+    if (!previewInfo_.empty()) {
+        const float pad = px(kPreviewPad);
+        // 左欄窄的時候折成兩行（日期很長）
+        renderer_.drawUiText(previewInfo_, D2D1::RectF(previewRc_.left + pad, box.bottom, previewRc_.right - pad, previewRc_.bottom),
+                             px(kPreviewInfoText), theme::kIcon, DWRITE_TEXT_ALIGNMENT_CENTER, false, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, true, true);
+    }
+}
+
+void MainWindow::requestPreview() {
+    KillTimer(hwnd_, kPreviewTimer);
+    if (!browsing_ || previewPath_.empty()) return;
+    const D2D1_RECT_F box = previewImageBox();
+    previewReqW_ = std::max(1, static_cast<int>(box.right - box.left));
+    previewReqH_ = std::max(1, static_cast<int>(box.bottom - box.top));
+    preview_.request(++previewTicket_, previewPath_, previewReqW_, previewReqH_);
+}
+
+int MainWindow::splitterAt(POINT pt) const {
+    if (!browsing_) return 0;
+    if (inRect(vSplitRc_, pt)) return 1;
+    if (inRect(hSplitRc_, pt)) return 2;
+    return 0;
+}
+
+bool MainWindow::browseKey(const MSG& msg) {
+    const WPARAM vk = msg.wParam;
+    const bool ctrl = ctrlDown(), shift = shiftDown();
+    switch (vk) {
+    case VK_ESCAPE: toggleBrowse(); return true;
+    case VK_TAB: browse_.cycleFocus(); return true;
+    case VK_BACK:
+        if (msg.hwnd != browse_.listHwnd()) return false; // 樹裡的 Backspace 是樹自己的（選上一層）
+        browse_.up();
+        return true;
+    default: break;
+    }
+    if (!ctrl) return false;
+    if (vk == 'A' && msg.hwnd == browse_.pathHwnd()) { // 路徑列：全選，方便複製
+        SendMessageW(msg.hwnd, EM_SETSEL, 0, -1);
+        return true;
+    }
+    // Ctrl+O 這類指令照指令表；Ctrl+C 不是指令，留給路徑列複製。
+    if (const int command = commandForKey(static_cast<unsigned>(vk), ctrl, shift)) {
+        onCommand(command);
+        return true;
+    }
+    return false;
+}
+
+void MainWindow::browseSelectionChanged() {
+    if (!browsing_) return;
+    const int i = browse_.selected();
+    preview_.cancel();
+    ++previewTicket_;
+    previewImage_.reset();
+    previewInfo_.clear();
+    previewPath_.clear();
+    if (i >= 0 && browse_.entries()[static_cast<size_t>(i)].kind == BrowseKind::Image) {
+        previewPath_ = browse_.entries()[static_cast<size_t>(i)].path;
+        InfoData facts;
+        fillFileFacts(facts, previewPath_); // 圖解好之前先有檔案的部分
+        info_.setData(std::move(facts));
+        requestPreview();
+    } else {
+        info_.setData({}); // 子資料夾、壓縮檔：預覽與資訊都空著（使用者 2026-11-24 定）
+    }
+    repaint();
+}
+
+void MainWindow::browseActivated(int index) {
+    if (!browsing_ || index < 0 || index >= static_cast<int>(browse_.entries().size())) return;
+    const BrowseEntry e = browse_.entries()[static_cast<size_t>(index)]; // 複本：換資料夾會換掉清單
+    if (e.kind == BrowseKind::Folder) {
+        browse_.navigate(e.path, L"");
+        return;
+    }
+    // 圖片：用一般檢視開，之後 ← → 在這個資料夾裡翻。壓縮檔：用目前的模式開那一本。
+    leaveBrowse(false);
+    openPath(e.path);
+}
+
+void MainWindow::browseFolderChanged() {
+    updateTitle();
+    repaint();
 }
 
 } // namespace mp

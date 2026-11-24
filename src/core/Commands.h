@@ -38,6 +38,11 @@ enum CommandId : int {
     IDM_FIRSTALONE = 138,
     IDM_SHIFTONE = 139,
     IDM_AUTONEXT = 140,
+    IDM_BROWSE = 142, // 瀏覽資料夾（目錄瀏覽模式）的開關
+    // 瀏覽資料夾的縮圖大小（單選，範圍 kThumbSizeCommandFirst..Last，順序和 core/BrowseList.h 的 kThumbSides 一樣）
+    IDM_THUMB_SMALL = 146,
+    IDM_THUMB_MEDIUM = 147,
+    IDM_THUMB_LARGE = 148,
     // 語言：IDM_LANG_SYSTEM 是「跟隨系統」，IDM_LANG_FIRST 起每個語系一個 id
     IDM_LANG_SYSTEM = 141,
     IDM_ABOUT = 145,
@@ -50,6 +55,7 @@ enum CommandId : int {
     IDM_PROFILE_LAST = 249,
 };
 constexpr int kViewModeCommandFirst = IDM_ZOOM100, kViewModeCommandLast = IDM_TWOPAGE;
+constexpr int kThumbSizeCommandFirst = IDM_THUMB_SMALL, kThumbSizeCommandLast = IDM_THUMB_LARGE;
 
 struct CommandInfo {
     int id;
@@ -76,6 +82,8 @@ struct CommandState {
     bool cropping = false;        // 裁切模式中：復原 / 重做是「取消裁切」，沒有復原紀錄時也能按
     bool profileModified = false; // 目前的檢視值和所用的模式不同（而且那個模式還在）
     bool dragging = false;        // 滑鼠正拖著東西（平移、物件、控制點、塗鴉、裁切框）：這時任何指令都不動作
+    bool canBrowse = false;       // 有開著的檔（開不了、畫布上寫原因的也算）：資料夾是確定的，可以進瀏覽資料夾
+    bool browsing = false;        // 正在瀏覽資料夾：看圖與編輯的指令都不能用
 };
 // 這個指令現在能不能用。選單的灰色、工具列按鈕、快捷鍵都用它。語言與模式的 id 一律可用。
 bool commandEnabled(int id, const CommandState& s);

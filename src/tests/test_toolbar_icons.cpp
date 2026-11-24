@@ -11,7 +11,7 @@ using namespace mp::test;
 namespace {
 
 const int kIconButtons[] = {BTN_ZOOMOUT, BTN_ZOOM100, BTN_ZOOMIN,   BTN_ROTATE,  BTN_MARKUP,    BTN_INFO,  BTN_FREEHAND,
-                            BTN_SHAPES,  BTN_TEXT,    BTN_ADJCOLOR, BTN_ADJSIZE, BTN_LINESTYLE, BTN_FORMAT, BTN_CROP};
+                            BTN_SHAPES,  BTN_TEXT,    BTN_ADJCOLOR, BTN_ADJSIZE, BTN_LINESTYLE, BTN_FORMAT, BTN_CROP, BTN_BROWSE};
 
 const Color kInk{51, 51, 51, 255}; // theme::kIcon
 

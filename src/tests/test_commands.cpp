@@ -15,7 +15,7 @@ constexpr unsigned kBack = 0x08, kPrior = 0x21, kNext = 0x22, kLeft = 0x25, kUp 
 
 CommandState editing() { // 開著一張改過的圖、有選取、有復原與重做
     CommandState s;
-    s.hasImage = s.hasView = s.dirty = s.canUndo = s.canRedo = s.hasSelection = s.hasPages = true;
+    s.hasImage = s.hasView = s.dirty = s.canUndo = s.canRedo = s.hasSelection = s.hasPages = s.canBrowse = true;
     return s;
 }
 } // namespace
@@ -67,8 +67,8 @@ TEST_CASE("commandEnabled：沒有圖、沒有修改、兩頁並排") {
         CHECK(commandEnabled(id, none));
 
     CommandState s = editing();
-    for (const CommandInfo& c : commands())
-        if (c.id != IDM_PROFILE_SAVE) CHECK(commandEnabled(c.id, s));
+    for (const CommandInfo& c : commands()) // 縮圖大小只在瀏覽資料夾時能選（test_browse.cpp）
+        if (c.id != IDM_PROFILE_SAVE && !(c.id >= kThumbSizeCommandFirst && c.id <= kThumbSizeCommandLast)) CHECK(commandEnabled(c.id, s));
 
     // B-19：沒有修改時「儲存」不能用（快捷鍵也是這一份條件），「輸出成」照樣可以
     s.dirty = false;

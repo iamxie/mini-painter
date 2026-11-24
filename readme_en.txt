@@ -16,15 +16,14 @@ Usage
   extensions from Microsoft Store; view and export only. See "HEIC / HEIF" below.
 - Also opens zip / 7z / rar archives (including .cbz / .cb7 / .cbr) and pages through the
   images inside as if they were a folder; see "Archives" below.
-- Left / Right arrows go to the previous / next image in the same folder. Opening a folder
-  starts at its first image. At the end you get a "This is the last image" hint.
+- Left / Right arrows go to the previous / next image in the same folder. At the end you get
+  a "This is the last image" hint. Opening a folder starts Browse Folder; see the next section.
 - For reading comics, turn on View > "Continue to the next folder or archive at the end"
   (off by default; the built-in "Comic mode" has it on): at the end, the first
   press tells you where you would go, and a second press within 3 seconds jumps to the first
   page of the next folder or archive in the same parent folder; going backwards is symmetric.
   Only that one level is searched: subfolders and archives inside the current folder are not
-  part of it, and the parent's siblings are never visited. Opening a folder that only holds
-  archives or subfolders opens its first one.
+  part of it, and the parent's siblings are never visited.
 - The markup toolbar (pen button at the right of the toolbar) has sketch, line / arrow,
   shapes, text, adjust color, adjust size and crop. To crop, click the crop button, drag the
   corners, the edges or the inside of the frame, then click Crop at the right end of the
@@ -42,7 +41,36 @@ Usage
   their own; right-to-left, first page alone and shift-by-one are switches). The mode is
   remembered across pages.
 - Zoom quality (fast / high quality Lanczos3), "Up/Down at the end of a page turns the page"
-  and the two-page switches are part of a "mode"; see the next section.
+  and the two-page switches are part of a "mode"; see "Modes (setting presets)".
+
+Browse Folder
+-------------
+- The grid button to the right of Rotate (or View > Browse Folder) switches to Browse Folder:
+  the folder tree at the top left (the same one as on the left of File Explorer), a preview at
+  the bottom left and thumbnails of the folder on the right. Press the button again or Esc to
+  go back to the image you were viewing. An image (or archive) must be open to enter; with an
+  archive open you get the folder that holds the archive.
+- The right side lists subfolders, then archives, then images: this level only, images in
+  formats mpainter can open, in the same order as paging. A click selects and shows a preview
+  with size, bit depth, file size and modified date below it (the info panel shows the same
+  image). Double-click or Enter: an image opens in the normal view, and Left / Right then page
+  through this folder; a subfolder is entered; an archive opens in the current mode.
+  Backspace goes up one level; Tab switches between the folder tree and the thumbnails. When
+  another program adds or deletes files in the folder, the thumbnails follow.
+- Thumbnails come in small, medium and large: click the small triangle at the right of the
+  button, or View > Thumbnail Size. The dividers between the three parts can be dragged and
+  are remembered.
+- The file name bar shows the current path, which you can select and copy.
+- With unsaved changes, mpainter asks first: save and enter, discard and enter, or stay. Entering
+  clears the undo history of the image.
+- A folder given on the command line, dropped on the window, or opened with "Open with mpainter"
+  in File Explorer starts Browse Folder.
+- Thumbnails: ones Windows has already made are used as they are; mpainter makes the rest and
+  keeps them in thumbs.mpainter.db in the unpack folder (by default "temp" next to the exe),
+  leaving nothing in your picture folders. The limit is 500 MB by default; over it, the ones
+  unused for the longest are dropped. Edit > Settings > Archives changes the limit, shows the
+  usage and clears them. If the unpack folder is on a network drive, no thumbnails are kept.
+- No file operations (delete, rename, copy, move), and the folder tree has no context menu.
 
 Modes (settings sets)
 ---------------------
@@ -61,7 +89,7 @@ Modes (settings sets)
   current mode.
 - Edit > Settings has five tabs: General (language, hints, undo steps, prefetch, settings file), Modes (new / copy /
   rename / delete / use this mode, with the mode's contents on the right), Archives (unpack
-  folder with its current usage, show-first names, passwords), Windows Integration
+  folder with its current usage, show-first names, passwords, Browse Folder's thumbnail cache), Windows Integration
   (context menu, default app) and Plugins (which image plugins to use). The buttons are
   Cancel / OK / Apply; Apply takes effect at once and keeps the window open. The language and
   plugins take effect after a restart; mpainter asks when you close the window.

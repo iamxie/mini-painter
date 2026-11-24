@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(mpainter VERSION 1.1.3 LANGUAGES C CXX) # C：DNG SDK 附的 libjpeg
+project(mpainter VERSION 1.2.0 LANGUAGES C CXX) # C：DNG SDK 附的 libjpeg
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,8 @@ find_package(Catch2 CONFIG REQUIRED)
 find_package(bit7z CONFIG REQUIRED)
 # 自動更新解析 GitHub API 回應（header-only，MIT）。
 find_package(nlohmann_json CONFIG REQUIRED)
+# 瀏覽資料夾的縮圖快取（public domain）。
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 # 官方 7z.dll 的路徑。設了就在建置後複製到 exe 與測試程式旁；沒設時程式不支援壓縮檔、測試會失敗。
 set(MP_7Z_DLL "" CACHE FILEPATH "官方 7z.dll（7-zip.org）的路徑，建置後複製到輸出目錄")
 if(NOT MP_7Z_DLL)
@@ -78,10 +80,13 @@ add_library(mp_core STATIC
     src/core/PluginManifest.cpp
     src/core/PluginRun.cpp
     src/core/Plugins.cpp
+    src/core/BrowseList.cpp
+    src/core/ThumbCache.cpp
+    src/core/Thumbnails.cpp
 )
 target_include_directories(mp_core PUBLIC src)
 # 都是實作細節：core 的標頭不露出這些函式庫的型別。
-target_link_libraries(mp_core PRIVATE WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z nlohmann_json::nlohmann_json windowscodecs ole32 shlwapi propsys version advapi32 winhttp bcrypt shell32)
+target_link_libraries(mp_core PRIVATE WebP::webp WebP::webpdecoder WebP::webpdemux WebP::libwebpmux bit7z::bit7z nlohmann_json::nlohmann_json unofficial::sqlite3::sqlite3 windowscodecs ole32 shlwapi propsys version advapi32 winhttp bcrypt shell32)
 
 # Direct2D / DirectWrite 包裝。主程式與測試共用同一份。
 add_library(mp_render STATIC
@@ -153,6 +158,7 @@ configure_file(src/app/version.h.in "${CMAKE_BINARY_DIR}/generated/app/version.h
 add_executable(mpainter WIN32
     src/app/main.cpp
     src/app/MainWindow.cpp
+    src/app/BrowseView.cpp
     src/app/Popups.cpp
     src/app/InfoPanel.cpp
     src/app/ToolbarIcons.cpp
@@ -241,6 +247,9 @@ add_executable(mp_tests
     # DNG plugin：解碼的部分直接連進來測（例如換執行緒數），也經過 loadImage 走真的 plugin。
     src/tests/test_plugin_dng.cpp
     src/plugins/dng/DngRender.cpp
+    # 瀏覽資料夾：清單、縮圖快取（SQLite）、縮圖的解碼與背景佇列。
+    src/tests/test_browse.cpp
+    src/tests/test_thumbnails.cpp
     # HEIC / HEIF：走系統的 WIC，結果看機器裝了哪些 Microsoft Store 擴充（fixtures/heic-*.heic）。
     src/tests/test_heif.cpp
 )

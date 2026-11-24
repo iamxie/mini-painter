@@ -10,6 +10,7 @@ Single portable `mpainter.exe`, no runtime to install.
 ## Features / 功能
 
 - BMP, TIFF, JPEG, PNG, WebP; through the bundled plugins also JPEG XL and DNG (camera raw), view and export only. HEIC / HEIF through Windows once the Microsoft Store extensions are installed, view and export only. Arrow keys page through a folder; zip / 7z / rar (cbz / cb7 / cbr) archives open as if they were folders, encrypted ones included.
+- Browse Folder: a folder tree, thumbnails of the subfolders, archives and images in a folder, and a preview with size, bit depth, file size and date. Thumbnails come from the Windows thumbnail cache when it has them; the rest are made quickly and kept in a small SQLite cache.
 - Annotations as vector objects until you save: sketch, lines and arrows, shapes, speech bubbles, magnifier, mosaic, text. Multi-level undo.
 - Adjust color (levels, exposure, white balance, …), adjust size (Lanczos3) and crop. Saving keeps EXIF / XMP / ICC.
 - View modes for reading: fit to window / width / height, actual size, two pages side by side (right-to-left for manga), continue to the next folder or archive at the end.
@@ -19,6 +20,7 @@ Single portable `mpainter.exe`, no runtime to install.
 - Image plugins add formats to open through a small C interface: see [src/plugins/README.md](src/plugins/README.md). An image opened through a plugin is read-only: view it, or export a copy in one of the formats above. A plugin that crashes mpainter is turned off at the next start.
 
 - 支援 BMP、TIFF、JPEG、PNG、WebP，隨附的 plugin 再加 JPEG XL 與 DNG（相機 raw 檔），這兩種只能看與輸出成；HEIC / HEIF 裝了 Microsoft Store 的擴充後交給 Windows 解，也只能看與輸出成；方向鍵翻同資料夾；zip / 7z / rar（cbz / cb7 / cbr）壓縮檔直接當資料夾翻，含加密檔。
+- 瀏覽資料夾：資料夾樹、這一層的子資料夾、壓縮檔與圖片的縮圖、預覽（尺寸、色深、檔案大小、日期）。縮圖先用 Windows 的縮圖快取，沒有的自己快速算，存在小小的 SQLite 快取裡。
 - 標註是向量物件，存檔才壓成像素：塗鴉、直線與箭頭、形狀、對話框、放大鏡、馬賽克、文字；多層復原。
 - 調整顏色（色階、曝光、白平衡…）、調整尺寸（Lanczos3）與裁切；存檔保留 EXIF / XMP / ICC。
 - 看漫畫的檢視模式：符合視窗 / 寬度 / 高度、實際大小、兩頁並排（可由右到左）、翻到底接著看下一本。
@@ -68,6 +70,6 @@ CI (`.github/workflows/build.yml`) does the same on `windows-latest` for every p
 
 Apache License 2.0, © Mini Painter Contributors. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Third-party components: libwebp (BSD-3-Clause), bit7z (MPL 2.0), 7-Zip's `7z.dll` (LGPL 2.1 + unRAR restriction; loaded at run time, replaceable by the user, source archive attached to every release). The JPEG XL plugin: libjxl (BSD-3-Clause + patent grant), Highway (BSD-3-Clause), Brotli and Little CMS (MIT). The DNG plugin: the Adobe DNG SDK (DNG SDK License Agreement, [src/third_party/dng_sdk/LICENSE.txt](src/third_party/dng_sdk/LICENSE.txt)), the libjpeg that comes with it (IJG) and zlib, plus the same libjxl, Highway, Brotli and Little CMS. Details in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
+Third-party components: libwebp (BSD-3-Clause), bit7z (MPL 2.0), nlohmann/json (MIT), SQLite (public domain), 7-Zip's `7z.dll` (LGPL 2.1 + unRAR restriction; loaded at run time, replaceable by the user, source archive attached to every release). The JPEG XL plugin: libjxl (BSD-3-Clause + patent grant), Highway (BSD-3-Clause), Brotli and Little CMS (MIT). The DNG plugin: the Adobe DNG SDK (DNG SDK License Agreement, [src/third_party/dng_sdk/LICENSE.txt](src/third_party/dng_sdk/LICENSE.txt)), the libjpeg that comes with it (IJG) and zlib, plus the same libjxl, Highway, Brotli and Little CMS. Details in [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt).
 
 This product includes DNG technology under license by Adobe. This software is based in part on the work of the Independent JPEG Group.

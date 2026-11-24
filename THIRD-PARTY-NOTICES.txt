@@ -9,23 +9,24 @@ third-party software, whose license terms are reproduced below as required.
   2. bit7z    - statically linked          - MPL 2.0
   3. 7-Zip    - 7z.dll loaded at run time  - LGPL 2.1 (+ unRAR restriction, BSD)
   4. JSON for Modern C++ (nlohmann/json) - compiled in (header-only) - MIT
+  5. SQLite   - statically linked          - public domain
 
 The JPEG XL plugin (plugins\jxl\jxl.dll) is a separate DLL that mpainter
 loads at run time. It statically links:
 
-  5. libjxl   - JPEG XL reference implementation - BSD-3-Clause (+ patent grant)
-  6. Highway  - SIMD library used by libjxl       - BSD-3-Clause (dual-licensed, see below)
-  7. Brotli   - compression used by libjxl        - MIT
-  8. Little CMS (lcms2) - color management used by libjxl - MIT
+  6. libjxl   - JPEG XL reference implementation - BSD-3-Clause (+ patent grant)
+  7. Highway  - SIMD library used by libjxl       - BSD-3-Clause (dual-licensed, see below)
+  8. Brotli   - compression used by libjxl        - MIT
+  9. Little CMS (lcms2) - color management used by libjxl - MIT
 
 The DNG plugin (plugins\dng\dng.dll) is a separate DLL that mpainter loads
 at run time. This product includes DNG technology under license by Adobe.
 The DNG plugin statically links:
 
-  9. Adobe DNG SDK 1.7.1 - reads and renders DNG files - DNG SDK License Agreement (Adobe)
- 10. libjpeg 9c - comes with the DNG SDK - Independent JPEG Group license
- 11. zlib 1.3.2 - deflate used by the DNG SDK - zlib license
-  and the same libjxl, Highway, Brotli and Little CMS as the JPEG XL plugin (5 to 8).
+ 10. Adobe DNG SDK 1.7.1 - reads and renders DNG files - DNG SDK License Agreement (Adobe)
+ 11. libjpeg 9c - comes with the DNG SDK - Independent JPEG Group license
+ 12. zlib 1.3.2 - deflate used by the DNG SDK - zlib license
+  and the same libjxl, Highway, Brotli and Little CMS as the JPEG XL plugin (6 to 9).
 
 This software is based in part on the work of the Independent JPEG Group.
 
@@ -1187,6 +1188,24 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+-----------------------------------------------------------------------
+SQLite 3.54.1 (https://www.sqlite.org)
+Database engine, used to keep the thumbnails that Browse Folder makes
+(thumbs.mpainter.db). Statically linked, unmodified (built via vcpkg).
+License: public domain. SQLite does not require a license notice or the
+distribution of its source code; it is listed here as a courtesy.
+Source code: https://www.sqlite.org/download.html
+Copyright status: https://www.sqlite.org/copyright.html
+-----------------------------------------------------------------------
+
+The author disclaims copyright to this source code.  In place of
+a legal notice, here is a blessing:
+
+   May you do good and not evil.
+   May you find forgiveness for yourself and forgive others.
+   May you share freely, never taking more than you give.
 
 
 -----------------------------------------------------------------------
